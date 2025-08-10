@@ -2,6 +2,7 @@ TARGET := BOOTX64.EFI
 OUTDIR := ../vfat/EFI/BOOT
 
 SRCS := \
+  src/elf64.c \
   src/entry.c \
   src/uefi_console.c \
   src/uefi_memory.c
