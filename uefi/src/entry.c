@@ -1,5 +1,6 @@
-#include "../include/efi/system_table.h"
+#include "../include/efi/protocols/gop.h"
 #include "../include/efi/protocols/simple_fs.h"
+#include "../include/efi/system_table.h"
 #include "../include/elf64.h"
 #include "../include/bootinfo.h"
 
@@ -107,54 +108,75 @@ EFI_STATUS EFIAPI EfiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
                     if (kbuf)
                     {
                         UINTN sz = (UINTN)info->FileSize;
-                        EFI_PHYSICAL_ADDRESS entry = 0;
-                        st = Elf64_LoadKernel(BS, kbuf, sz, &entry);
-                        if (EFI_ERROR(st))
+                        if (!EFI_ERROR(kfile->Read(kfile, &sz, kbuf)) && sz == (UINTN)info->FileSize)
                         {
-                            PutLn(L"ELF load failed.");
+                            EFI_PHYSICAL_ADDRESS entry = 0;
+                            st = Elf64_LoadKernel(BS, kbuf, sz, &entry);
+                            if (EFI_ERROR(st))
+                            {
+                                PutLn(L"ELF load failed.");
+                                FreePool(kbuf);
+                                goto done;
+                            }
+                            FreePool(kbuf);
+                            PutLn(L"ELF loaded. Preparing to exit boot services...");
+
+                            EFI_GRAPHICS_OUTPUT_PROTOCOL *gop = NULL;
+                            EFI_STATUS st_gop = BS->LocateHandleBuffer(ByProtocol, (EFI_GUID *)&EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID,
+                                                                       NULL, &count, &handles);
+                            if (!EFI_ERROR(st_gop) && count > 0)
+                            {
+                                BS->HandleProtocol(handles[0], (EFI_GUID *)&EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, (VOID **)&gop);
+                            }
+
+                            /* メモリマップ取得 → ExitBootServices（失敗時は再トライ） */
+                            UINTN mapSize = 0, mapKey = 0, descSize = 0;
+                            UINT32 descVer = 0;
+                            BS->GetMemoryMap(&mapSize, NULL, &mapKey, &descSize, &descVer);
+                            mapSize += 2 * descSize;
+                            VOID *map = AllocPool(mapSize);
+                            if (!map)
+                            {
+                                PutLn(L"Alloc memmap failed.");
+                                goto done;
+                            }
+                            if (EFI_ERROR(BS->GetMemoryMap(&mapSize, map, &mapKey, &descSize, &descVer)))
+                            {
+                                PutLn(L"GetMemoryMap failed.");
+                                goto done;
+                            }
+                            if (EFI_ERROR(BS->ExitBootServices(ImageHandle, mapKey)))
+                            {
+                                BS->GetMemoryMap(&mapSize, map, &mapKey, &descSize, &descVer);
+                                if (EFI_ERROR(BS->ExitBootServices(ImageHandle, mapKey)))
+                                {
+                                    PutLn(L"ExitBootServices failed.");
+                                    goto done;
+                                }
+                            }
+
+                            /* ここからUEFIサービスは不可。GOPに切り替えるまで表示も不可。 */
+                            BootInfo bi = {0};
+                            bi.magic = 0x534C504855454649ULL; /* "SLPHUEFI" など */
+                            if (gop && gop->Mode && gop->Mode->Info)
+                            {
+                                bi.fb_base = (UINT64)gop->Mode->FrameBufferBase;
+                                bi.fb_size = (UINT32)gop->Mode->FrameBufferSize;
+                                bi.width = gop->Mode->Info->HorizontalResolution;
+                                bi.height = gop->Mode->Info->VerticalResolution;
+                                bi.pitch = gop->Mode->Info->PixelsPerScanLine;
+                                bi.pixel_format = (UINT32)gop->Mode->Info->PixelFormat;
+                            }
+
+                            KernelEntry kentry = (KernelEntry)(UINTN)entry;
+                            kentry(&bi);
+                        }
+                        else
+                        {
+                            PutLn(L"kernel.bin read failed.");
                             FreePool(kbuf);
                             goto done;
                         }
-                        FreePool(kbuf);
-                        PutLn(L"ELF loaded. Preparing to exit boot services...");
-
-                        /* メモリマップ取得 → ExitBootServices（失敗時は再トライ） */
-                        UINTN mapSize = 0, mapKey = 0, descSize = 0;
-                        UINT32 descVer = 0;
-                        BS->GetMemoryMap(&mapSize, NULL, &mapKey, &descSize, &descVer);
-                        mapSize += 2 * descSize;
-                        VOID *map = AllocPool(mapSize);
-                        if (!map)
-                        {
-                            PutLn(L"Alloc memmap failed.");
-                            goto done;
-                        }
-                        if (EFI_ERROR(BS->GetMemoryMap(&mapSize, map, &mapKey, &descSize, &descVer)))
-                        {
-                            PutLn(L"GetMemoryMap failed.");
-                            goto done;
-                        }
-                        if (EFI_ERROR(BS->ExitBootServices(ImageHandle, mapKey)))
-                        {
-                            BS->GetMemoryMap(&mapSize, map, &mapKey, &descSize, &descVer);
-                            if (EFI_ERROR(BS->ExitBootServices(ImageHandle, mapKey)))
-                            {
-                                PutLn(L"ExitBootServices failed.");
-                                goto done;
-                            }
-                        }
-
-                        /* ここからUEFIサービスは不可。GOPに切り替えるまで表示も不可。 */
-                        BootInfo bi = {.magic = 0x534C504855454649ULL}; // "SLPHUEFI" 的な適当値
-                        KernelEntry kentry = (KernelEntry)(UINTN)entry;
-                        kentry(&bi);
-
-                    /* カーネルから戻ってきたとき用（通常は戻らない） */
-                    done:
-                        PutLn(L"Done. Press any key...");
-                        EFI_INPUT_KEY key;
-                        ST->ConIn->ReadKeyStroke(ST->ConIn, &key);
-                        return EFI_SUCCESS;
                     }
                 }
                 if (info)
@@ -165,6 +187,7 @@ EFI_STATUS EFIAPI EfiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
         kdir->Close(kdir);
     }
 
+done:
     PutLn(L"Done. Press any key...");
     EFI_INPUT_KEY key;
     ST->ConIn->ReadKeyStroke(ST->ConIn, &key);
