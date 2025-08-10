@@ -118,8 +118,6 @@ EFI_STATUS EFIAPI EfiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
                                 FreePool(kbuf);
                                 goto done;
                             }
-                            FreePool(kbuf);
-                            PutLn(L"ELF loaded. Preparing to exit boot services...");
 
                             EFI_GRAPHICS_OUTPUT_PROTOCOL *gop = NULL;
                             EFI_STATUS st_gop = BS->LocateHandleBuffer(ByProtocol, (EFI_GUID *)&EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID,
@@ -128,6 +126,52 @@ EFI_STATUS EFIAPI EfiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
                             {
                                 BS->HandleProtocol(handles[0], (EFI_GUID *)&EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, (VOID **)&gop);
                             }
+
+                            UINT32 kr_cnt = 0;
+                            /* 一旦ヘッダだけ見て数える */
+                            {
+                                const UINT8 *base8 = (const UINT8 *)kbuf; // ※ kbuf に Read した ELF イメージ
+                                const Elf64_Ehdr *eh = (const Elf64_Ehdr *)base8;
+                                for (Elf64_Half i = 0; i < eh->e_phnum; ++i)
+                                {
+                                    const Elf64_Phdr *ph = (const Elf64_Phdr *)(base8 + eh->e_phoff + (UINTN)i * eh->e_phentsize);
+                                    if (ph->p_type == PT_LOAD && ph->p_memsz)
+                                        kr_cnt++;
+                                }
+                            }
+
+                            /* 必要分の配列を確保（Exit 後も参照するので EfiLoaderData で OK） */
+                            PhysRange *kr = NULL;
+                            if (kr_cnt)
+                            {
+                                kr = (PhysRange *)AllocPool(sizeof(PhysRange) * kr_cnt);
+                                if (!kr)
+                                {
+                                    PutLn(L"Alloc kernel ranges failed.");
+                                    goto done;
+                                }
+                            }
+
+                            /* 配列に詰める（p_vaddr 恒等配置 = 物理と同一前提）*/
+                            UINT32 idx = 0;
+                            {
+                                const UINT8 *base8 = (const UINT8 *)kbuf;
+                                const Elf64_Ehdr *eh = (const Elf64_Ehdr *)base8;
+                                for (Elf64_Half i = 0; i < eh->e_phnum; ++i)
+                                {
+                                    const Elf64_Phdr *ph = (const Elf64_Phdr *)(base8 + eh->e_phoff + (UINTN)i * eh->e_phentsize);
+                                    if (ph->p_type != PT_LOAD || ph->p_memsz == 0)
+                                        continue;
+                                    UINT64 vbeg = ph->p_vaddr & ~0xFFFULL;
+                                    UINT64 vend = ((ph->p_vaddr + ph->p_memsz + 0xFFF) & ~0xFFFULL);
+                                    kr[idx].base = vbeg;
+                                    kr[idx].pages = (vend - vbeg) >> 12;
+                                    idx++;
+                                }
+                            }
+
+                            FreePool(kbuf);
+                            PutLn(L"ELF loaded. Preparing to exit boot services...");
 
                             /* メモリマップ取得 → ExitBootServices（失敗時は再トライ） */
                             /* --- メモリマップ取得（ExitBootServicesに必要&カーネルへ渡す） --- */
@@ -145,6 +189,8 @@ EFI_STATUS EFIAPI EfiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
                                 PutLn(L"Alloc memmap failed.");
                                 goto done;
                             }
+
+                            PutLn(L"BI: OK");
 
                             /* ループ: 取り直し→ExitBootServices */
                             for (;;)
@@ -172,6 +218,8 @@ EFI_STATUS EFIAPI EfiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
                                 bi.mmap_size = (UINT64)mapSize;
                                 bi.mmap_desc_size = (UINT32)descSize;
                                 bi.mmap_desc_version = (UINT32)descVer;
+                                bi.kernel_ranges_ptr = (UINT64)(UINTN)kr;
+                                bi.kernel_ranges_cnt = kr_cnt;
 
                                 /* ExitBootServices を試行 */
                                 EFI_STATUS ex = BS->ExitBootServices(ImageHandle, mapKey);
