@@ -2,6 +2,23 @@
 #include "bootinfo.h"
 #include "font8x8.h"
 
+struct EFIMemoryDescriptor
+{
+    uint32_t Type;
+    uint32_t Pad;
+    uint64_t PhysicalStart;
+    uint64_t VirtualStart;
+    uint64_t NumberOfPages;
+    uint64_t Attribute;
+};
+
+enum
+{
+    EfiBootServicesCode = 3,
+    EfiBootServicesData = 4,
+    EfiConventionalMemory = 7 /* boot_services.h の列挙と合わせる */
+};
+
 extern "C" __attribute__((sysv_abi)) void kernel_main(BootInfo *bi)
 {
     // 簡易ガード
@@ -108,10 +125,59 @@ extern "C" __attribute__((sysv_abi)) void kernel_main(BootInfo *bi)
         for (int j = i - 1; j >= 0; --j)
             put_char(x + (i - 1 - j) * 9, y, buf[j], fg);
     };
+    auto print_u64 = [&](uint32_t x, uint32_t y, uint64_t v)
+    {
+        char buf[24];
+        int i = 0;
+        if (v == 0)
+        {
+            buf[i++] = '0';
+        }
+        while (v)
+        {
+            buf[i++] = char('0' + (v % 10));
+            v /= 10;
+        }
+        for (int j = i - 1; j >= 0; --j)
+            put_char(x + (i - 1 - j) * 9, y, buf[j], fg);
+    };
+
     print_u32(8 + 9 * 8, 52, w);
     uint32_t x_after_w = 8 + 9 * 8 + 9 * digits(w);
     put_char(x_after_w, 52, 'x', fg);
     print_u32(x_after_w + 9, 52, h);
+
+    put_text(8, 72, "MEMORY MAP:", fg);
+
+    if (bi->mmap_ptr && bi->mmap_size && bi->mmap_desc_size)
+    {
+        auto *base = (const uint8_t *)(uintptr_t)bi->mmap_ptr;
+        uint64_t total_pages_conv = 0;
+        uint32_t entries = (uint32_t)(bi->mmap_size / bi->mmap_desc_size);
+
+        for (uint32_t i = 0; i < entries; ++i)
+        {
+            auto *d = (const EFIMemoryDescriptor *)(base + (uint64_t)i * bi->mmap_desc_size);
+            if (d->Type == EfiConventionalMemory ||
+                d->Type == EfiBootServicesCode ||
+                d->Type == EfiBootServicesData)
+            {
+                total_pages_conv += d->NumberOfPages;
+            }
+        }
+
+        put_text(8, 84, "entries :", fg);
+        print_u32(8 + 9 * 10, 84, entries);
+
+        put_text(8, 96, "RAM(MiB):", fg);
+        /* 1 page = 4096 bytes */
+        uint64_t mib = (total_pages_conv * 4096ULL) >> 20;
+        print_u64(8 + 9 * 10, 96, mib);
+    }
+    else
+    {
+        put_text(8, 84, "no memory map", fg);
+    }
 
     for (;;)
         __asm__ __volatile__("hlt");

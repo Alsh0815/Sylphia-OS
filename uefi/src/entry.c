@@ -130,46 +130,65 @@ EFI_STATUS EFIAPI EfiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
                             }
 
                             /* メモリマップ取得 → ExitBootServices（失敗時は再トライ） */
+                            /* --- メモリマップ取得（ExitBootServicesに必要&カーネルへ渡す） --- */
                             UINTN mapSize = 0, mapKey = 0, descSize = 0;
                             UINT32 descVer = 0;
+
+                            /* サイズ取得（0呼び） */
                             BS->GetMemoryMap(&mapSize, NULL, &mapKey, &descSize, &descVer);
                             mapSize += 2 * descSize;
-                            VOID *map = AllocPool(mapSize);
-                            if (!map)
+
+                            /* バッファ確保（OS側で読み続けるので Exit 後も残る。EfiLoaderDataでOK） */
+                            VOID *memmap = AllocPool(mapSize);
+                            if (!memmap)
                             {
                                 PutLn(L"Alloc memmap failed.");
                                 goto done;
                             }
-                            if (EFI_ERROR(BS->GetMemoryMap(&mapSize, map, &mapKey, &descSize, &descVer)))
+
+                            /* ループ: 取り直し→ExitBootServices */
+                            for (;;)
                             {
-                                PutLn(L"GetMemoryMap failed.");
-                                goto done;
-                            }
-                            if (EFI_ERROR(BS->ExitBootServices(ImageHandle, mapKey)))
-                            {
-                                BS->GetMemoryMap(&mapSize, map, &mapKey, &descSize, &descVer);
-                                if (EFI_ERROR(BS->ExitBootServices(ImageHandle, mapKey)))
+                                EFI_STATUS mmst = BS->GetMemoryMap(&mapSize, memmap, &mapKey, &descSize, &descVer);
+                                if (EFI_ERROR(mmst))
                                 {
-                                    PutLn(L"ExitBootServices failed.");
+                                    PutLn(L"GetMemoryMap failed.");
                                     goto done;
                                 }
-                            }
 
-                            /* ここからUEFIサービスは不可。GOPに切り替えるまで表示も不可。 */
-                            BootInfo bi = {0};
-                            bi.magic = 0x534C504855454649ULL; /* "SLPHUEFI" など */
-                            if (gop && gop->Mode && gop->Mode->Info)
-                            {
-                                bi.fb_base = (UINT64)gop->Mode->FrameBufferBase;
-                                bi.fb_size = (UINT32)gop->Mode->FrameBufferSize;
-                                bi.width = gop->Mode->Info->HorizontalResolution;
-                                bi.height = gop->Mode->Info->VerticalResolution;
-                                bi.pitch = gop->Mode->Info->PixelsPerScanLine;
-                                bi.pixel_format = (UINT32)gop->Mode->Info->PixelFormat;
-                            }
+                                /* BootInfo をこの時点で埋める（memmap内容は Exit 後も参照する） */
+                                BootInfo bi = {0};
+                                bi.magic = 0x534C504855454649ULL;
+                                if (gop && gop->Mode && gop->Mode->Info)
+                                {
+                                    bi.fb_base = (UINT64)gop->Mode->FrameBufferBase;
+                                    bi.fb_size = (UINT32)gop->Mode->FrameBufferSize;
+                                    bi.width = gop->Mode->Info->HorizontalResolution;
+                                    bi.height = gop->Mode->Info->VerticalResolution;
+                                    bi.pitch = gop->Mode->Info->PixelsPerScanLine;
+                                    bi.pixel_format = (UINT32)gop->Mode->Info->PixelFormat;
+                                }
+                                bi.mmap_ptr = (UINT64)(UINTN)memmap;
+                                bi.mmap_size = (UINT64)mapSize;
+                                bi.mmap_desc_size = (UINT32)descSize;
+                                bi.mmap_desc_version = (UINT32)descVer;
 
-                            KernelEntry kentry = (KernelEntry)(UINTN)entry;
-                            kentry(&bi);
+                                /* ExitBootServices を試行 */
+                                EFI_STATUS ex = BS->ExitBootServices(ImageHandle, mapKey);
+                                if (EFI_ERROR(ex))
+                                {
+                                    /* 失敗: mapKeyが変わった可能性。バッファサイズを見て再トライ */
+                                    BS->GetMemoryMap(&mapSize, memmap, &mapKey, &descSize, &descVer);
+                                    continue;
+                                }
+
+                                /* ---- ここからUEFIサービス不可 ---- */
+                                typedef void(__attribute__((sysv_abi)) * KernelEntry)(BootInfo *);
+                                KernelEntry kentry = (KernelEntry)(UINTN)entry;
+                                kentry(&bi);
+
+                                break; /* 返ってきたら終了へ */
+                            }
                         }
                         else
                         {
