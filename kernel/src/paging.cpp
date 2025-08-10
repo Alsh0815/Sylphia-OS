@@ -52,6 +52,14 @@ namespace
         return false;
     }
 
+    // マッピング終端（デバッグ表示用）
+    uint64_t g_mapped_limit = 0;
+
+} // anon
+
+namespace paging
+{
+
     void *alloc_page4k()
     {
         if (!bump_ptr)
@@ -66,14 +74,6 @@ namespace
             q[i] = 0;
         return p;
     }
-
-    // マッピング終端（デバッグ表示用）
-    uint64_t g_mapped_limit = 0;
-
-} // anon
-
-namespace paging
-{
 
     uint64_t mapped_limit() { return g_mapped_limit; }
 
