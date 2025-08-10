@@ -9,6 +9,8 @@
 # Built Visual Studio Code Extensions
 *.vsix
 
+uefi/include/efi.h
+uefi/include/efiprot.h
 vfat/EFI/BOOT/BOOTX64.EFI
 vfat/test.txt
 *.code-workspace
