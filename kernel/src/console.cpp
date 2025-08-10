@@ -1,5 +1,23 @@
 #include "console.hpp"
 
+void Console::clear_fullscreen(Color bg, bool reset_clip)
+{
+    // フレームバッファ全域をクリア
+    fb_.fillRect(0, 0, fb_.width(), fb_.height(), bg);
+
+    // クリップを全画面に戻してから、既定のログエリアに再設定
+    if (reset_clip)
+    {
+        fb_.resetClip();
+        clip_ = {8, 32, fb_.width() - 16, fb_.height() - 40}; // 既存のレイアウトに合わせる
+        fb_.setClip(clip_);
+    }
+
+    // コンソールのカーソル位置を原点へ
+    x_ = clip_.x;
+    y_ = clip_.y;
+}
+
 void Console::vprintf(const char *fmt, va_list args)
 {
     for (const char *p = fmt; *p; ++p)
