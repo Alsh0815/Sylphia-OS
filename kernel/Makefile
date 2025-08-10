@@ -9,7 +9,7 @@ CXXFLAGS := -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector \
             -std=c++20 -Iinclude
 LDFLAGS  := -nostdlib -T linker.ld
 
-SRCS := src/kernel.cpp
+SRCS := src/kernel.cpp src/console.cpp
 OBJS := $(SRCS:.cpp=.o)
 
 all: $(OUTBIN)
