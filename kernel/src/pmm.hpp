@@ -14,4 +14,6 @@ namespace pmm
     uint64_t free_bytes();  // 空き総量
     uint64_t used_bytes();  // 使用総量 (=total-free)
 
+    void reserve_range(uint64_t phys_base, uint64_t pages);
+
 }
