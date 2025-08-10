@@ -141,3 +141,19 @@ void pmm::free_pages(void *phys, uint64_t npages)
 uint64_t pmm::total_bytes() { return total_pages_cnt * PAGE; }
 uint64_t pmm::free_bytes() { return free_pages_cnt * PAGE; }
 uint64_t pmm::used_bytes() { return total_bytes() - free_bytes(); }
+
+void pmm::reserve_range(uint64_t phys_base, uint64_t pages)
+{
+    if (!bitmap || pages == 0)
+        return;
+    uint64_t idx = phys_base / PAGE;
+    for (uint64_t j = 0; j < pages; ++j)
+    {
+        if (idx + j < bitcap && !bget(idx + j))
+        {
+            bset(idx + j);
+            if (free_pages_cnt)
+                free_pages_cnt--;
+        }
+    }
+}

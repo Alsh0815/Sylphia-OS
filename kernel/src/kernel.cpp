@@ -45,7 +45,6 @@ extern "C" __attribute__((sysv_abi)) void kernel_main(BootInfo *bi)
     paint.drawTextWrap(tx, ty, "SYLPHIA OS (text-color-clip)", right);
 
     con.setColors({255, 255, 255}, {0, 0, 0});
-    con.printf("Version: v.%d.%d.%d.%d\n", 0, 1, 0, 4);
     con.println("Framebuffer Info:");
     con.print_kv("W", bi->width);
     con.print_kv("H", bi->height);
@@ -100,13 +99,23 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
     paint.drawTextWrap(tx, ty, "SYLPHIA OS (text-color-clip)", right);
 
     con.setColors({255, 255, 255}, {0, 0, 0});
-    con.printf("Version: v.%d.%d.%d.%d\n", 0, 1, 1, 0);
+    con.printf("Version: v.%d.%d.%d.%d\n", 0, 1, 1, 1);
 
     con.println("Switched to low stack.");
     con.printf("Paging: mapped up to %u MiB\n",
                (unsigned)(paging::mapped_limit() >> 20));
 
     uint64_t managed = pmm::init(*bi);
+
+    if (bi->kernel_ranges_ptr && bi->kernel_ranges_cnt)
+    {
+        auto *kr = (const PhysRange *)(uintptr_t)bi->kernel_ranges_ptr;
+        for (uint32_t i = 0; i < bi->kernel_ranges_cnt; ++i)
+        {
+            pmm::reserve_range(kr[i].base, kr[i].pages);
+        }
+    }
+
     con.printf("PMM: managing up to %u MiB\n", (unsigned)(managed >> 20));
     con.printf("PMM: total=%u MiB free=%u MiB used=%u MiB\n",
                (unsigned)(pmm::total_bytes() >> 20),
