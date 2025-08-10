@@ -16,6 +16,7 @@ public:
         fb_.setClip(clip_);
     }
 
+    void clear_fullscreen(Color bg = {10, 12, 24}, bool reset_clip = true);
     void setColor(Color fg) { p_.setColor(fg); }
     void setColors(Color fg, Color bg) { p_.setColors(fg, bg); }
     void noBackground() { p_.disableBackground(); }
