@@ -5,6 +5,7 @@
 
 namespace
 {
+    static uint16_t g_cs_selector = 0;
 
     // ===== IDT エントリ/ポインタ =====
     struct __attribute__((packed)) IdtEntry
@@ -47,7 +48,7 @@ namespace
     {
         uint64_t addr = (uint64_t)handler;
         g_idt[vec].offset_low = (uint16_t)(addr & 0xFFFF);
-        g_idt[vec].selector = 0x08; // 既存の64bitコードセグメント（kernel）
+        g_idt[vec].selector = g_cs_selector; // ★ 現在のCSを使う
         g_idt[vec].ist = ist & 0x7;
         g_idt[vec].type_attr = 0x8E; // present | DPL=0 | type=14 (IntGate)
         g_idt[vec].offset_mid = (uint16_t)((addr >> 16) & 0xFFFF);
@@ -61,6 +62,8 @@ namespace
         asm volatile("mov %%cr2, %0" : "=r"(v));
         return v;
     }
+
+    static volatile bool nmi_in_progress = false; // ★ 再入防止
 
     // 画面に例外情報を出す（Consoleをその場で作り直す）
     void print_panic_header(const char *name)
@@ -79,6 +82,24 @@ namespace
         c.println("");
         c.print_bg(name, {0, 0, 0}, {255, 220, 40});
         c.println("");
+    }
+
+    __attribute__((interrupt)) static void isr_nmi(InterruptFrame *frame)
+    {
+        // 再入防止（NMIはマスク不可で再入し得る）
+        if (!nmi_in_progress)
+        {
+            nmi_in_progress = true;
+            print_panic_header("NMI (Non-Maskable Interrupt)");
+            Framebuffer fb(*g_bi);
+            Painter p(fb);
+            Console c(fb, p);
+            c.printf("RIP=0x%p  RFLAGS=0x%llx\n",
+                     (void *)frame->rip, (unsigned long long)frame->rflags);
+            c.println("System entered NMI. Halting for diagnostics.");
+        }
+        for (;;)
+            asm volatile("hlt");
     }
 
     // ===== ハンドラ（interrupt attribute） =====
@@ -152,6 +173,8 @@ namespace idt
     {
         g_bi = bi;
 
+        asm volatile ("mov %%cs, %0" : "=r"(g_cs_selector));
+
         // IDT を0クリア
         for (int i = 0; i < 256; i++)
         {
@@ -159,6 +182,7 @@ namespace idt
         }
 
         // 例外ハンドラを設定
+        set_gate(VEC_NMI, (void (*)())isr_nmi);
         set_gate(VEC_DE, (void (*)())isr_de);
         set_gate(VEC_BP, (void (*)())isr_bp);
         set_gate(VEC_UD, (void (*)())isr_ud);

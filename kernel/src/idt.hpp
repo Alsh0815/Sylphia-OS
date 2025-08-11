@@ -9,6 +9,7 @@ namespace idt
     enum : uint8_t
     {
         VEC_DE = 0,  // #DE Divide-by-zero
+        VEC_NMI = 2, // #NMI
         VEC_BP = 3,  // #BP Breakpoint
         VEC_UD = 6,  // #UD Invalid opcode
         VEC_GP = 13, // #GP General protection fault
