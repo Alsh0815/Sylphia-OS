@@ -2,6 +2,7 @@
 #include "../include/bootinfo.h"
 #include "../include/framebuffer.hpp"
 #include "../include/font8x8.hpp"
+#include "idt.hpp"
 #include "painter.hpp"
 #include "paging.hpp"
 #include "pmm.hpp"
@@ -99,9 +100,13 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
     paint.drawTextWrap(tx, ty, "SYLPHIA OS (text-color-clip)", right);
 
     con.setColors({255, 255, 255}, {0, 0, 0});
-    con.printf("Version: v.%d.%d.%d.%d\n", 0, 1, 1, 1);
+    con.printf("Version: v.%d.%d.%d.%d\n", 0, 1, 2, 0);
 
     con.println("Switched to low stack.");
+
+    idt::init(bi);
+    con.println("IDT loaded (exceptions installed).");
+
     con.printf("Paging: mapped up to %u MiB\n",
                (unsigned)(paging::mapped_limit() >> 20));
 
