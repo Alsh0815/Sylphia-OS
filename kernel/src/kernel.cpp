@@ -2,6 +2,7 @@
 #include "../include/bootinfo.h"
 #include "../include/framebuffer.hpp"
 #include "../include/font8x8.hpp"
+#include "gdt.hpp"
 #include "idt.hpp"
 #include "painter.hpp"
 #include "paging.hpp"
@@ -100,12 +101,27 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
     paint.drawTextWrap(tx, ty, "SYLPHIA OS (text-color-clip)", right);
 
     con.setColors({255, 255, 255}, {0, 0, 0});
-    con.printf("Version: v.%d.%d.%d.%d\n", 0, 1, 2, 2);
+    con.printf("Version: v.%d.%d.%d.%d\n", 0, 1, 2, 4);
 
     con.println("Switched to low stack.");
 
+    void *ist_pages = pmm::alloc_pages(8); // 8 * 4KiB = 32KiB
+    uint64_t ist_top = (uint64_t)ist_pages + 8 * 4096;
+
+    // 2) GDT/TSS を初期化（IST1に上をセット）
+    if (!gdt::init(ist_top))
+    {
+        con.println("GDT/TSS init failed.");
+    }
+    else
+    {
+        con.println("GDT/TSS loaded (IST1 ready).");
+    }
+
     idt::init(bi);
     con.println("IDT loaded (exceptions installed).");
+    idt::install_double_fault(1);
+    con.println("Double Fault handler installed (IST=1).");
 
     con.printf("Paging: mapped up to %u MiB\n",
                (unsigned)(paging::mapped_limit() >> 20));

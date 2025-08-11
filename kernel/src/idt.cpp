@@ -115,6 +115,20 @@ namespace
             asm volatile("hlt");
     }
 
+    __attribute__((interrupt)) static void isr_df(InterruptFrame *frame, uint64_t /*error*/)
+    {
+        // error code は常に 0
+        print_panic_header("#DF Double Fault (IST1)");
+        Framebuffer fb(*g_bi);
+        Painter p(fb);
+        Console c(fb, p);
+        c.printf("RIP=0x%p  RSP=0x%p  RFLAGS=0x%llx\n",
+                 (void *)frame->rip, (void *)frame->rsp, (unsigned long long)frame->rflags);
+        c.println("Entered via IST1. System halted.");
+        for (;;)
+            asm volatile("hlt");
+    }
+
     __attribute__((interrupt)) static void isr_bp(InterruptFrame *frame)
     {
         print_panic_header("#BP Breakpoint");
@@ -173,7 +187,7 @@ namespace idt
     {
         g_bi = bi;
 
-        asm volatile ("mov %%cs, %0" : "=r"(g_cs_selector));
+        asm volatile("mov %%cs, %0" : "=r"(g_cs_selector));
 
         // IDT を0クリア
         for (int i = 0; i < 256; i++)
@@ -201,6 +215,12 @@ namespace idt
         {
             asm volatile("int3");
         } // 今は簡易にその場でint3を打つ用途に
+    }
+
+    void install_double_fault(uint8_t ist_index)
+    {
+        asm volatile("mov %%cs, %0" : "=r"(g_cs_selector));
+        set_gate(VEC_DF, (void (*)())isr_df, ist_index); // ← IST=1 を渡す
     }
 
 } // namespace idt
