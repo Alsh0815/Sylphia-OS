@@ -13,6 +13,8 @@ uefi/include/efi.h
 uefi/include/efiprot.h
 vfat/EFI/BOOT/BOOTX64.EFI
 vfat/test.txt
+*.bin
 *.code-workspace
+*.elf
 *.o
 *.obj
