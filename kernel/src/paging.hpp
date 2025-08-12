@@ -17,6 +17,8 @@ namespace paging
     void *alloc_page4k();
     bool map_mmio_at(uint64_t va, uint64_t phys, uint64_t size);
     bool map_mmio_range(uint64_t phys, uint64_t size);
+    uint64_t virt_to_phys(uint64_t va);
+
     bool dbg_probe_mmio_mapped(uint64_t phys_addr);
 
 } // namespace paging

@@ -127,7 +127,7 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
     paint.drawTextWrap(tx, ty, "SYLPHIA OS (text-color-clip)", right);
 
     con.setColors({255, 255, 255}, {0, 0, 0});
-    con.printf("Version: v.%d.%d.%d.%d\n", 0, 1, 3, 3);
+    con.printf("Version: v.%d.%d.%d.%d\n", 0, 1, 3, 7);
 
     con.println("Switched to low stack.");
 
@@ -197,13 +197,16 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
         {
             con.println("map_mmio_at failed");
         }
-        else
+
+        volatile NvmeRegs *r = (volatile NvmeRegs *)(uintptr_t)TEST_VA;
+        uint64_t cap = r->CAP;
+        uint32_t vs = r->VS;
+        con.printf("NVMe CAP@lowVA=%016llx VS=%08x\n",
+                   (unsigned long long)cap, vs);
+
+        if (!nvme::init((void *)(uintptr_t)TEST_VA, con))
         {
-            volatile NvmeRegs *r = (volatile NvmeRegs *)(uintptr_t)TEST_VA;
-            uint64_t cap = r->CAP;
-            uint32_t vs = r->VS;
-            con.printf("NVMe CAP@lowVA=%016llx VS=%08x\n",
-                       (unsigned long long)cap, vs);
+            con.println("NVMe init failed.");
         }
     }
     else

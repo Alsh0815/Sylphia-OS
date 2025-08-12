@@ -387,6 +387,58 @@ namespace paging
         return true;
     }
 
+    uint64_t paging::virt_to_phys(uint64_t va)
+    {
+        // ルートPML4（物理→恒等マップの仮定でそのままKVAへ）
+        uint64_t *pml4 = phys_to_virt(paging_get_cr3_phys());
+
+        // 各段のインデックス
+        const uint64_t l4i = (va >> PML4_SHIFT) & IDX_MASK;
+        const uint64_t l3i = (va >> PDPT_SHIFT) & IDX_MASK;
+        const uint64_t l2i = (va >> PD_SHIFT) & IDX_MASK;
+        const uint64_t l1i = (va >> 12) & IDX_MASK;
+
+        // L4
+        uint64_t e4 = pml4[l4i];
+        if (!(e4 & P_PRESENT))
+            return -1;
+        uint64_t *pdpt = phys_to_virt(e4 & ~0xFFFULL);
+
+        // L3
+        uint64_t e3 = pdpt[l3i];
+        if (!(e3 & P_PRESENT))
+            return false;
+        // 1GiB ページは使っていない想定なので PS=1 は未対応にしておく（必要なら足せる）
+        if (e3 & P_PS)
+        {
+            // 1GiB 大ページ（未使用想定）
+            uint64_t phys_base = e3 & ~((1ULL << 30) - 1);
+            return phys_base | (va & ((1ULL << 30) - 1));
+        }
+        uint64_t *pd = phys_to_virt(e3 & ~0xFFFULL);
+
+        // L2
+        uint64_t e2 = pd[l2i];
+        if (!(e2 & P_PRESENT))
+            return false;
+
+        if (e2 & P_PS)
+        {
+            // 2MiB 大ページ
+            uint64_t phys_base = e2 & ~0x1FFFFFULL; // 下位21bitはオフセット
+            return phys_base | (va & 0x1FFFFFULL);
+        }
+
+        // L1（4KiB ページ）
+        uint64_t *pt = phys_to_virt(e2 & ~0xFFFULL);
+        uint64_t e1 = pt[l1i];
+        if (!(e1 & P_PRESENT))
+            return false;
+
+        uint64_t phys_base = e1 & ~0xFFFULL;
+        return phys_base | (va & 0xFFFULL);
+    }
+
     bool dbg_probe_mmio_mapped(uint64_t phys_addr)
     {
         return probe_va(phys_addr);
