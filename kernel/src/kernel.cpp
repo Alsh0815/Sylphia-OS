@@ -3,6 +3,7 @@
 #include "../include/framebuffer.hpp"
 #include "../include/font8x8.hpp"
 #include "gdt.hpp"
+#include "heap.hpp"
 #include "idt.hpp"
 #include "painter.hpp"
 #include "paging.hpp"
@@ -101,7 +102,7 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
     paint.drawTextWrap(tx, ty, "SYLPHIA OS (text-color-clip)", right);
 
     con.setColors({255, 255, 255}, {0, 0, 0});
-    con.printf("Version: v.%d.%d.%d.%d\n", 0, 1, 2, 4);
+    con.printf("Version: v.%d.%d.%d.%d\n", 0, 1, 2, 6);
 
     con.println("Switched to low stack.");
 
@@ -143,13 +144,21 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
                (unsigned)(pmm::free_bytes() >> 20),
                (unsigned)(pmm::used_bytes() >> 20));
 
-    // 試しに2ページ確保→解放
-    void *p = pmm::alloc_pages(2);
-    con.printf("PMM alloc(2) -> %p\n", p);
-    if (p)
+    if (heap::init(256 * 1024))
     {
-        pmm::free_pages(p, 2);
-        con.println("PMM free(2)");
+        con.printf("Heap2: cap=%u KiB remain=%u KiB\n",
+                   (unsigned)(heap::capacity() >> 10), (unsigned)(heap::remain() >> 10));
+        void *a = heap::kmalloc(2000, 16, true);
+        void *b = heap::kmalloc(5000, 16, false);
+        heap::kfree(a);
+        void *c = heap::kmalloc(1500, 16, false); // a の穴を再利用できるはず
+        b = heap::krealloc(b, 9000);              // 後方拡張 or 移動
+        con.printf("used=%u KiB remain=%u KiB\n",
+                   (unsigned)(heap::used() >> 10), (unsigned)(heap::remain() >> 10));
+    }
+    else
+    {
+        con.println("Heap init failed.");
     }
 
     con.println("Fin.");
