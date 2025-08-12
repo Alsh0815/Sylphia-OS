@@ -6,7 +6,10 @@ namespace heap
 {
 
     // 初期化: bytes 分の連続領域を PMM から確保してヒープにする（固定長・拡張なし）
-    bool init(uint64_t bytes /*例: 2*1024*1024*/);
+    bool init(uint64_t initial_bytes = 256ull * 1024);
+
+    // 拡張チャンクの既定サイズを変更（任意）
+    void set_chunk_size(uint64_t bytes);
 
     // 最小API
     void *kmalloc(size_t size, size_t align = 16, bool zero = false);
