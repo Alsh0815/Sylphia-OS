@@ -1,4 +1,5 @@
 #include "paging.hpp"
+#include "pmm.hpp"
 
 struct EFIMemoryDescriptor
 {
@@ -20,6 +21,24 @@ namespace
     constexpr uint64_t PTE_US = 1ull << 2; // User/Supervisor (0=supervisor)
     constexpr uint64_t PTE_PS = 1ull << 7; // Page Size (on PD: 2MiB)
     constexpr uint64_t PTE_G = 1ull << 8;  // Global (任意)
+
+    constexpr uint64_t PML4_SHIFT = 39;
+    constexpr uint64_t PDPT_SHIFT = 30;
+    constexpr uint64_t PD_SHIFT = 21;
+
+    constexpr uint64_t IDX_MASK = 0x1FF; // 9bit
+
+    // ページテーブルエントリのビット
+    constexpr uint64_t P_PRESENT = 1ull << 0;
+    constexpr uint64_t P_RW = 1ull << 1;
+    constexpr uint64_t P_US = 1ull << 2;
+    constexpr uint64_t P_PWT = 1ull << 3; // write-through
+    constexpr uint64_t P_PCD = 1ull << 4; // cache-disable
+    constexpr uint64_t P_ACCESSED = 1ull << 5;
+    constexpr uint64_t P_DIRTY = 1ull << 6;
+    constexpr uint64_t P_PS = 1ull << 7; // 1=2MiB/1GiB page
+    constexpr uint64_t P_GLOBAL = 1ull << 8;
+    constexpr uint64_t P_NX = 1ull << 63;
 
     // 超簡易バンプアロケータ（4KiB単位）: memmapの最初のConventionalから切り出す
     static uint8_t *bump_base = nullptr;
@@ -55,7 +74,50 @@ namespace
     // マッピング終端（デバッグ表示用）
     uint64_t g_mapped_limit = 0;
 
+    extern "C" uint64_t paging_get_cr3_phys(); // 例えば paging::get_cr3() が返す物理
+
+    inline uint64_t *phys_to_virt(uint64_t phys)
+    {
+        // 恒等マップ前提なら物理==仮想。HHDM等がある場合はそこに合わせる。
+        return reinterpret_cast<uint64_t *>(phys);
+    }
+
+    // テーブルを「存在しなければ作る」。
+    // 戻り値は子テーブル（次段）の仮想アドレス。
+    uint64_t *touch_table(uint64_t *parent, uint64_t idx)
+    {
+        uint64_t e = parent[idx];
+        if (e & P_PRESENT)
+        {
+            uint64_t child_phys = e & ~0xFFFULL;
+            return phys_to_virt(child_phys);
+        }
+        // 4KiBページ1枚確保してゼロクリア
+        void *pg = pmm::alloc_pages(1);
+        if (!pg)
+            return nullptr;
+        // ゼロクリア
+        for (size_t i = 0; i < PAGE_4K; i++)
+            reinterpret_cast<volatile uint8_t *>(pg)[i] = 0;
+
+        uint64_t child_phys = reinterpret_cast<uint64_t>(pg);
+        parent[idx] = (child_phys) | P_PRESENT | P_RW | P_PCD | P_PWT; // テーブル自体もUC
+        return reinterpret_cast<uint64_t *>(pg);
+    }
+
+    inline void invlpg(uint64_t va)
+    {
+        asm volatile("invlpg (%0)" ::"r"(va) : "memory");
+    }
+
 } // anon
+
+extern "C" uint64_t paging_get_cr3_phys()
+{
+    uint64_t phys;
+    asm volatile("mov %%cr3, %0" : "=r"(phys));
+    return phys & ~0xFFFULL; // 下位12bitはフラグなのでクリア
+}
 
 namespace paging
 {
@@ -199,6 +261,51 @@ namespace paging
         uint64_t new_cr3 = (uint64_t)(uintptr_t)pml4;
         asm volatile("mov %0, %%cr3" ::"r"(new_cr3) : "memory");
         return new_cr3;
+    }
+
+    bool map_mmio_range(uint64_t phys, uint64_t size)
+    {
+        if (size == 0)
+            return true;
+
+        // 2MiB 単位に丸め
+        uint64_t start = phys & ~(PAGE_2M - 1);
+        uint64_t end = (phys + size + PAGE_2M - 1) & ~(PAGE_2M - 1);
+
+        // ルートPML4
+        uint64_t pml4_phys = paging_get_cr3_phys();
+        uint64_t *pml4 = phys_to_virt(pml4_phys);
+
+        for (uint64_t addr = start; addr < end; addr += PAGE_2M)
+        {
+            // 各段のインデックス
+            uint64_t pml4i = (addr >> PML4_SHIFT) & IDX_MASK;
+            uint64_t pdpti = (addr >> PDPT_SHIFT) & IDX_MASK;
+            uint64_t pdi = (addr >> PD_SHIFT) & IDX_MASK;
+
+            // 下位テーブルを用意
+            uint64_t *pdpt = touch_table(pml4, pml4i);
+            if (!pdpt)
+                return false;
+            uint64_t *pd = touch_table(pdpt, pdpti);
+            if (!pd)
+                return false;
+
+            // 既に貼っていればスキップ（再設定したいなら上書きでも可）
+            uint64_t e = pd[pdi];
+            if ((e & P_PRESENT) && (e & P_PS))
+            {
+                continue;
+            }
+
+            // 2MiBページで恒等マップ。MMIOなので UC (PWT|PCD)、RW、NX を推奨
+            uint64_t flags = P_PRESENT | P_RW | P_PWT | P_PCD | P_PS | P_NX;
+            pd[pdi] = (addr & ~0x1FFFFFULL) | flags;
+
+            // 同一アドレスに恒等マップなので VA=addr として TLB を捨てる
+            invlpg(addr);
+        }
+        return true;
     }
 
 } // namespace paging

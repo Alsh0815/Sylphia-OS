@@ -15,5 +15,6 @@ namespace paging
     bool init_allocator(const BootInfo &bi);
     void *alloc_low_stack(size_t bytes);
     void *alloc_page4k();
+    bool map_mmio_range(uint64_t phys, uint64_t size);
 
 } // namespace paging

@@ -16,7 +16,8 @@ SRCS := src/kernel.cpp \
 		src/idt.cpp \
 		src/new_delete.cpp \
 		src/paging.cpp \
-		src/pmm.cpp
+		src/pmm.cpp \
+		src/driver/pci/pci.cpp
 OBJS := $(SRCS:.cpp=.o)
 
 all: $(OUTBIN)

@@ -2,6 +2,7 @@
 #include "../include/bootinfo.h"
 #include "../include/framebuffer.hpp"
 #include "../include/font8x8.hpp"
+#include "driver/pci/pci.hpp"
 #include "gdt.hpp"
 #include "heap.hpp"
 #include "idt.hpp"
@@ -102,7 +103,7 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
     paint.drawTextWrap(tx, ty, "SYLPHIA OS (text-color-clip)", right);
 
     con.setColors({255, 255, 255}, {0, 0, 0});
-    con.printf("Version: v.%d.%d.%d.%d\n", 0, 1, 2, 6);
+    con.printf("Version: v.%d.%d.%d.%d\n", 0, 1, 3, 0);
 
     con.println("Switched to low stack.");
 
@@ -159,6 +160,18 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
     else
     {
         con.println("Heap init failed.");
+    }
+
+    pci::Device nvme{};
+    if (pci::scan_nvme(con, nvme))
+    {
+        if (nvme.bar[0] + 0x2000 > paging::mapped_limit()) { paging::map_mmio_range(nvme.bar[0], 0x2000); }
+
+        con.printf("NVMe BAR0 = 0x%p\n", (void *)nvme.bar[0]);
+    }
+    else
+    {
+        con.println("NVMe not present.");
     }
 
     con.println("Fin.");
