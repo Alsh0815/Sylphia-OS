@@ -16,5 +16,7 @@ namespace nvme
 
     bool read_lba(uint32_t nsid, uint64_t slba, uint16_t nlb,
                   void *buf, size_t buf_bytes, Console &con);
+    bool write_lba(uint32_t nsid, uint64_t slba, uint16_t nlb,
+                   const void *buf, size_t buf_bytes, Console &con);
 
 } // namespace nvme

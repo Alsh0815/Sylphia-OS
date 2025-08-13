@@ -17,6 +17,7 @@ SRCS := src/kernel.cpp \
 		src/new_delete.cpp \
 		src/paging.cpp \
 		src/pmm.cpp \
+		src/test.cpp \
 		src/driver/pci/pci.cpp \
 		src/driver/pci/nvme/nvme.cpp
 OBJS := $(SRCS:.cpp=.o)

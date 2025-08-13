@@ -947,6 +947,168 @@ namespace nvme
         return true;
     }
 
+    bool write_lba(uint32_t nsid, uint64_t slba, uint16_t nlb,
+                   const void *buf, size_t buf_bytes, Console &con)
+    {
+        if (!g.io_sq || !g.io_cq || g.io_qsize == 0)
+        {
+            con.println("NVMe: IO queues not ready");
+            return false;
+        }
+        if (nlb == 0)
+        {
+            con.println("NVMe: write_lba: nlb must be >= 1");
+            return false;
+        }
+
+        // ---- PRP 準備（PRP1 / PRP2 / PRP List）----
+        uintptr_t va = (uintptr_t)buf;
+        uint64_t prp1 = paging::virt_to_phys((uint64_t)va);
+        if ((prp1 & 0xFFFFFFFF00000000ull) != 0)
+        {
+            con.println("NVMe: PRP1 must be DMA32 (<4GiB) for now");
+            return false;
+        }
+
+        // NOTE: まずは 1LBA=512B 前提（将来 Identify の LBADS に合わせて置換）
+        const size_t bytes = (size_t)nlb * 512;
+        if (bytes > buf_bytes)
+        {
+            con.printf("NVMe: buffer too small (need %u)\n", (unsigned)bytes);
+            return false;
+        }
+
+        const uintptr_t va_p0 = va & ~0xFFFULL;        // 先頭が属するページ基底VA
+        const size_t off_p0 = (size_t)(va & 0xFFFULL); // ページ内オフセット
+        const size_t room_p0 = 4096 - off_p0;
+        size_t remain = (bytes > room_p0) ? (bytes - room_p0) : 0;
+
+        uint64_t prp2 = 0; // デフォルトは未使用
+        void *list_cur_va = nullptr;
+        uint64_t list_cur_pa = 0;
+        uint64_t *list_ptr = nullptr;
+        size_t list_idx = 0;
+        size_t pages_left = (remain + 4095) / 4096; // 後続に必要なページ数
+
+        auto alloc_new_prp_list_page = [&]() -> bool
+        {
+            if (!alloc_dma32_page(&list_cur_va, list_cur_pa))
+                return false;
+            bzero(list_cur_va, 4096);
+            list_ptr = (uint64_t *)list_cur_va;
+            list_idx = 0;
+            return true;
+        };
+        auto phys_of_page_va = [&](uintptr_t page_base_va) -> uint64_t
+        {
+            return paging::virt_to_phys((uint64_t)page_base_va);
+        };
+
+        if (pages_left == 0)
+        {
+            // 1ページ内 → PRP2=0
+        }
+        else if (pages_left == 1)
+        {
+            // 2ページに収まる → PRP2 = 2ページ目先頭PA
+            uintptr_t va_p1 = va_p0 + 0x1000;
+            uint64_t pa_p1 = phys_of_page_va(va_p1);
+            if ((pa_p1 & 0xFFFFFFFF00000000ull) != 0)
+            {
+                con.println("NVMe: PRP2 must be DMA32 (<4GiB) for now");
+                return false;
+            }
+            prp2 = pa_p1;
+        }
+        else
+        {
+            // 3ページ以上 → PRP List を構築（PRP2 に List 先頭PA）
+            if (!alloc_new_prp_list_page())
+            {
+                con.println("NVMe: alloc PRP List page failed");
+                return false;
+            }
+            prp2 = list_cur_pa;
+
+            uintptr_t next_page_va = va_p0 + 0x1000; // 2ページ目から
+            for (size_t i = 0; i < pages_left; ++i)
+            {
+                // 中間リストページは最後(511)を "次リストPA" のチェインに使う
+                if (list_idx == 511 && (i + 1) < pages_left)
+                {
+                    void *nxt_va = nullptr;
+                    uint64_t nxt_pa = 0;
+                    if (!alloc_dma32_page(&nxt_va, nxt_pa))
+                    {
+                        con.println("NVMe: alloc next PRP List page failed");
+                        return false;
+                    }
+                    bzero(nxt_va, 4096);
+                    list_ptr[511] = nxt_pa; // チェイン
+                    list_cur_va = nxt_va;
+                    list_cur_pa = nxt_pa;
+                    list_ptr = (uint64_t *)list_cur_va;
+                    list_idx = 0;
+                }
+
+                uint64_t pa_pi = phys_of_page_va(next_page_va);
+                if ((pa_pi & 0xFFF) != 0)
+                {
+                    con.println("NVMe: data page is not 4K aligned (unexpected)");
+                    return false;
+                }
+                if ((pa_pi & 0xFFFFFFFF00000000ull) != 0)
+                {
+                    con.println("NVMe: data page must be DMA32 (<4GiB) for now");
+                    return false;
+                }
+                list_ptr[list_idx++] = pa_pi;
+                next_page_va += 0x1000;
+            }
+        }
+
+        // ---- SQE 構築（WRITE）----
+        SqEntry cmd{};
+        bzero(&cmd, sizeof(cmd));
+        cmd.opc = 0x01; // NVM WRITE
+        cmd.fuse = 0;
+        cmd.cid = (uint16_t)(g.io_sq_tail & 0xFFFF);
+        cmd.nsid = nsid;
+        cmd.mptr = 0;
+        cmd.prp1 = prp1;
+        cmd.prp2 = prp2; // PRP2 or PRP List (必要に応じて)
+        cmd.cdw10 = (uint32_t)(slba & 0xFFFFFFFFu);
+        cmd.cdw11 = (uint32_t)(slba >> 32);
+        cmd.cdw12 = (uint32_t)((uint32_t)(nlb - 1) & 0xFFFFu); // NLB-1
+        cmd.cdw13 = 0;
+        cmd.cdw14 = 0;
+        cmd.cdw15 = 0;
+
+        // ---- 投入 ----
+        uint16_t slot = (uint16_t)(g.io_sq_tail % g.io_qsize);
+        g.io_sq[slot] = cmd;
+        mmio_wmb();
+        g.io_sq_tail = (uint16_t)((g.io_sq_tail + 1) % g.io_qsize);
+        *doorbell_sq(1) = g.io_sq_tail;
+
+        // ---- 完了待ち ----
+        uint16_t st = 0;
+        CqEntry ce{};
+        if (!io_wait_complete(con, st, ce))
+            return false;
+        if (st != 0)
+        {
+            dump_nvme_status(con, st);
+            con.printf("NVMe: WRITE failed (SQID=%u CID=%u)\n",
+                       (unsigned)ce.sq_id, (unsigned)ce.cid);
+            return false;
+        }
+
+        con.printf("NVMe: WRITE OK (nsid=%u slba=%llu nlb=%u)\n",
+                   (unsigned)nsid, (unsigned long long)slba, (unsigned)nlb);
+        return true;
+    }
+
     uint64_t cap() { return g.cap_cache; }
     uint32_t vs() { return g.vs_cache; }
 

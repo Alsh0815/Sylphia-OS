@@ -37,6 +37,8 @@ static inline void bzero(void *p, size_t n)
         q[i] = 0;
 }
 
+extern bool nvme_selftest_write(Console &con, uint32_t nsid, uint64_t base_slba);
+
 extern "C" __attribute__((sysv_abi)) void kernel_main(BootInfo *bi)
 {
     if (!bi || !bi->fb_base || bi->width == 0 || bi->height == 0)
@@ -134,7 +136,7 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
     paint.drawTextWrap(tx, ty, "SYLPHIA OS (text-color-clip)", right);
 
     con.setColors({255, 255, 255}, {0, 0, 0});
-    con.printf("Version: v.%d.%d.%d.%d\n", 0, 1, 3, 17);
+    con.printf("Version: v.%d.%d.%d.%d\n", 0, 1, 3, 18);
 
     con.println("Switched to low stack.");
 
@@ -218,9 +220,7 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
 
         nvme::create_io_queues(con, 64);
 
-        void *buf = pmm::alloc_pages(1);
-        bzero(buf, 4096);
-        nvme::read_lba(/*nsid*/ 1, /*slba*/ 0, /*nlb*/ 1, buf, 4096, con);
+        nvme_selftest_write(con, /*nsid*/ 1, /*base_slba*/ 4096);
     }
     else
     {
