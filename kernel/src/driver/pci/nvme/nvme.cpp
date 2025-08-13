@@ -164,6 +164,104 @@ namespace nvme
         return false;
     }
 
+    static bool identify_namespace(uint32_t nsid, Console &con)
+    {
+        // 4KiB バッファ確保（PRP1 で渡す）
+        void *buf = pmm::alloc_pages(1);
+        if (!buf)
+        {
+            con.println("NVMe: PRP buffer alloc failed (NS)");
+            return false;
+        }
+        bzero(buf, 4096);
+        uint64_t prp1_phys = paging::virt_to_phys((uintptr_t)buf);
+
+        // SQエントリ
+        SqEntry cmd{};
+        bzero(&cmd, sizeof(cmd));
+        cmd.opc = 0x06;  // Identify (Admin)
+        cmd.cid = 2;     // 任意のCID
+        cmd.nsid = nsid; // 取得対象 NS
+        cmd.prp1 = prp1_phys;
+        cmd.cdw10 = 0x00; // CNS=0x00 -> Identify Namespace  :contentReference[oaicite:1]{index=1}
+
+        // SQ投入
+        uint16_t slot = g.sq_tail;
+        g.asq[slot] = cmd;
+        asm volatile("sfence" ::: "memory");
+        g.sq_tail = (uint16_t)((g.sq_tail + 1) % g.qsize);
+        *doorbell_sq(0) = g.sq_tail; // SQ tail doorbell
+
+        // 完了待ち（簡易ポーリング）
+        for (uint32_t spin = 0; spin < 10000000; ++spin)
+        {
+            const volatile CqEntry *ce = &g.acq[g.cq_head];
+            uint16_t status = ce->status;
+            if ((status & 1) == g.cq_phase)
+            {
+                // CQ 進める
+                g.cq_head = (uint16_t)((g.cq_head + 1) % g.qsize);
+                if (g.cq_head == 0)
+                    g.cq_phase ^= 1;
+                *doorbell_cq(0) = g.cq_head; // CQ head doorbell
+
+                uint16_t sc = (uint16_t)(status >> 1);
+                if (sc != 0)
+                {
+                    con.printf("NVMe: Identify NS #%u failed, status=%04x\n",
+                               (unsigned)nsid, (unsigned)sc);
+                    return false;
+                }
+
+                // 解析
+                const NvmeIdentifyNamespace *ns =
+                    reinterpret_cast<const NvmeIdentifyNamespace *>(buf);
+
+                // 使用 LBAF index とセクタサイズ算出（FLBAS[3:0] = idx, LBADS = log2(bytes)）
+                uint8_t idx = (uint8_t)(ns->flbas & 0x0F);
+                uint8_t max = (uint8_t)(ns->nlbaf & 0x1F); // 仕様上「数-1」
+                if (idx > max)
+                {
+                    con.printf("NVMe: FLBAS index %u > NLBAF %u, fallback to 0\n",
+                               (unsigned)idx, (unsigned)max);
+                    idx = 0;
+                }
+                uint32_t sector_size = 1u << ns->lbaf[idx].lbads; // bytes
+                if (sector_size == 0)
+                    sector_size = 512;
+
+                // 容量換算（LBA数 × セクタサイズ）
+                auto mul64_clamp = [](uint64_t a, uint64_t b) -> __uint128_t
+                {
+                    return ((__uint128_t)a) * ((__uint128_t)b);
+                };
+                __uint128_t nsze_bytes = mul64_clamp(ns->nsze, sector_size);
+                __uint128_t ncap_bytes = mul64_clamp(ns->ncap, sector_size);
+                __uint128_t nuse_bytes = mul64_clamp(ns->nuse, sector_size);
+
+                // ログ出力（128bit は下位64bitのみを十進で出す簡易表示）
+                auto lo64 = [](__uint128_t x) -> uint64_t
+                { return (uint64_t)x; };
+                con.printf("NVMe: Identify Namespace #%u OK\n", (unsigned)nsid);
+                con.printf("  Sector size : %u bytes  (LBAF=%u, LBADS=%u)\n",
+                           (unsigned)sector_size, (unsigned)idx, (unsigned)ns->lbaf[idx].lbads);
+                con.printf("  NSZE : %llu LBAs  (%llu bytes)\n",
+                           (unsigned long long)ns->nsze,
+                           (unsigned long long)lo64(nsze_bytes));
+                con.printf("  NCAP : %llu LBAs  (%llu bytes)\n",
+                           (unsigned long long)ns->ncap,
+                           (unsigned long long)lo64(ncap_bytes));
+                con.printf("  NUSE : %llu LBAs  (%llu bytes)\n",
+                           (unsigned long long)ns->nuse,
+                           (unsigned long long)lo64(nuse_bytes));
+
+                return true;
+            }
+        }
+        con.println("NVMe: Identify NS timeout");
+        return false;
+    }
+
     bool init(void *bar0_va, Console &con)
     {
         g.r = (volatile NvmeRegs *)bar0_va;
@@ -265,6 +363,7 @@ namespace nvme
 
         // 5) Identify Controller を1発
         (void)identify_controller(con);
+        (void)identify_namespace(1, con);
         return true;
     }
 
