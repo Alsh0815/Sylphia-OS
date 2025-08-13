@@ -1,4 +1,5 @@
 #include "../include/efi/protocols/gop.h"
+#include "../include/efi/protocols/loaded_image.h"
 #include "../include/efi/protocols/simple_fs.h"
 #include "../include/efi/system_table.h"
 #include "../include/elf64.h"
@@ -44,6 +45,26 @@ EFI_STATUS EFIAPI EfiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     if (EFI_ERROR(st) || !sfs)
     {
         PutLn(L"HandleProtocol(SimpleFS) failed.");
+        return st;
+    }
+
+    EFI_LOADED_IMAGE_PROTOCOL *li = NULL;
+    st = BS->HandleProtocol(ImageHandle,
+                            (EFI_GUID *)&EFI_LOADED_IMAGE_PROTOCOL_GUID,
+                            (VOID **)&li);
+    if (EFI_ERROR(st) || !li)
+    {
+        PutLn(L"HandleProtocol(LoadedImage) failed.");
+        return st;
+    }
+
+    // 起動元デバイスの SimpleFS を取得
+    st = BS->HandleProtocol(li->DeviceHandle,
+                            (EFI_GUID *)&EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID,
+                            (VOID **)&sfs);
+    if (EFI_ERROR(st) || !sfs)
+    {
+        PutLn(L"HandleProtocol(SimpleFS from boot device) failed.");
         return st;
     }
 
