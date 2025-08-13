@@ -127,7 +127,7 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
     paint.drawTextWrap(tx, ty, "SYLPHIA OS (text-color-clip)", right);
 
     con.setColors({255, 255, 255}, {0, 0, 0});
-    con.printf("Version: v.%d.%d.%d.%d\n", 0, 1, 3, 8);
+    con.printf("Version: v.%d.%d.%d.%d\n", 0, 1, 3, 14);
 
     con.println("Switched to low stack.");
 
@@ -208,6 +208,8 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
         {
             con.println("NVMe init failed.");
         }
+
+        nvme::create_io_queues(con, 64);
     }
     else
     {

@@ -4,6 +4,8 @@
 #include "../../../pmm.hpp"
 #include "../../../console.hpp"
 
+extern "C" void *memcpy(void *d, const void *s, size_t n);
+
 namespace nvme
 {
 
@@ -40,7 +42,50 @@ namespace nvme
         uint8_t cq_phase; // 初期1
         uint64_t cap_cache;
         uint32_t vs_cache;
+        // --- I/O Queues (qid=1) ---
+        SqEntry *io_sq = nullptr;
+        CqEntry *io_cq = nullptr;
+        uint16_t io_qsize = 0;
+        uint16_t io_sq_tail = 0;
+        uint16_t io_cq_head = 0;
+        uint8_t io_cq_phase = 1;
+        uint64_t io_sq_phys = 0;
+        uint64_t io_cq_phys = 0;
+        // Set Features Number of Queues (result)
+        uint16_t nsqr = 0; // 実際に使える Submission Queues の数
+        uint16_t ncqr = 0; // 実際に使える Completion Queues の数
     } g{};
+
+    // ★ サイズ検証（仕様: SQ=64B, CQ=16B）
+    static_assert(sizeof(SqEntry) == 64, "SQ entry size must be 64 bytes");
+    static_assert(sizeof(CqEntry) == 16, "CQ entry size must be 16 bytes");
+
+    static void dump_nvme_status(Console &con, uint16_t st_shifted)
+    {
+        // st_shifted は status >> 1 渡し
+        uint8_t sc = st_shifted & 0xFF;        // SC[7:0]
+        uint8_t sct = (st_shifted >> 8) & 0x7; // SCT[2:0]
+        con.printf("  -> status: SCT=%u SC=%x\n", (unsigned)sct, (unsigned)sc);
+    }
+
+    static void dump_sqe(Console &con, const SqEntry &e)
+    {
+        const uint32_t *d = reinterpret_cast<const uint32_t *>(&e);
+        con.printf("SQE:");
+        for (int i = 0; i < 16; i++)
+        {
+            if ((i % 4) == 0)
+                con.printf("\n  DW%02d:", i);
+            con.printf(" %08x", (unsigned)d[i]);
+        }
+        con.printf("\n");
+    }
+
+    static void tiny_pause()
+    {
+        for (volatile int i = 0; i < 200000; i++)
+            asm volatile("");
+    }
 
     static inline void bzero(void *p, size_t n)
     {
@@ -94,6 +139,344 @@ namespace nvme
             hi1 = hi2;
         }
         return ((uint64_t)hi1 << 32) | lo1;
+    }
+
+    static bool alloc_dma32_page(void **out_va, uint64_t &out_pa)
+    {
+        for (int t = 0; t < 32; ++t)
+        {
+            void *va = pmm::alloc_pages(1);
+            if (!va)
+                return false;
+            uint64_t pa = paging::virt_to_phys((uint64_t)(uintptr_t)va);
+            if (((pa & 0xFFF) == 0) && (pa < (1ull << 32)))
+            {
+                *out_va = va;
+                out_pa = pa;
+                return true;
+            }
+            // 低位が取れなかった。free_pages があれば解放する（無ければ諦めて次）。
+            // pmm::free_pages(va, 1);  // ←APIがあれば使う
+        }
+        return false;
+    }
+
+    static bool admin_wait_complete(Console &con, uint16_t &out_status, CqEntry &out_ce)
+    {
+        for (uint32_t spin = 0; spin < 10000000; ++spin)
+        {
+            const volatile CqEntry *ce = &g.acq[g.cq_head];
+            uint16_t st = ce->status;
+            if ((st & 1) == g.cq_phase)
+            {
+                memcpy(&out_ce, (const void *)ce, sizeof(CqEntry));
+                g.cq_head = (uint16_t)((g.cq_head + 1) % g.qsize);
+                if (g.cq_head == 0)
+                    g.cq_phase ^= 1;
+                *doorbell_cq(0) = g.cq_head;
+                out_status = (uint16_t)(st >> 1);
+                return true;
+            }
+        }
+        con.println("NVMe: admin completion timeout");
+        return false;
+    }
+
+    // qsize を安全な値に丸める（SQ容量=4096/64=64, CQ容量=4096/16=256, CAP.MQES+1 以下）
+    static uint16_t clamp_io_qsize(uint16_t want)
+    {
+        uint16_t max_by_page_sq = 64;
+        uint16_t max_by_page_cq = 256;
+        uint16_t max_by_cap = (uint16_t)(cap_mqes(g.cap_cache) + 1);
+        uint16_t q = want;
+        if (q > max_by_page_sq)
+            q = max_by_page_sq;
+        if (q > max_by_page_cq)
+            q = max_by_page_cq;
+        if (q > max_by_cap)
+            q = max_by_cap;
+        if (q < 2)
+            q = 2;
+        return q;
+    }
+
+    static bool set_features_num_queues(uint16_t nsq_pairs_minus1, uint16_t ncq_pairs_minus1, Console &con)
+    {
+        SqEntry cmd{};
+        bzero(&cmd, sizeof(cmd));
+        cmd.opc = 0x09; // Set Features (Admin)
+        cmd.cid = 7;
+        cmd.cdw10 = 0x07; // FID = Number of Queues
+        cmd.cdw11 = ((uint32_t)nsq_pairs_minus1 << 16) | (uint32_t)ncq_pairs_minus1;
+
+        // 投入
+        uint16_t slot = g.sq_tail;
+        g.asq[slot] = cmd;
+        asm volatile("sfence" ::: "memory");
+        g.sq_tail = (uint16_t)((g.sq_tail + 1) % g.qsize);
+        *doorbell_sq(0) = g.sq_tail;
+
+        uint16_t st = 0;
+        CqEntry ce{};
+        if (!admin_wait_complete(con, st, ce))
+            return false;
+        bzero((void *)&g.acq[(g.cq_head + g.qsize - 1) % g.qsize], sizeof(CqEntry));
+        if (st != 0)
+        {
+            con.printf("  CE.dw0=%08x dw1=%08x sqid=%u cid=%u\n",
+                       (unsigned)ce.dw0, (unsigned)ce.dw1,
+                       (unsigned)ce.sq_id, (unsigned)ce.cid);
+            dump_nvme_status(con, st);
+            con.printf("NVMe: Set Features(Number of Queues) failed, status=%04x\n", (unsigned)st);
+            return false;
+        }
+
+        // 完了DW0に実反映された値（0-based）が入る
+        uint16_t ncqr0 = (uint16_t)(ce.dw0 & 0xFFFFu);         // 0-based
+        uint16_t nsqr0 = (uint16_t)((ce.dw0 >> 16) & 0xFFFFu); // 0-based
+        g.ncqr = (uint16_t)(ncqr0 + 1);
+        g.nsqr = (uint16_t)(nsqr0 + 1);
+
+        con.printf("NVMe: NumberOfQueues result: NSQR=%u NCQR=%u\n",
+                   (unsigned)g.nsqr, (unsigned)g.ncqr);
+        con.printf("NVMe: Set Features NumberOfQueues OK (requested NSQR=%u, NCQR=%u)\n",
+                   (unsigned)(nsq_pairs_minus1 + 1), (unsigned)(ncq_pairs_minus1 + 1));
+        return true;
+    }
+
+    // --- Create IOCQ (qid=1) ---
+    static bool create_iocq_q1(uint16_t qid, uint16_t qsize, Console &con)
+    {
+        if (!alloc_dma32_page((void **)&g.io_cq, g.io_cq_phys))
+        {
+            con.println("NVMe: alloc IOCQ DMA32 page failed");
+            return false;
+        }
+        bzero(g.io_cq, 4096);
+        con.printf("DBG: IOCQ PRP=%p qsize=%u\n", (void *)(uintptr_t)g.io_cq_phys, (unsigned)qsize);
+
+        auto submit = [&](uint32_t cdw10) -> uint16_t
+        {
+            SqEntry cmd{};
+            bzero(&cmd, sizeof(cmd));
+            cmd.opc = 0x05;
+            cmd.cid = 10;
+            cmd.prp1 = g.io_cq_phys;
+            cmd.cdw10 = cdw10;
+            cmd.cdw11 = 0;
+            cmd.cdw11 |= (1u << 0); // PC=1
+            // First try with IEN=0
+            uint32_t cdw11_first = cmd.cdw11;
+            // Fallback pattern with IEN=1
+            uint32_t cdw11_fallback = cmd.cdw11 | (1u << 1);
+            uint16_t slot = g.sq_tail;
+            g.asq[slot] = cmd;
+            asm volatile("sfence" ::: "memory");
+            g.sq_tail = (uint16_t)((g.sq_tail + 1) % g.qsize);
+            *doorbell_sq(0) = g.sq_tail;
+            uint16_t st = 0;
+            CqEntry ce{};
+            if (!admin_wait_complete(con, st, ce))
+                return (uint16_t)0xFFFF;
+            con.printf("IOCQ cdw10=%x cdw11=%x (qid=%u qsize=%u)\n",
+                       (unsigned)cdw10, (unsigned)cmd.cdw11, (unsigned)qid, (unsigned)qsize);
+
+            if (st != 0)
+            {
+                con.printf("NVMe: Create IOCQ failed, status=%x (sqid=%u cid=%u)\n",
+                           (unsigned)st, (unsigned)ce.sq_id, (unsigned)ce.cid);
+                dump_nvme_status(con, st);
+                con.printf("  CE.dw0=%x dw1=%x  CSTS=%x\n",
+                           (unsigned)ce.dw0, (unsigned)ce.dw1, (unsigned)g.r->CSTS);
+            }
+            return st;
+        };
+
+        // 1回目（通常順: [31:16]=QSIZE-1, [15:0]=QID）
+        uint32_t cdw10_norm = ((uint32_t)(qsize - 1) << 16) | (uint32_t)qid;
+        uint16_t st = submit(cdw10_norm);
+        if (st == 0)
+        {
+            g.io_cq_head = 0;
+            g.io_cq_phase = 1;
+            *doorbell_cq(1) = 0;
+            con.printf("NVMe: Create IOCQ qid=%u qsize=%u PRP=%p -> OK\n",
+                       (unsigned)qid, (unsigned)qsize, (void *)(uintptr_t)g.io_cq_phys);
+            return true;
+        }
+
+        // “Invalid Field” のときだけ順序を入れ替えて再試行（切り分け用）
+        uint8_t sc = st & 0xFF;
+        uint8_t sct = (st >> 8) & 0x7;
+        if (sc == 0x02)
+        {
+            con.printf("NVMe: retry Create IOCQ with swapped CDW10 fields\n");
+            uint32_t cdw10_swap = ((uint32_t)qid << 16) | (uint32_t)(qsize - 1);
+            st = submit(cdw10_swap);
+            if (st == 0)
+            {
+                g.io_cq_head = 0;
+                g.io_cq_phase = 1;
+                *doorbell_cq(1) = 0;
+                con.printf("NVMe: Create IOCQ (swapped) qid=%u qsize=%u -> OK\n",
+                           (unsigned)qid, (unsigned)qsize);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // --- Create IOSQ (qid=1) ---
+    static bool create_iosq_q1(uint16_t qid, uint16_t qsize, Console &con)
+    {
+        if (!alloc_dma32_page((void **)&g.io_sq, g.io_sq_phys))
+        {
+            con.println("NVMe: alloc IOSQ DMA32 page failed");
+            return false;
+        }
+        bzero(g.io_sq, 4096);
+        g.io_sq_tail = 0;
+        con.printf("DBG: IOSQ PRP=0x%p qsize=%u\n",
+                   (void *)(uintptr_t)g.io_sq_phys, (unsigned)qsize);
+
+        SqEntry cmd{};
+        bzero(&cmd, sizeof(cmd));
+        cmd.opc = 0x01;
+        cmd.cid = 11;
+        cmd.prp1 = g.io_sq_phys;
+        cmd.cdw10 = 0;
+        cmd.cdw10 |= ((uint32_t)(qsize - 1) << 16); // QSIZE-1
+        cmd.cdw10 |= (uint32_t)qid;                 // QID
+        cmd.cdw11 = 0;
+        cmd.cdw11 |= (1u << 0);             // PC=1
+        /* QPRIO=0 */                       // bits 2:1
+        cmd.cdw11 |= ((uint32_t)qid << 16); // CQID
+
+        uint16_t slot = g.sq_tail;
+        g.asq[slot] = cmd;
+        asm volatile("sfence" ::: "memory");
+        g.sq_tail = (uint16_t)((g.sq_tail + 1) % g.qsize);
+        *doorbell_sq(0) = g.sq_tail;
+
+        uint16_t st = 0;
+        CqEntry ce{};
+        if (!admin_wait_complete(con, st, ce))
+            return false;
+        bzero((void *)&g.acq[(g.cq_head + g.qsize - 1) % g.qsize], sizeof(CqEntry));
+        if (st != 0)
+        {
+            con.printf("  CE.dw0=%x dw1=%x sqid=%u cid=%u\n",
+                       (unsigned)ce.dw0, (unsigned)ce.dw1,
+                       (unsigned)ce.sq_id, (unsigned)ce.cid);
+            dump_nvme_status(con, st);
+            con.printf("NVMe: Create IOSQ failed, status=%x (sqid=%u cid=%u)\n",
+                       (unsigned)st, (unsigned)ce.sq_id, (unsigned)ce.cid);
+            return false;
+        }
+
+        *doorbell_sq(1) = 0;
+        con.printf("NVMe: Create IOSQ qid=1 qsize=%u PRP=0x%p -> OK\n",
+                   (unsigned)qsize, (void *)(uintptr_t)g.io_sq_phys);
+        return true;
+    }
+
+    // ヘルパ（上に追加）
+    static void try_delete_ioq(uint16_t qid, Console &con)
+    {
+        // Delete IOSQ (0x00)
+        {
+            SqEntry cmd{};
+            bzero(&cmd, sizeof(cmd));
+            cmd.opc = 0x00;
+            cmd.cid = 0x20;
+            cmd.cdw10 = qid;
+            uint16_t slot = g.sq_tail;
+            g.asq[slot] = cmd;
+            asm volatile("sfence" ::: "memory");
+            g.sq_tail = (uint16_t)((g.sq_tail + 1) % g.qsize);
+            *doorbell_sq(0) = g.sq_tail;
+            uint16_t st = 0;
+            CqEntry ce{};
+            admin_wait_complete(con, st, ce);
+        }
+        // Delete IOCQ (0x04)
+        {
+            SqEntry cmd{};
+            bzero(&cmd, sizeof(cmd));
+            cmd.opc = 0x04;
+            cmd.cid = 0x21;
+            cmd.cdw10 = qid;
+            uint16_t slot = g.sq_tail;
+            g.asq[slot] = cmd;
+            asm volatile("sfence" ::: "memory");
+            g.sq_tail = (uint16_t)((g.sq_tail + 1) % g.qsize);
+            *doorbell_sq(0) = g.sq_tail;
+            uint16_t st = 0;
+            CqEntry ce{};
+            admin_wait_complete(con, st, ce);
+        }
+    }
+
+    bool create_io_queues(Console &con, uint16_t want_qsize)
+    {
+        if (!g.r)
+        {
+            con.println("NVMe: BAR0 not mapped");
+            return false;
+        }
+
+        if (!set_features_num_queues(0, 0, con))
+            return false;
+
+        tiny_pause();
+
+        g.r->INTMS = 0xFFFFFFFFu;
+        g.r->INTMC = 0xFFFFFFFFu;
+
+        if (g.nsqr == 0 || g.ncqr == 0)
+        {
+            con.printf("NVMe: controller reports no IO queues available (NSQR=%u, NCQR=%u)\n",
+                       (unsigned)g.nsqr, (unsigned)g.ncqr);
+            return false;
+        }
+
+        uint16_t q = clamp_io_qsize(want_qsize);
+        g.io_qsize = q;
+
+        // 探索範囲（1..min(NSQR,NCQR)）。上限は過剰トライを避けて 8 に丸める
+        uint16_t max_qid_all = (g.nsqr < g.ncqr) ? g.nsqr : g.ncqr;
+        if (max_qid_all > 8)
+            max_qid_all = 8;
+
+        for (uint16_t qid = 1; qid <= max_qid_all; ++qid)
+        {
+            con.printf("NVMe: creating IO queues (try qid=%u) use=%u\n",
+                       (unsigned)qid, (unsigned)q);
+            try_delete_ioq(qid, con);
+            if (!create_iocq_q1(qid, q, con))
+            {
+                con.printf("NVMe: qid=%u IOCQ create failed, trying next qid...\n",
+                           (unsigned)qid);
+                continue; // 次の QID を試す
+            }
+            if (!create_iosq_q1(qid, q, con))
+            {
+                con.printf("NVMe: qid=%u IOSQ create failed, trying next qid...\n",
+                           (unsigned)qid);
+                // （必要なら Delete IOCQ を入れるが、いまは失敗時に次を試すだけ）
+                continue;
+            }
+
+            // 成功
+            con.printf("NVMe IO DB stride=%u  SQ%u@%p  CQ%u@%p\n",
+                       (unsigned)g.db_stride, (unsigned)qid, doorbell_sq(qid),
+                       (unsigned)qid, doorbell_cq(qid));
+            return true;
+        }
+
+        con.println("NVMe: failed to create any IO queue (tried qid 1..N)");
+        return false;
     }
 
     static bool identify_controller(Console &con)
@@ -341,11 +724,11 @@ namespace nvme
 
         // 4) CC: MPS=0(4KiB), CSS=0(NVM), AMS=0, EN=1
         uint32_t cc = g.r->CC;
-        cc &= ~((0xFu << 20) | (0xFu << 16) | (0xFu << 4) | (0x3u << 5) | (0x7u << 7));
-        cc |= (6u << 20); // IOSQES = 6 → 64B
-        cc |= (4u << 16); // IOCQES = 4 → 16B
-        cc |= (0u << 4);  // MPS=0
-        cc |= (0u << 7);  // CSS=0
+        cc &= ~((0xFu << 20) | (0xFu << 16) | (0xFu << 7) | (0x7u << 4));
+        cc |= (4u << 20); // IOCQES = log2(16) = 4
+        cc |= (6u << 16); // IOSQES = log2(64) = 6
+        cc |= (0u << 7);  // MPS = log2(4096)-12 = 0
+        cc |= (0u << 4);  // CSS = 0 (NVM Command Set)
         g.r->CC = cc;
         asm volatile("" ::: "memory");
         g.r->CC = cc | 1u;
