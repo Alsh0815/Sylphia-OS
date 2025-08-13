@@ -95,19 +95,6 @@ namespace nvme
     }
     static inline void mmio_wmb() { asm volatile("" ::: "memory"); } // 必要十分の可視化
 
-    static bool wait_rdy(int want, uint32_t loops)
-    {
-        for (uint32_t i = 0; i < loops; ++i)
-        {
-            if ((g.r->CSTS & 1u) == (uint32_t)want)
-                return true;
-        }
-        return false;
-    }
-    static uint32_t cap_mqes(uint64_t cap) { return (uint32_t)(cap & 0xFFFFull); }
-    static uint32_t cap_dstrd(uint64_t cap) { return (uint32_t)((cap >> 32) & 0xFull); }
-    static uint32_t cap_to(uint64_t cap) { return (uint32_t)((cap >> 24) & 0xFFull); } // 単位は実装依存で余裕を持って使う
-
     // ドアベル計算: BAR0 + 0x1000 + stride*(2*qid + 0/1)
     static volatile uint32_t *doorbell_sq(uint16_t qid)
     {
@@ -119,6 +106,41 @@ namespace nvme
         uintptr_t base = (uintptr_t)g.r;
         return (volatile uint32_t *)(base + 0x1000 + g.db_stride * (2 * qid + 1));
     }
+
+    static bool wait_rdy(int want, uint32_t loops)
+    {
+        for (uint32_t i = 0; i < loops; ++i)
+        {
+            if ((g.r->CSTS & 1u) == (uint32_t)want)
+                return true;
+        }
+        return false;
+    }
+
+    static bool io_wait_complete(Console &con, uint16_t &out_status, CqEntry &out_ce)
+    {
+        for (uint32_t spin = 0; spin < 10000000; ++spin)
+        {
+            const volatile CqEntry *ce = &g.io_cq[g.io_cq_head];
+            uint16_t st = ce->status;
+            if ((st & 1) == g.io_cq_phase)
+            {
+                memcpy(&out_ce, (const void *)ce, sizeof(CqEntry));
+                g.io_cq_head = (uint16_t)((g.io_cq_head + 1) % g.io_qsize);
+                if (g.io_cq_head == 0)
+                    g.io_cq_phase ^= 1;
+                *doorbell_cq(1) = g.io_cq_head;
+                out_status = (uint16_t)(st >> 1);
+                return true;
+            }
+        }
+        con.println("NVMe: IO completion timeout");
+        return false;
+    }
+
+    static uint32_t cap_mqes(uint64_t cap) { return (uint32_t)(cap & 0xFFFFull); }
+    static uint32_t cap_dstrd(uint64_t cap) { return (uint32_t)((cap >> 32) & 0xFull); }
+    static uint32_t cap_to(uint64_t cap) { return (uint32_t)((cap >> 24) & 0xFFull); } // 単位は実装依存で余裕を持って使う
 
     static inline void mfence() { asm volatile("mfence" ::: "memory"); }
 
@@ -747,6 +769,106 @@ namespace nvme
         // 5) Identify Controller を1発
         (void)identify_controller(con);
         (void)identify_namespace(1, con);
+        return true;
+    }
+
+    bool read_lba(uint32_t nsid, uint64_t slba, uint16_t nlb,
+                  void *buf, size_t buf_bytes, Console &con)
+    {
+        if (!g.io_sq || !g.io_cq || g.io_qsize == 0)
+        {
+            con.println("NVMe: IO queues not ready");
+            return false;
+        }
+        if (nlb == 0)
+        {
+            con.println("NVMe: read_lba: nlb must be >= 1");
+            return false;
+        }
+
+        // 物理アドレス取得と1ページ内に収まることの確認（最初はPRP1のみ対応）
+        uint64_t prp1 = paging::virt_to_phys((uint64_t)(uintptr_t)buf);
+        if ((prp1 & 0xFFFFFFFF00000000ull) != 0)
+        {
+            con.println("NVMe: PRP1 must be DMA32 (<4GiB) for now");
+            return false;
+        }
+        size_t need = (size_t)nlb * 512; // TODO: 将来は Identify の LBADS で置き換え
+        if (need > buf_bytes)
+        {
+            con.printf("NVMe: buffer too small (need %u)\n", (unsigned)need);
+            return false;
+        }
+
+        const size_t off_in_page = (size_t)(prp1 & 0xFFF);
+        const size_t room_in_page = 4096 - off_in_page;
+
+        uint64_t prp2 = 0;
+
+        if (need > room_in_page)
+        {
+            // --- 2ページにまたがる場合は PRP2 を使用 ---
+            if (need <= room_in_page + 4096)
+            {
+                prp2 = (prp1 & ~0xFFFULL) + 0x1000ULL; // 次ページ先頭
+                if ((prp2 & 0xFFFFFFFF00000000ull) != 0)
+                {
+                    con.println("NVMe: PRP2 must be DMA32 (<4GiB) for now");
+                    return false;
+                }
+            }
+            else
+            {
+                con.println("NVMe: READ requires PRP List (>2 pages) — not implemented yet");
+                return false;
+            }
+        }
+
+        // SQE 構築
+        SqEntry cmd{};
+        bzero(&cmd, sizeof(cmd));
+        cmd.opc = 0x02; // NVM READ
+        cmd.fuse = 0;
+        cmd.cid = (uint16_t)(g.io_sq_tail & 0xFFFF);
+        cmd.nsid = nsid;
+        cmd.mptr = 0;
+        cmd.prp1 = prp1;
+        cmd.prp2 = prp2;
+        cmd.cdw10 = (uint32_t)(slba & 0xFFFFFFFFu);
+        cmd.cdw11 = (uint32_t)(slba >> 32);
+        cmd.cdw12 = (uint32_t)((uint32_t)(nlb - 1) & 0xFFFFu); // NLB-1
+        cmd.cdw13 = 0;
+        cmd.cdw14 = 0;
+        cmd.cdw15 = 0;
+
+        // 投入
+        uint16_t slot = (uint16_t)(g.io_sq_tail % g.io_qsize);
+        g.io_sq[slot] = cmd;
+        mmio_wmb();
+        g.io_sq_tail = (uint16_t)((g.io_sq_tail + 1) % g.io_qsize);
+        *doorbell_sq(1) = g.io_sq_tail;
+
+        // 完了待ち
+        uint16_t st = 0;
+        CqEntry ce{};
+        if (!io_wait_complete(con, st, ce))
+            return false;
+
+        if (st != 0)
+        {
+            dump_nvme_status(con, st);
+            con.printf("NVMe: READ failed (SQID=%u CID=%u)\n",
+                       (unsigned)ce.sq_id, (unsigned)ce.cid);
+            return false;
+        }
+
+        // デバッグ：先頭16バイトを軽くダンプ（任意）
+        const uint8_t *p = (const uint8_t *)buf;
+        con.printf("NVMe: READ OK (nsid=%u slba=%u nlb=%u)  data: ",
+                   (unsigned)nsid, (unsigned long long)slba, (unsigned)nlb);
+        for (int i = 0; i < 16 && i < (int)need; i++)
+            con.printf("%x ", (unsigned)p[i]);
+        con.printf("...\n");
         return true;
     }
 
