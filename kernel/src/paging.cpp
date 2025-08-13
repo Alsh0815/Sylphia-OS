@@ -49,6 +49,38 @@ namespace
 
     inline uint64_t align_up(uint64_t v, uint64_t a) { return (v + a - 1) & ~(a - 1); }
 
+    inline uint64_t *phys_to_virt(uint64_t phys)
+    {
+        // 恒等マップ前提なら物理==仮想。HHDM等がある場合はそこに合わせる。
+        return reinterpret_cast<uint64_t *>(phys);
+    }
+
+    static uint64_t alloc_zero_page_phys()
+    {
+        void *p = pmm::alloc_pages(1);
+        if (!p)
+            return 0;
+        // ゼロ化
+        uint64_t *q = (uint64_t *)p;
+        for (int i = 0; i < (PAGE_4K / 8); ++i)
+            q[i] = 0;
+        return (uint64_t)(uintptr_t)p;
+    }
+
+    static uint64_t *ensure_child(uint64_t *parent, uint64_t idx)
+    {
+        uint64_t e = parent[idx];
+        if (e & P_PRESENT)
+        {
+            return phys_to_virt(e & ~0xFFFULL);
+        }
+        uint64_t child_phys = alloc_zero_page_phys();
+        if (!child_phys)
+            return nullptr;
+        parent[idx] = child_phys | P_PRESENT | P_RW; // ←非リーフは素直にP|RW
+        return phys_to_virt(child_phys);
+    }
+
     static bool init_bump_from_memmap(const BootInfo &bi)
     {
         if (!bi.mmap_ptr || !bi.mmap_size || !bi.mmap_desc_size)
@@ -76,12 +108,6 @@ namespace
 
     extern "C" uint64_t paging_get_cr3_phys(); // 例えば paging::get_cr3() が返す物理
 
-    inline uint64_t *phys_to_virt(uint64_t phys)
-    {
-        // 恒等マップ前提なら物理==仮想。HHDM等がある場合はそこに合わせる。
-        return reinterpret_cast<uint64_t *>(phys);
-    }
-
     // テーブルを「存在しなければ作る」。
     // 戻り値は子テーブル（次段）の仮想アドレス。
     uint64_t *touch_table(uint64_t *parent, uint64_t idx)
@@ -108,6 +134,34 @@ namespace
     inline void invlpg(uint64_t va)
     {
         asm volatile("invlpg (%0)" ::"r"(va) : "memory");
+    }
+
+    static bool probe_va(uint64_t va)
+    {
+        uint64_t *pml4 = phys_to_virt(paging_get_cr3_phys());
+        uint64_t l4i = (va >> PML4_SHIFT) & IDX_MASK;
+        uint64_t l3i = (va >> PDPT_SHIFT) & IDX_MASK;
+        uint64_t l2i = (va >> PD_SHIFT) & IDX_MASK;
+
+        uint64_t e4 = pml4[l4i];
+        if (!(e4 & P_PRESENT))
+            return false;
+        uint64_t *pdpt = phys_to_virt(e4 & ~0xFFFULL);
+
+        uint64_t e3 = pdpt[l3i];
+        if (!(e3 & P_PRESENT))
+            return false;
+        uint64_t *pd = phys_to_virt(e3 & ~0xFFFULL);
+
+        uint64_t e2 = pd[l2i];
+        return (e2 & P_PRESENT) != 0;
+    }
+
+    inline void reload_cr3()
+    {
+        uint64_t cr3;
+        asm volatile("mov %%cr3,%0" : "=r"(cr3));
+        asm volatile("mov %0,%%cr3" ::"r"(cr3) : "memory");
     }
 
 } // anon
@@ -263,49 +317,131 @@ namespace paging
         return new_cr3;
     }
 
+    bool map_mmio_at(uint64_t va, uint64_t phys, uint64_t size)
+    {
+        if (size == 0)
+            return true;
+
+        // 2MiB 単位に正規化
+        uint64_t va0 = va & ~(PAGE_2M - 1);
+        uint64_t pa0 = phys & ~(PAGE_2M - 1);
+        uint64_t pages = (((va & (PAGE_2M - 1)) + size + PAGE_2M - 1) / PAGE_2M);
+
+        uint64_t *pml4 = phys_to_virt(paging_get_cr3_phys());
+        for (uint64_t i = 0; i < pages; ++i)
+        {
+            uint64_t cur_va = va0 + i * PAGE_2M;
+            uint64_t cur_pa = pa0 + i * PAGE_2M;
+
+            uint64_t l4i = (cur_va >> PML4_SHIFT) & IDX_MASK;
+            uint64_t l3i = (cur_va >> PDPT_SHIFT) & IDX_MASK;
+            uint64_t l2i = (cur_va >> PD_SHIFT) & IDX_MASK;
+
+            uint64_t *pdpt = ensure_child(pml4, l4i);
+            if (!pdpt)
+                return false;
+            uint64_t *pd = ensure_child(pdpt, l3i);
+            if (!pd)
+                return false;
+
+            // UC(非キャッシュ) + NX の 2MiB 大ページ
+            uint64_t flags = P_PRESENT | P_RW | P_PWT | P_PCD | P_PS | P_NX;
+            pd[l2i] = (cur_pa & ~0x1FFFFFULL) | flags;
+        }
+        reload_cr3(); // TLB整理
+        return true;
+    }
+
     bool map_mmio_range(uint64_t phys, uint64_t size)
     {
         if (size == 0)
             return true;
 
-        // 2MiB 単位に丸め
+        // 2MiBアラインで全面カバー
         uint64_t start = phys & ~(PAGE_2M - 1);
         uint64_t end = (phys + size + PAGE_2M - 1) & ~(PAGE_2M - 1);
 
-        // ルートPML4
-        uint64_t pml4_phys = paging_get_cr3_phys();
-        uint64_t *pml4 = phys_to_virt(pml4_phys);
+        uint64_t *pml4 = phys_to_virt(paging_get_cr3_phys());
 
         for (uint64_t addr = start; addr < end; addr += PAGE_2M)
         {
-            // 各段のインデックス
-            uint64_t pml4i = (addr >> PML4_SHIFT) & IDX_MASK;
-            uint64_t pdpti = (addr >> PDPT_SHIFT) & IDX_MASK;
-            uint64_t pdi = (addr >> PD_SHIFT) & IDX_MASK;
+            uint64_t l4i = (addr >> PML4_SHIFT) & IDX_MASK;
+            uint64_t l3i = (addr >> PDPT_SHIFT) & IDX_MASK;
+            uint64_t l2i = (addr >> PD_SHIFT) & IDX_MASK;
 
-            // 下位テーブルを用意
-            uint64_t *pdpt = touch_table(pml4, pml4i);
+            uint64_t *pdpt = ensure_child(pml4, l4i);
             if (!pdpt)
                 return false;
-            uint64_t *pd = touch_table(pdpt, pdpti);
+
+            uint64_t *pd = ensure_child(pdpt, l3i);
             if (!pd)
                 return false;
 
-            // 既に貼っていればスキップ（再設定したいなら上書きでも可）
-            uint64_t e = pd[pdi];
-            if ((e & P_PRESENT) && (e & P_PS))
-            {
-                continue;
-            }
-
-            // 2MiBページで恒等マップ。MMIOなので UC (PWT|PCD)、RW、NX を推奨
+            // 既に何か貼ってあれば上書きでもOK（UCを保証したい）
             uint64_t flags = P_PRESENT | P_RW | P_PWT | P_PCD | P_PS | P_NX;
-            pd[pdi] = (addr & ~0x1FFFFFULL) | flags;
-
-            // 同一アドレスに恒等マップなので VA=addr として TLB を捨てる
-            invlpg(addr);
+            pd[l2i] = (addr & ~0x1FFFFFULL) | flags;
         }
+
+        // TLBの不定を避けるためにCR3再読み込み（invlpgループでも可）
+        reload_cr3();
         return true;
+    }
+
+    uint64_t paging::virt_to_phys(uint64_t va)
+    {
+        // ルートPML4（物理→恒等マップの仮定でそのままKVAへ）
+        uint64_t *pml4 = phys_to_virt(paging_get_cr3_phys());
+
+        // 各段のインデックス
+        const uint64_t l4i = (va >> PML4_SHIFT) & IDX_MASK;
+        const uint64_t l3i = (va >> PDPT_SHIFT) & IDX_MASK;
+        const uint64_t l2i = (va >> PD_SHIFT) & IDX_MASK;
+        const uint64_t l1i = (va >> 12) & IDX_MASK;
+
+        // L4
+        uint64_t e4 = pml4[l4i];
+        if (!(e4 & P_PRESENT))
+            return -1;
+        uint64_t *pdpt = phys_to_virt(e4 & ~0xFFFULL);
+
+        // L3
+        uint64_t e3 = pdpt[l3i];
+        if (!(e3 & P_PRESENT))
+            return false;
+        // 1GiB ページは使っていない想定なので PS=1 は未対応にしておく（必要なら足せる）
+        if (e3 & P_PS)
+        {
+            // 1GiB 大ページ（未使用想定）
+            uint64_t phys_base = e3 & ~((1ULL << 30) - 1);
+            return phys_base | (va & ((1ULL << 30) - 1));
+        }
+        uint64_t *pd = phys_to_virt(e3 & ~0xFFFULL);
+
+        // L2
+        uint64_t e2 = pd[l2i];
+        if (!(e2 & P_PRESENT))
+            return false;
+
+        if (e2 & P_PS)
+        {
+            // 2MiB 大ページ
+            uint64_t phys_base = e2 & ~0x1FFFFFULL; // 下位21bitはオフセット
+            return phys_base | (va & 0x1FFFFFULL);
+        }
+
+        // L1（4KiB ページ）
+        uint64_t *pt = phys_to_virt(e2 & ~0xFFFULL);
+        uint64_t e1 = pt[l1i];
+        if (!(e1 & P_PRESENT))
+            return false;
+
+        uint64_t phys_base = e1 & ~0xFFFULL;
+        return phys_base | (va & 0xFFFULL);
+    }
+
+    bool dbg_probe_mmio_mapped(uint64_t phys_addr)
+    {
+        return probe_va(phys_addr);
     }
 
 } // namespace paging

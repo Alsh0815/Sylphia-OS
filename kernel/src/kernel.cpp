@@ -2,6 +2,8 @@
 #include "../include/bootinfo.h"
 #include "../include/framebuffer.hpp"
 #include "../include/font8x8.hpp"
+#include "driver/pci/nvme/nvme.hpp"
+#include "driver/pci/nvme/nvme_regs.hpp"
 #include "driver/pci/pci.hpp"
 #include "gdt.hpp"
 #include "heap.hpp"
@@ -27,6 +29,17 @@ enum
     EfiBootServicesData = 4,
     EfiConventionalMemory = 7 /* boot_services.h の列挙と合わせる */
 };
+
+static inline void bzero(void *p, size_t n)
+{
+    uint8_t *q = (uint8_t *)p;
+    for (size_t i = 0; i < n; i++)
+        q[i] = 0;
+}
+
+extern bool nvme_selftest_write(Console &con, uint32_t nsid, uint64_t base_slba);
+extern bool nvme_test_flush_quirk(Console &con, uint32_t nsid, uint64_t base_slba);
+extern bool nvme_test_read_then_flush(Console &con, uint32_t nsid, uint64_t base_slba);
 
 extern "C" __attribute__((sysv_abi)) void kernel_main(BootInfo *bi)
 {
@@ -85,9 +98,31 @@ extern "C" __attribute__((sysv_abi)) void kernel_main(BootInfo *bi)
         __asm__ __volatile__("hlt");
 }
 
+static inline uint64_t rdmsr(uint32_t msr)
+{
+    uint32_t lo, hi;
+    asm volatile("rdmsr" : "=a"(lo), "=d"(hi) : "c"(msr));
+    return ((uint64_t)hi << 32) | lo;
+}
+
+static inline void wrmsr(uint32_t msr, uint64_t val)
+{
+    uint32_t lo = (uint32_t)val, hi = (uint32_t)(val >> 32);
+    asm volatile("wrmsr" ::"c"(msr), "a"(lo), "d"(hi));
+}
+
+static inline void enable_nxe()
+{
+    uint64_t efer = rdmsr(0xC0000080); // IA32_EFER
+    efer |= (1ull << 11);              // NXE=1
+    wrmsr(0xC0000080, efer);
+}
+
 // kernel.cpp
 extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
 {
+    enable_nxe();
+
     // ここは「新しいスタック」上。ローカルを作り直してOK
     Framebuffer fb(*bi);
     Painter paint(fb);
@@ -103,7 +138,7 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
     paint.drawTextWrap(tx, ty, "SYLPHIA OS (text-color-clip)", right);
 
     con.setColors({255, 255, 255}, {0, 0, 0});
-    con.printf("Version: v.%d.%d.%d.%d\n", 0, 1, 3, 0);
+    con.printf("Version: v.%d.%d.%d.%d\n", 0, 1, 3, 22);
 
     con.println("Switched to low stack.");
 
@@ -165,9 +200,29 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
     pci::Device nvme{};
     if (pci::scan_nvme(con, nvme))
     {
-        if (nvme.bar[0] + 0x2000 > paging::mapped_limit()) { paging::map_mmio_range(nvme.bar[0], 0x2000); }
+        const uint64_t BAR0 = nvme.bar[0];
+        con.printf("NVMe BAR0 (phys) = %p\n", (void *)BAR0);
 
-        con.printf("NVMe BAR0 = 0x%p\n", (void *)nvme.bar[0]);
+        const uint64_t TEST_VA = 0x0000000200000000ull; // 8 GiB
+        if (!paging::map_mmio_at(TEST_VA, BAR0, 0x200000))
+        {
+            con.println("map_mmio_at failed");
+        }
+
+        volatile NvmeRegs *r = (volatile NvmeRegs *)(uintptr_t)TEST_VA;
+        uint64_t cap = r->CAP;
+        uint32_t vs = r->VS;
+        con.printf("NVMe CAP@lowVA=%016llx VS=%08x\n",
+                   (unsigned long long)cap, vs);
+
+        if (!nvme::init((void *)(uintptr_t)TEST_VA, con))
+        {
+            con.println("NVMe init failed.");
+        }
+
+        nvme::create_io_queues(con, 64);
+
+        nvme_selftest_write(con, 1, 4096);
     }
     else
     {
