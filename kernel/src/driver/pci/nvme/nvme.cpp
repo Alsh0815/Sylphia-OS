@@ -777,6 +777,56 @@ namespace nvme
         return true;
     }
 
+    bool flush(uint32_t nsid, Console &con)
+    {
+        if (!g.io_sq || !g.io_cq || g.io_qsize == 0)
+        {
+            con.println("NVMe: IO queues not ready");
+            return false;
+        }
+
+        // SQE 構築（NVM FLUSH はデータバッファ不要）
+        SqEntry cmd{};
+        bzero(&cmd, sizeof(cmd));
+        cmd.opc = 0x00; // NVM FLUSH
+        cmd.fuse = 0;
+        cmd.cid = (uint16_t)(g.io_sq_tail & 0xFFFF);
+        cmd.nsid = nsid;
+        cmd.mptr = 0;
+        cmd.prp1 = 0;
+        cmd.prp2 = 0;
+        cmd.cdw10 = 0;
+        cmd.cdw11 = 0;
+        cmd.cdw12 = 0;
+        cmd.cdw13 = 0;
+        cmd.cdw14 = 0;
+        cmd.cdw15 = 0;
+
+        // 投入
+        uint16_t slot = (uint16_t)(g.io_sq_tail % g.io_qsize);
+        g.io_sq[slot] = cmd;
+        mmio_wmb();
+        g.io_sq_tail = (uint16_t)((g.io_sq_tail + 1) % g.io_qsize);
+        *doorbell_sq(1) = g.io_sq_tail;
+
+        // 完了待ち
+        uint16_t st = 0;
+        CqEntry ce{};
+        if (!io_wait_complete(con, st, ce))
+            return false;
+
+        if (st != 0)
+        {
+            dump_nvme_status(con, st);
+            con.printf("NVMe: FLUSH failed (SQID=%u CID=%u)\n",
+                       (unsigned)ce.sq_id, (unsigned)ce.cid);
+            return false;
+        }
+
+        con.printf("NVMe: FLUSH OK (nsid=%u)\n", (unsigned)nsid);
+        return true;
+    }
+
     bool read_lba(uint32_t nsid, uint64_t slba, uint16_t nlb,
                   void *buf, size_t buf_bytes, Console &con)
     {

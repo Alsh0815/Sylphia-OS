@@ -136,7 +136,7 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
     paint.drawTextWrap(tx, ty, "SYLPHIA OS (text-color-clip)", right);
 
     con.setColors({255, 255, 255}, {0, 0, 0});
-    con.printf("Version: v.%d.%d.%d.%d\n", 0, 1, 3, 19);
+    con.printf("Version: v.%d.%d.%d.%d\n", 0, 1, 3, 20);
 
     con.println("Switched to low stack.");
 

@@ -72,6 +72,11 @@ bool nvme_selftest_write(Console &con, uint32_t nsid, uint64_t base_slba)
             con.printf("[%s] WRITE failed\n", name);
             return false;
         }
+        if (!nvme::flush(nsid, con))
+        {
+            con.printf("[%s] FLUSH failed\n", name);
+            return false;
+        }
 
         // 4) READ back into verify
         if (!nvme::read_lba(nsid, slba, (uint16_t)(bytes / lba_size), verify, bytes, con))
@@ -89,6 +94,11 @@ bool nvme_selftest_write(Console &con, uint32_t nsid, uint64_t base_slba)
         {
             con.printf("[%s] RESTORE failed (data left modified!)\n", name);
             all_ok = false; // still continue to report failure
+        }
+        if (!nvme::flush(nsid, con))
+        {
+            con.printf("[%s] FLUSH (RESTORE) failed\n", name);
+            return false;
         }
 
         return ok;
