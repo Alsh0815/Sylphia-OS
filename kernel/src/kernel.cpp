@@ -221,6 +221,8 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
         }
 
         nvme::create_io_queues(con, 64);
+
+        nvme_selftest_write(con, 1, 4096);
     }
     else
     {

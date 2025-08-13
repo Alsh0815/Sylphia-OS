@@ -90,18 +90,16 @@ bool nvme_selftest_write(Console &con, uint32_t nsid, uint64_t base_slba)
         con.printf("[%s] verify %s\n", name, ok ? "OK" : "NG");
 
         // 6) Restore original media content
-        if (!nvme::write_lba(nsid, slba, (uint16_t)(bytes / lba_size), backup, bytes, nvme::kWriteFua, con))
+        if (!nvme::write_lba(nsid, slba, (uint16_t)(bytes / lba_size), backup, bytes, nvme::kWriteNone, con))
         {
             con.printf("[%s] RESTORE failed (data left modified!)\n", name);
             all_ok = false; // still continue to report failure
         }
-        /*
         if (!nvme::flush(nsid, con))
         {
             con.printf("[%s] FLUSH (RESTORE) failed\n", name);
             return false;
         }
-        */
 
         return ok;
     };
