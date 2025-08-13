@@ -52,8 +52,10 @@ namespace nvme
         uint64_t io_sq_phys = 0;
         uint64_t io_cq_phys = 0;
         // Set Features Number of Queues (result)
-        uint16_t nsqr = 0; // 実際に使える Submission Queues の数
-        uint16_t ncqr = 0; // 実際に使える Completion Queues の数
+        uint16_t nsqr = 0;        // 実際に使える Submission Queues の数
+        uint16_t ncqr = 0;        // 実際に使える Completion Queues の数
+        uint32_t ns_active = 1;   // 使っているNS
+        uint32_t lba_bytes = 512; // Identifyで更新、未取得時のフォールバック=512B
     } g{};
 
     // ★ サイズ検証（仕様: SQ=64B, CQ=16B）
@@ -635,6 +637,9 @@ namespace nvme
                 if (sector_size == 0)
                     sector_size = 512;
 
+                g.ns_active = nsid;
+                g.lba_bytes = sector_size;
+
                 // 容量換算（LBA数 × セクタサイズ）
                 auto mul64_clamp = [](uint64_t a, uint64_t b) -> __uint128_t
                 {
@@ -793,7 +798,7 @@ namespace nvme
             con.println("NVMe: PRP1 must be DMA32 (<4GiB) for now");
             return false;
         }
-        const size_t bytes = (size_t)nlb * 512;
+        const size_t bytes = (size_t)nlb * (size_t)g.lba_bytes;
         if (bytes > buf_bytes)
         {
             con.printf("NVMe: buffer too small (need %u)\n", (unsigned)bytes);
@@ -971,7 +976,7 @@ namespace nvme
         }
 
         // NOTE: まずは 1LBA=512B 前提（将来 Identify の LBADS に合わせて置換）
-        const size_t bytes = (size_t)nlb * 512;
+        const size_t bytes = (size_t)nlb * (size_t)g.lba_bytes;
         if (bytes > buf_bytes)
         {
             con.printf("NVMe: buffer too small (need %u)\n", (unsigned)bytes);
@@ -1111,5 +1116,7 @@ namespace nvme
 
     uint64_t cap() { return g.cap_cache; }
     uint32_t vs() { return g.vs_cache; }
+
+    uint32_t lba_bytes() { return g.lba_bytes; }
 
 } // namespace nvme

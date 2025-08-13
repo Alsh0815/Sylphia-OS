@@ -12,6 +12,8 @@ namespace nvme
     uint64_t cap();
     uint32_t vs();
 
+    uint32_t lba_bytes();
+
     bool create_io_queues(Console &con, uint16_t want_qsize = 64);
 
     bool read_lba(uint32_t nsid, uint64_t slba, uint16_t nlb,

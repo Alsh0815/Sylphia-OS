@@ -36,7 +36,13 @@ static bool cmp_and_log(Console &con, const uint8_t *a, const uint8_t *b, size_t
 // It preserves on-disk data by backing up and restoring after verification.
 bool nvme_selftest_write(Console &con, uint32_t nsid, uint64_t base_slba)
 {
-    const size_t BPL = 512; // bytes per LBA (current driver assumption)
+    const size_t lba_size = nvme::lba_bytes();
+    if (lba_size == 0)
+    {
+        con.println("NVMe selftest: invalid LBA size from driver");
+        return false;
+    }
+
     bool all_ok = true;
 
     auto one_case = [&](const char *name, uint64_t slba, void *buf_va, size_t bytes) -> bool
@@ -51,7 +57,7 @@ bool nvme_selftest_write(Console &con, uint32_t nsid, uint64_t base_slba)
         }
 
         // 1) Backup current media content
-        if (!nvme::read_lba(nsid, slba, (uint16_t)(bytes / BPL), backup, bytes, con))
+        if (!nvme::read_lba(nsid, slba, (uint16_t)(bytes / lba_size), backup, bytes, con))
         {
             con.printf("[%s] pre-read (backup) failed\n", name);
             return false;
@@ -61,14 +67,14 @@ bool nvme_selftest_write(Console &con, uint32_t nsid, uint64_t base_slba)
         fill_pattern((uint8_t *)buf_va, bytes, 0x5Au);
 
         // 3) WRITE pattern
-        if (!nvme::write_lba(nsid, slba, (uint16_t)(bytes / BPL), buf_va, bytes, con))
+        if (!nvme::write_lba(nsid, slba, (uint16_t)(bytes / lba_size), buf_va, bytes, con))
         {
             con.printf("[%s] WRITE failed\n", name);
             return false;
         }
 
         // 4) READ back into verify
-        if (!nvme::read_lba(nsid, slba, (uint16_t)(bytes / BPL), verify, bytes, con))
+        if (!nvme::read_lba(nsid, slba, (uint16_t)(bytes / lba_size), verify, bytes, con))
         {
             con.printf("[%s] READ-back failed\n", name);
             return false;
@@ -79,7 +85,7 @@ bool nvme_selftest_write(Console &con, uint32_t nsid, uint64_t base_slba)
         con.printf("[%s] verify %s\n", name, ok ? "OK" : "NG");
 
         // 6) Restore original media content
-        if (!nvme::write_lba(nsid, slba, (uint16_t)(bytes / BPL), backup, bytes, con))
+        if (!nvme::write_lba(nsid, slba, (uint16_t)(bytes / lba_size), backup, bytes, con))
         {
             con.printf("[%s] RESTORE failed (data left modified!)\n", name);
             all_ok = false; // still continue to report failure
