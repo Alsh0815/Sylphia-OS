@@ -193,3 +193,41 @@ bool nvme_test_flush_quirk(Console &con, uint32_t nsid, uint64_t base_slba)
     con.println("--- Minimal Flush Quirk Test Finished ---");
     return true;
 }
+
+bool nvme_test_read_then_flush(Console &con, uint32_t nsid, uint64_t base_slba)
+{
+    con.println("\n--- Starting Read-then-Flush Test ---");
+    const size_t lba_size = nvme::lba_bytes();
+    if (lba_size == 0)
+        return false;
+
+    const size_t bytes = lba_size;
+    void *buf = pmm::alloc_pages(1);
+    if (!buf)
+    {
+        con.println("[ReadFlushTest] alloc failed");
+        return false;
+    }
+
+    // 1. READを実行
+    con.println("[ReadFlushTest] Issuing READ command...");
+    if (!nvme::read_lba(nsid, base_slba, 1, buf, bytes, con))
+    {
+        con.println("[ReadFlushTest] READ failed unexpectedly.");
+        return false;
+    }
+    con.println("[ReadFlushTest] READ command completed.");
+
+    // 2. 直後にFLUSHを実行
+    // このFLUSHが失敗すれば、read_lbaに原因があることが確定する
+    con.println("[ReadFlushTest] Issuing FLUSH command...");
+    if (!nvme::flush(nsid, con))
+    {
+        con.println("[ReadFlushTest] FLUSH failed after READ. The culprit is likely in read_lba()!");
+        return false;
+    }
+
+    con.println("[ReadFlushTest] FLUSH succeeded after READ. The problem is more complex.");
+    con.println("--- Read-then-Flush Test Finished ---");
+    return true;
+}

@@ -39,6 +39,7 @@ static inline void bzero(void *p, size_t n)
 
 extern bool nvme_selftest_write(Console &con, uint32_t nsid, uint64_t base_slba);
 extern bool nvme_test_flush_quirk(Console &con, uint32_t nsid, uint64_t base_slba);
+extern bool nvme_test_read_then_flush(Console &con, uint32_t nsid, uint64_t base_slba);
 
 extern "C" __attribute__((sysv_abi)) void kernel_main(BootInfo *bi)
 {
@@ -220,8 +221,6 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
         }
 
         nvme::create_io_queues(con, 64);
-
-        nvme_test_flush_quirk(con, /*nsid*/ 1, /*base_slba*/ 4096);
     }
     else
     {

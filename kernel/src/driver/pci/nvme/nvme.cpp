@@ -905,7 +905,7 @@ namespace nvme
             size_t list_idx = 0;
             size_t pages_left = (remain + 4095) / 4096;
 
-            auto alloc_new_prp_list_page = [&](void) -> bool
+            auto alloc_new_prp_list_page = [&]() -> bool
             {
                 if (!alloc_dma32_page(&list_cur_va, list_cur_pa))
                     return false;
