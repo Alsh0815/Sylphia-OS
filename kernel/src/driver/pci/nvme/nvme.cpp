@@ -793,34 +793,109 @@ namespace nvme
             con.println("NVMe: PRP1 must be DMA32 (<4GiB) for now");
             return false;
         }
-        size_t need = (size_t)nlb * 512; // TODO: 将来は Identify の LBADS で置き換え
-        if (need > buf_bytes)
+        const size_t bytes = (size_t)nlb * 512;
+        if (bytes > buf_bytes)
         {
-            con.printf("NVMe: buffer too small (need %u)\n", (unsigned)need);
+            con.printf("NVMe: buffer too small (need %u)\n", (unsigned)bytes);
             return false;
         }
 
-        const size_t off_in_page = (size_t)(prp1 & 0xFFF);
-        const size_t room_in_page = 4096 - off_in_page;
+        const uintptr_t va = (uintptr_t)buf;
+        const uintptr_t va_p0 = va & ~0xFFFULL;        // 先頭が属するページの基底
+        const size_t off_p0 = (size_t)(va & 0xFFFULL); // ページ内オフセット
+        const size_t room_p0 = 4096 - off_p0;          // 1ページ目に載る最大バイト数
+        size_t remain = (bytes > room_p0) ? (bytes - room_p0) : 0;
 
-        uint64_t prp2 = 0;
+        uint64_t prp2 = 0;                          // デフォルトは未使用
+        void *list_cur_va = nullptr;                // 現在のPRP Listページ（VA）
+        uint64_t list_cur_pa = 0;                   //                           （PA）
+        uint64_t *list_ptr = nullptr;               // VA を uint64_t* にして書き込み
+        size_t list_idx = 0;                        // 現在のPRP List ページ内の書込み位置
+        size_t pages_left = (remain + 4095) / 4096; // まだ必要な"後続"ページ数
 
-        if (need > room_in_page)
+        auto alloc_new_prp_list_page = [&](void) -> bool
         {
-            // --- 2ページにまたがる場合は PRP2 を使用 ---
-            if (need <= room_in_page + 4096)
+            if (!alloc_dma32_page(&list_cur_va, list_cur_pa))
+                return false;
+            bzero(list_cur_va, 4096);
+            list_ptr = (uint64_t *)list_cur_va;
+            list_idx = 0;
+            return true;
+        };
+
+        auto phys_of_page_va = [&](uintptr_t page_base_va) -> uint64_t
+        {
+            uint64_t pa = paging::virt_to_phys((uint64_t)page_base_va);
+            return pa;
+        };
+
+        if (pages_left == 0)
+        {
+            // 1ページ内 -> PRP2未使用のまま
+        }
+        else if (pages_left == 1)
+        {
+            // 2ページに収まる -> PRP2 = 2ページ目の物理
+            uintptr_t va_p1 = va_p0 + 0x1000;
+            uint64_t pa_p1 = phys_of_page_va(va_p1);
+            if ((pa_p1 & 0xFFFFFFFF00000000ull) != 0)
             {
-                prp2 = (prp1 & ~0xFFFULL) + 0x1000ULL; // 次ページ先頭
-                if ((prp2 & 0xFFFFFFFF00000000ull) != 0)
+                con.println("NVMe: PRP2 must be DMA32 (<4GiB) for now");
+                return false;
+            }
+            prp2 = pa_p1;
+        }
+        else
+        {
+            // 3ページ以上 -> PRP List を構築
+            // 準備：最初のPRP Listページを確保し、PRP2 にその物理をセット
+            if (!alloc_new_prp_list_page())
+            {
+                con.println("NVMe: alloc PRP List page failed");
+                return false;
+            }
+            prp2 = list_cur_pa;
+
+            // 後続の "pages_left" 枚ぶんの物理ページアドレスを順に並べる
+            // 注: 中間PRP Listページでは最後(インデックス511)を"次リストPA"で繋ぐ
+            uintptr_t next_page_va = va_p0 + 0x1000; // 2ページ目基底からスタート
+            for (size_t i = 0; i < pages_left; ++i)
+            {
+                // PRP List ページが埋まりそうなら、最後の1スロットを"次のPRP List" チェインに使う
+                if (list_idx == 511 && (i + 1) < pages_left)
                 {
-                    con.println("NVMe: PRP2 must be DMA32 (<4GiB) for now");
+                    // 次のPRP Listページを確保
+                    void *nxt_va = nullptr;
+                    uint64_t nxt_pa = 0;
+                    if (!alloc_dma32_page(&nxt_va, nxt_pa))
+                    {
+                        con.println("NVMe: alloc next PRP List page failed");
+                        return false;
+                    }
+                    bzero(nxt_va, 4096);
+                    // チェイン（最後のエントリに次PRP List の物理アドレスを書く）
+                    list_ptr[511] = nxt_pa;
+                    // 切替
+                    list_cur_va = nxt_va;
+                    list_cur_pa = nxt_pa;
+                    list_ptr = (uint64_t *)list_cur_va;
+                    list_idx = 0;
+                }
+
+                // i番目の"後続ページ"の物理
+                uint64_t pa_pi = phys_of_page_va(next_page_va);
+                if ((pa_pi & 0xFFF) != 0)
+                {
+                    con.println("NVMe: data page is not 4K aligned (unexpected)");
                     return false;
                 }
-            }
-            else
-            {
-                con.println("NVMe: READ requires PRP List (>2 pages) — not implemented yet");
-                return false;
+                if ((pa_pi & 0xFFFFFFFF00000000ull) != 0)
+                {
+                    con.println("NVMe: data page must be DMA32 (<4GiB) for now");
+                    return false;
+                }
+                list_ptr[list_idx++] = pa_pi;
+                next_page_va += 0x1000;
             }
         }
 
@@ -866,7 +941,7 @@ namespace nvme
         const uint8_t *p = (const uint8_t *)buf;
         con.printf("NVMe: READ OK (nsid=%u slba=%u nlb=%u)  data: ",
                    (unsigned)nsid, (unsigned long long)slba, (unsigned)nlb);
-        for (int i = 0; i < 16 && i < (int)need; i++)
+        for (int i = 0; i < 16 && i < (int)bytes; i++)
             con.printf("%x ", (unsigned)p[i]);
         con.printf("...\n");
         return true;
