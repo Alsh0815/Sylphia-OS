@@ -6,6 +6,12 @@ class Console;
 
 namespace nvme
 {
+    enum WriteFlags : uint32_t
+    {
+        kWriteNone = 0,
+        kWriteFua = 1u << 0, // Force Unit Access
+    };
+
     bool init(void *bar0_va, Console &con);
 
     // デバッグ用：初期化後に CAP / VS を取得
@@ -20,6 +26,6 @@ namespace nvme
     bool read_lba(uint32_t nsid, uint64_t slba, uint16_t nlb,
                   void *buf, size_t buf_bytes, Console &con);
     bool write_lba(uint32_t nsid, uint64_t slba, uint16_t nlb,
-                   const void *buf, size_t buf_bytes, Console &con);
+                   const void *buf, size_t buf_bytes, uint32_t flags, Console &con);
 
 } // namespace nvme

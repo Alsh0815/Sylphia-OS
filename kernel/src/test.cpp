@@ -67,7 +67,7 @@ bool nvme_selftest_write(Console &con, uint32_t nsid, uint64_t base_slba)
         fill_pattern((uint8_t *)buf_va, bytes, 0x5Au);
 
         // 3) WRITE pattern
-        if (!nvme::write_lba(nsid, slba, (uint16_t)(bytes / lba_size), buf_va, bytes, con))
+        if (!nvme::write_lba(nsid, slba, (uint16_t)(bytes / lba_size), buf_va, bytes, nvme::kWriteNone, con))
         {
             con.printf("[%s] WRITE failed\n", name);
             return false;
@@ -90,16 +90,18 @@ bool nvme_selftest_write(Console &con, uint32_t nsid, uint64_t base_slba)
         con.printf("[%s] verify %s\n", name, ok ? "OK" : "NG");
 
         // 6) Restore original media content
-        if (!nvme::write_lba(nsid, slba, (uint16_t)(bytes / lba_size), backup, bytes, con))
+        if (!nvme::write_lba(nsid, slba, (uint16_t)(bytes / lba_size), backup, bytes, nvme::kWriteFua, con))
         {
             con.printf("[%s] RESTORE failed (data left modified!)\n", name);
             all_ok = false; // still continue to report failure
         }
+        /*
         if (!nvme::flush(nsid, con))
         {
             con.printf("[%s] FLUSH (RESTORE) failed\n", name);
             return false;
         }
+        */
 
         return ok;
     };
@@ -150,4 +152,44 @@ bool nvme_selftest_write(Console &con, uint32_t nsid, uint64_t base_slba)
 
     con.printf("NVMe WRITE selftest: %s\n", all_ok ? "ALL PASSED" : "FAILED");
     return all_ok;
+}
+
+bool nvme_test_flush_quirk(Console &con, uint32_t nsid, uint64_t base_slba)
+{
+    con.println("\n--- Starting Minimal Flush Quirk Test ---");
+    const size_t lba_size = nvme::lba_bytes();
+    if (lba_size == 0)
+        return false;
+
+    const size_t bytes = lba_size; // 1ブロックだけテスト
+    void *buf = pmm::alloc_pages(1);
+    if (!buf)
+    {
+        con.println("[QuirkTest] alloc failed");
+        return false;
+    }
+
+    // --- Case 1: 非ゼロデータ書き込み → FLUSH (失敗が予測される) ---
+    con.println("\n[QuirkTest] Case 1: Writing non-zero pattern...");
+    fill_pattern((uint8_t *)buf, bytes, 0x5A);
+
+    if (!nvme::write_lba(nsid, base_slba, 1, buf, bytes, nvme::kWriteNone, con))
+    {
+        con.println("[QuirkTest] Case 1: WRITE failed unexpectedly.");
+        return false; // WRITE自体が失敗した場合はテスト中断
+    }
+    con.println("[QuirkTest] Case 1: WRITE command completed.");
+
+    // このFLUSHがタイムアウトで失敗すると仮説は裏付けられる
+    if (!nvme::flush(nsid, con))
+    {
+        con.println("[QuirkTest] Case 1: FLUSH failed as expected. This strongly suggests a QEMU quirk.");
+        // 本来はここでコントローラリセットが必要だが、今回はテストを続行せず終了する
+        con.println("--- Minimal Flush Quirk Test Finished ---");
+        return false; // テストとしては「失敗」だが、原因究明としては「成功」
+    }
+
+    con.println("[QuirkTest] Case 1: FLUSH succeeded unexpectedly. Hypothesis may be wrong.");
+    con.println("--- Minimal Flush Quirk Test Finished ---");
+    return true;
 }

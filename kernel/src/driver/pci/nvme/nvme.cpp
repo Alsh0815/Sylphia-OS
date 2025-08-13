@@ -1035,7 +1035,7 @@ namespace nvme
     }
 
     bool write_lba(uint32_t nsid, uint64_t slba, uint16_t nlb,
-                   const void *buf, size_t buf_bytes, Console &con)
+                   const void *buf, size_t buf_bytes, uint32_t flags, Console &con)
     {
         if (!g.io_sq || !g.io_cq || g.io_qsize == 0)
         {
@@ -1073,7 +1073,7 @@ namespace nvme
         uint64_t curr_slba = slba;
         unsigned chunks = 0;
 
-        auto issue_chunk = [&](uint16_t this_nlb, const void *this_buf, size_t this_bytes) -> bool
+        auto issue_chunk = [&](uint16_t this_nlb, const void *this_buf, size_t this_bytes, bool is_last) -> bool
         {
             uintptr_t va = (uintptr_t)this_buf;
             uint64_t prp1 = paging::virt_to_phys((uint64_t)va);
@@ -1183,6 +1183,9 @@ namespace nvme
             cmd.cdw14 = 0;
             cmd.cdw15 = 0;
 
+            if ((flags & kWriteFua) && is_last)
+                cmd.cdw12 |= (1u << 30);
+
             uint16_t slot = (uint16_t)(g.io_sq_tail % g.io_qsize);
             g.io_sq[slot] = cmd;
             mmio_wmb();
@@ -1213,7 +1216,8 @@ namespace nvme
         {
             uint16_t this_nlb = (uint16_t)((remain_nlb > max_nlb_per_cmd) ? max_nlb_per_cmd : remain_nlb);
             size_t this_bytes = (size_t)this_nlb * (size_t)g.lba_bytes;
-            if (!issue_chunk(this_nlb, cursor, this_bytes))
+            bool is_last = (this_nlb == remain_nlb);
+            if (!issue_chunk(this_nlb, cursor, this_bytes, is_last))
                 return false;
             cursor += this_bytes;
             curr_slba += this_nlb;
