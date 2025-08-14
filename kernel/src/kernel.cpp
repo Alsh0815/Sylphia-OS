@@ -5,6 +5,8 @@
 #include "driver/pci/nvme/nvme.hpp"
 #include "driver/pci/nvme/nvme_regs.hpp"
 #include "driver/pci/pci.hpp"
+#include "io/block/block_device.hpp"
+#include "io/block/block_registry.hpp"
 #include "gdt.hpp"
 #include "heap.hpp"
 #include "idt.hpp"
@@ -212,7 +214,7 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
         volatile NvmeRegs *r = (volatile NvmeRegs *)(uintptr_t)TEST_VA;
         uint64_t cap = r->CAP;
         uint32_t vs = r->VS;
-        con.printf("NVMe CAP@lowVA=%016llx VS=%08x\n",
+        con.printf("NVMe CAP@lowVA=%x VS=%x\n",
                    (unsigned long long)cap, vs);
 
         if (!nvme::init((void *)(uintptr_t)TEST_VA, con))
@@ -222,7 +224,17 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
 
         nvme::create_io_queues(con, 64);
 
-        nvme_selftest_write(con, 1, 4096);
+        block::NvmeInitParams p{.bar0_va = (void *)(uintptr_t)TEST_VA, .nsid = 1};
+        BlockDevice *dev = block::open_nvme_as_block(p, con);
+        if (!dev)
+        { /* エラーハンドル */
+        }
+
+        // 4KiB x 1 ブロック書き込み (FUA+Verify)
+        uint8_t buf[4096] = {0};
+        dev->write_blocks_4k(/*lba4k=*/0, /*count=*/1, buf, sizeof(buf),
+                             /*fua=*/true, BlockDevice::kVerifyAfterWrite, con);
+        dev->flush(con);
     }
     else
     {
