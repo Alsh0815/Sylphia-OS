@@ -33,7 +33,7 @@ extern "C" void *memmove(void *d, const void *s, size_t n)
     }
     return d;
 }
-int memcmp(const void *a, const void *b, size_t n)
+extern "C" int memcmp(const void *a, const void *b, size_t n)
 {
     const unsigned char *p = (const unsigned char *)a;
     const unsigned char *q = (const unsigned char *)b;
