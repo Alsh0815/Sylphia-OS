@@ -21,7 +21,9 @@ SRCS := src/kernel.cpp \
 		src/driver/pci/pci.cpp \
 		src/driver/pci/nvme/nvme.cpp \
 		src/io/block/block_registry.cpp \
-		src/io/block/nvme_block_device.cpp
+		src/io/block/nvme_block_device.cpp \
+		src/io/fs/vfs.cpp \
+		src/io/partitions/gpt.cpp
 OBJS := $(SRCS:.cpp=.o)
 
 all: $(OUTBIN)

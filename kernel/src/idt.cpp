@@ -73,8 +73,9 @@ namespace
         Console c(fb, p);
 
         c.clear_fullscreen({0, 0, 0});
+        /*
         fb.fillRect(0, 0, fb.width(), 24, {160, 40, 40});
-        uint32_t x = 8, y = 6;
+        uint32_t x = 0, y = 0;
         p.setColor({255, 255, 255});
         p.setTextLayout(8, 12);
         p.drawTextWrap(x, y, "EXCEPTION", fb.width() - 8);
@@ -82,6 +83,7 @@ namespace
         c.println("");
         c.print_bg(name, {0, 0, 0}, {255, 220, 40});
         c.println("");
+        */
     }
 
     __attribute__((interrupt)) static void isr_nmi(InterruptFrame *frame)
@@ -94,7 +96,8 @@ namespace
             Framebuffer fb(*g_bi);
             Painter p(fb);
             Console c(fb, p);
-            c.printf("RIP=0x%p  RFLAGS=0x%llx\n",
+            c.println("Exception Handler - NMI");
+            c.printf("RIP=%p  RFLAGS=0x%x\n",
                      (void *)frame->rip, (unsigned long long)frame->rflags);
             c.println("System entered NMI. Halting for diagnostics.");
         }
@@ -109,7 +112,8 @@ namespace
         Framebuffer fb(*g_bi);
         Painter p(fb);
         Console c(fb, p);
-        c.printf("RIP=0x%p  CS=0x%x  RFLAGS=0x%llx\n",
+        c.println("Exception Handler - Divide-by-Zero");
+        c.printf("RIP=%p  CS=0x%x  RFLAGS=0x%x\n",
                  (void *)frame->rip, (unsigned)frame->cs, (unsigned long long)frame->rflags);
         for (;;)
             asm volatile("hlt");
@@ -122,7 +126,8 @@ namespace
         Framebuffer fb(*g_bi);
         Painter p(fb);
         Console c(fb, p);
-        c.printf("RIP=0x%p  RSP=0x%p  RFLAGS=0x%llx\n",
+        c.println("Exception Handler - Double Fault");
+        c.printf("RIP=%p  RSP=%p  RFLAGS=0x%x\n",
                  (void *)frame->rip, (void *)frame->rsp, (unsigned long long)frame->rflags);
         c.println("Entered via IST1. System halted.");
         for (;;)
@@ -135,7 +140,8 @@ namespace
         Framebuffer fb(*g_bi);
         Painter p(fb);
         Console c(fb, p);
-        c.printf("RIP=0x%p\n", (void *)frame->rip);
+        c.println("Exception Handler - Breakpoint");
+        c.printf("RIP=%p\n", (void *)frame->rip);
         for (;;)
             asm volatile("hlt");
     }
@@ -146,7 +152,8 @@ namespace
         Framebuffer fb(*g_bi);
         Painter p(fb);
         Console c(fb, p);
-        c.printf("RIP=0x%p  RFLAGS=0x%llx\n",
+        c.println("Exception Handler - Invalid opcode");
+        c.printf("RIP=%p  RFLAGS=0x%x\n",
                  (void *)frame->rip, (unsigned long long)frame->rflags);
         for (;;)
             asm volatile("hlt");
@@ -158,7 +165,8 @@ namespace
         Framebuffer fb(*g_bi);
         Painter p(fb);
         Console c(fb, p);
-        c.printf("RIP=0x%p  ERR=0x%llx  RFLAGS=0x%llx\n",
+        c.println("Exception Handler - General protection fault");
+        c.printf("RIP=%p  ERR=0x%x  RFLAGS=0x%x\n",
                  (void *)frame->rip, (unsigned long long)error, (unsigned long long)frame->rflags);
         for (;;)
             asm volatile("hlt");
@@ -171,7 +179,8 @@ namespace
         Painter p(fb);
         Console c(fb, p);
         uint64_t cr2 = read_cr2();
-        c.printf("RIP=0x%p  CR2=0x%p  ERR=0x%llx\n",
+        c.println("Exception Handler - Page fault");
+        c.printf("RIP=%p  CR2=%p  ERR=0x%x\n",
                  (void *)frame->rip, (void *)cr2, (unsigned long long)error);
         c.println("ERR bits: P=1(not-present) | W=2(write) | U=4(user) | RSVD=8 | I=16(inst)");
         for (;;)

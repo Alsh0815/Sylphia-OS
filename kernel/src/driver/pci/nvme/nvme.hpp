@@ -17,6 +17,7 @@ namespace nvme
     // デバッグ用：初期化後に CAP / VS を取得
     uint64_t cap();
     uint32_t vs();
+    uint32_t debug_read_vs();
 
     uint32_t lba_bytes();
 

@@ -1229,6 +1229,12 @@ namespace nvme
 
     uint64_t cap() { return g.cap_cache; }
     uint32_t vs() { return g.vs_cache; }
+    uint32_t debug_read_vs()
+    {
+        if (!g.r)
+            return 0xFFFFFFFF;
+        return g.r->VS; // g.r ポインタ経由で直接ハードウェアレジスタを読む
+    }
 
     uint32_t lba_bytes() { return g.lba_bytes; }
 
