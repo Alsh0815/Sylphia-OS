@@ -1,5 +1,6 @@
 #include "../../../../include/std/algorithm.hpp"
 #include "../../../../include/std/cstring.hpp"
+#include "../../../console.hpp"
 #include "../../../kernel_runtime.hpp"
 #include "sylph1fs.hpp"
 

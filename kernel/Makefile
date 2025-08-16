@@ -15,6 +15,7 @@ SRCS := src/kernel.cpp \
 		src/gdt.cpp \
 		src/heap.cpp \
 		src/idt.cpp \
+		src/kernel_runtime.cpp \
 		src/new_delete.cpp \
 		src/paging.cpp \
 		src/pmm.cpp \
@@ -24,6 +25,8 @@ SRCS := src/kernel.cpp \
 		src/io/block/block_registry.cpp \
 		src/io/block/nvme_block_device.cpp \
 		src/io/fs/vfs.cpp \
+		src/io/fs/sylph-v1/sylph1fs_driver.cpp \
+		src/io/fs/sylph-v1/sylph1fs.cpp \
 		src/io/partitions/gpt.cpp
 OBJS := $(SRCS:.cpp=.o)
 

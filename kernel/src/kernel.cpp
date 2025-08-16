@@ -7,6 +7,8 @@
 #include "driver/pci/pci.hpp"
 #include "io/block/block_device.hpp"
 #include "io/block/block_registry.hpp"
+#include "io/block/block_slice.hpp"
+#include "io/fs/sylph-v1/sylph1fs_driver.hpp"
 #include "io/fs/vfs.hpp"
 #include "io/partitions/gpt.hpp"
 #include "gdt.hpp"
@@ -230,8 +232,6 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
             con.println("NVMe init and create queues failed.");
         }
 
-        nvme::debug_test_write_lba0(con);
-
         block::NvmeInitParams p{.bar0_va = (void *)(uintptr_t)TEST_VA, .nsid = 1};
         BlockDevice *dev = block::open_nvme_as_block(p, con);
         if (!dev)
@@ -245,16 +245,40 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
 
         if (gpt::scan(*dev, parts, 32, &found, &meta, con))
         {
+            register_sylph1fs_driver();
+
+            if (found > 0)
+            {
+                // 最初のパーティションを対象にする
+                BlockDeviceSlice slice(*dev, parts[0].first_lba4k, parts[0].blocks4k);
+
+                // --- ここから追加 ---
+
+                // probeしてみて、もし失敗したらmkfsを実行する
+                Sylph1FsDriver temp_driver;
+                if (!temp_driver.probe(slice, con))
+                {
+                    con.println("Sylph1FS: probe failed, attempting to format...");
+                    Sylph1FS fs(slice, con);
+                    Sylph1FS::MkfsOptions opt{}; // デフォルトオプションでフォーマット
+                    if (fs.mkfs(opt) == FsStatus::Ok)
+                    {
+                        con.println("Sylph1FS: mkfs successful.");
+                    }
+                    else
+                    {
+                        con.println("Sylph1FS: mkfs failed.");
+                    }
+                }
+
+                // --- ここまで追加 ---
+            }
+
             FsMount *mnt = nullptr;
             FsStatus st = vfs::mount_auto_on_partitions(*dev, parts, found, con, &mnt);
             if (st != FsStatus::Ok)
             {
                 con.printf("mount_auto_on_partitions failed (%d)\n", (int)st);
-            }
-            else
-            {
-                con.println("mounted via GPT");
-                vfs::unmount(mnt, con);
             }
         }
     }
