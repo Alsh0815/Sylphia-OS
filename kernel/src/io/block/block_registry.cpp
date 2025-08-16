@@ -15,6 +15,7 @@ namespace block
             return nullptr;
         }
         // NVMe 初期化（管理キューセットアップ + Identify）
+        /*
         if (!nvme::init(p.bar0_va, con))
         {
             con.println("Block: NVMe init failed");
@@ -26,6 +27,7 @@ namespace block
             con.println("Block: NVMe create_io_queues failed");
             return nullptr;
         }
+        */
         // アダプタ生成
         auto *dev = new NvmeBlockDevice(/*nsid*/ p.nsid ? p.nsid : 1);
         if (!dev)

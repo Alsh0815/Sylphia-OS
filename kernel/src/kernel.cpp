@@ -7,6 +7,8 @@
 #include "driver/pci/pci.hpp"
 #include "io/block/block_device.hpp"
 #include "io/block/block_registry.hpp"
+#include "io/fs/vfs.hpp"
+#include "io/partitions/gpt.hpp"
 #include "gdt.hpp"
 #include "heap.hpp"
 #include "idt.hpp"
@@ -140,7 +142,7 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
     paint.drawTextWrap(tx, ty, "SYLPHIA OS (text-color-clip)", right);
 
     con.setColors({255, 255, 255}, {0, 0, 0});
-    con.printf("Version: v.%d.%d.%d.%d\n", 0, 1, 3, 22);
+    con.printf("Version: v.%d.%d.%d.%d\n", 0, 1, 4, 3);
 
     con.println("Switched to low stack.");
 
@@ -158,12 +160,7 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
     }
 
     idt::init(bi);
-    con.println("IDT loaded (exceptions installed).");
     idt::install_double_fault(1);
-    con.println("Double Fault handler installed (IST=1).");
-
-    con.printf("Paging: mapped up to %u MiB\n",
-               (unsigned)(paging::mapped_limit() >> 20));
 
     uint64_t managed = pmm::init(*bi);
 
@@ -217,24 +214,49 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
         con.printf("NVMe CAP@lowVA=%x VS=%x\n",
                    (unsigned long long)cap, vs);
 
+        /*
         if (!nvme::init((void *)(uintptr_t)TEST_VA, con))
         {
             con.println("NVMe init failed.");
         }
+        if (!nvme::create_io_queues(con, 64))
+        {
+            con.println("Create NVMe I/O queues failed.");
+        }
+        */
 
-        nvme::create_io_queues(con, 64);
+        if (!nvme::init_and_create_queues((void *)(uintptr_t)TEST_VA, con, 64))
+        {
+            con.println("NVMe init and create queues failed.");
+        }
+
+        nvme::debug_test_write_lba0(con);
 
         block::NvmeInitParams p{.bar0_va = (void *)(uintptr_t)TEST_VA, .nsid = 1};
         BlockDevice *dev = block::open_nvme_as_block(p, con);
         if (!dev)
-        { /* エラーハンドル */
+        {
+            con.printf("Error: open_nvme_as_block");
         }
 
-        // 4KiB x 1 ブロック書き込み (FUA+Verify)
-        uint8_t buf[4096] = {0};
-        dev->write_blocks_4k(/*lba4k=*/0, /*count=*/1, buf, sizeof(buf),
-                             /*fua=*/true, BlockDevice::kVerifyAfterWrite, con);
-        dev->flush(con);
+        PartitionInfo parts[32];
+        size_t found = 0;
+        gpt::GptMeta meta{};
+
+        if (gpt::scan(*dev, parts, 32, &found, &meta, con))
+        {
+            FsMount *mnt = nullptr;
+            FsStatus st = vfs::mount_auto_on_partitions(*dev, parts, found, con, &mnt);
+            if (st != FsStatus::Ok)
+            {
+                con.printf("mount_auto_on_partitions failed (%d)\n", (int)st);
+            }
+            else
+            {
+                con.println("mounted via GPT");
+                vfs::unmount(mnt, con);
+            }
+        }
     }
     else
     {

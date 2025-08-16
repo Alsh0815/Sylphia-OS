@@ -5,11 +5,12 @@ CXX := clang++
 LD  := ld.lld
 
 CXXFLAGS := -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector \
-            -fno-plt -mno-red-zone -O2 -Wall -Wextra \
+            -fno-plt -mno-red-zone -O0 -Wall -Wextra \
             -std=c++20 -Iinclude
 LDFLAGS  := -nostdlib -T linker.ld
 
 SRCS := src/kernel.cpp \
+		src/__cxa.cpp \
 		src/console.cpp \
 		src/gdt.cpp \
 		src/heap.cpp \
@@ -21,7 +22,9 @@ SRCS := src/kernel.cpp \
 		src/driver/pci/pci.cpp \
 		src/driver/pci/nvme/nvme.cpp \
 		src/io/block/block_registry.cpp \
-		src/io/block/nvme_block_device.cpp
+		src/io/block/nvme_block_device.cpp \
+		src/io/fs/vfs.cpp \
+		src/io/partitions/gpt.cpp
 OBJS := $(SRCS:.cpp=.o)
 
 all: $(OUTBIN)

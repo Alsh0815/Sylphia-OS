@@ -407,7 +407,7 @@ namespace paging
         // L3
         uint64_t e3 = pdpt[l3i];
         if (!(e3 & P_PRESENT))
-            return false;
+            return -1;
         // 1GiB ページは使っていない想定なので PS=1 は未対応にしておく（必要なら足せる）
         if (e3 & P_PS)
         {
@@ -420,7 +420,7 @@ namespace paging
         // L2
         uint64_t e2 = pd[l2i];
         if (!(e2 & P_PRESENT))
-            return false;
+            return -1;
 
         if (e2 & P_PS)
         {
@@ -433,7 +433,7 @@ namespace paging
         uint64_t *pt = phys_to_virt(e2 & ~0xFFFULL);
         uint64_t e1 = pt[l1i];
         if (!(e1 & P_PRESENT))
-            return false;
+            return -1;
 
         uint64_t phys_base = e1 & ~0xFFFULL;
         return phys_base | (va & 0xFFFULL);

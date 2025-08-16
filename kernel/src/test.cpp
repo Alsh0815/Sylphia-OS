@@ -56,6 +56,10 @@ bool nvme_selftest_write(Console &con, uint32_t nsid, uint64_t base_slba)
             return false;
         }
 
+        con.printf("DEBUG: Test backup buffer VA=%p\n", backup);
+        uint64_t backup_pa = paging::virt_to_phys((uint64_t)(uintptr_t)backup);
+        con.printf("DEBUG: Test backup buffer PA=%p\n", (void *)backup_pa);
+
         // 1) Backup current media content
         if (!nvme::read_lba(nsid, slba, (uint16_t)(bytes / lba_size), backup, bytes, con))
         {

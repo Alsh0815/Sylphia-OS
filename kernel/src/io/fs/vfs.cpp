@@ -71,7 +71,7 @@ namespace vfs
         for (size_t i = 0; i < num_parts; ++i)
         {
             const PartitionInfo &p = parts[i];
-            con.printf("VFS: try partition %u: lba4k=%llu blocks4k=%llu\n",
+            con.printf("VFS: try partition %u: lba4k=%u blocks4k=%u\n",
                        (unsigned)i,
                        (unsigned long long)p.first_lba4k,
                        (unsigned long long)p.blocks4k);

@@ -61,40 +61,47 @@ bool NvmeBlockDevice::read_blocks_4k(uint64_t lba4k, uint32_t count, void *buf, 
 {
     if (m_4k_to_nlb == 0)
     {
-        con.println("Block(NVMe): sector size incompatible");
+        con.println("m_4k_to_nlb is zero.");
         return false;
     }
-    const size_t need = (size_t)count * 4096u;
-    if (buf_bytes < need)
+    if (buf_bytes < (size_t)count * 4096u)
     {
-        con.printf("Block(NVMe): read buffer too small (need %u)\n", (unsigned)need);
+        con.println("buf_types < count * 4096u");
         return false;
     }
 
-    uint64_t slba = 0;
-    uint16_t nlb = 0;
-    calc_nvme_range(lba4k, count, slba, nlb);
-
-    // NVMe 実装は PRP の各ページが DMA32 であることを要求している。
-    // もし上位物理に落ちる可能性がある場合はバウンスで受ける。
-    // ただし「読み取り」は直接 buf へ入れられればコピー不要なので、まずは直読みを試す。
-    // 直読みが DMA32 不適合で失敗した場合に限ってバウンスへフォールバックする方針。
-    if (nvme::read_lba(m_nsid, slba, nlb, buf, need, con))
+    // 複数ブロック転送を避け、1ブロック(4KiB)ずつ個別に転送する
+    uint8_t *current_buf = reinterpret_cast<uint8_t *>(buf);
+    for (uint32_t i = 0; i < count; ++i)
     {
-        return true;
-    }
+        uint64_t current_lba4k = lba4k + i;
+        uint64_t slba = 0;
+        uint16_t nlb = 0;
+        calc_nvme_range(current_lba4k, 1, slba, nlb); // 常に1ブロック(4KiB)で計算
 
-    // フォールバック：DMA32 バウンスを介して読む
-    void *bounce = alloc_dma32_bounce(need, con);
-    if (!bounce)
-        return false;
-    if (!nvme::read_lba(m_nsid, slba, nlb, bounce, need, con))
-    {
-        // pmm::free_pages(bounce, pages) // APIがあれば解放
-        return false;
+        // 直接バッファへ読み込みを試行
+        con.printf("read_blocks_4k: nsid=%d, slba=%d, nlb=%d, buf=%p\n", m_nsid, slba, nlb, current_buf);
+        if (!nvme::read_lba(m_nsid, slba, nlb, current_buf, 4096, con))
+        {
+            // 失敗した場合はバウンス経由で再試行
+            void *bounce = alloc_dma32_bounce(4096, con);
+            if (!bounce)
+            {
+                con.println("alloc_dma32_bounce failed.");
+                return false;
+            }
+
+            if (!nvme::read_lba(m_nsid, slba, nlb, bounce, 4096, con))
+            {
+                pmm::free_pages(bounce, 1); // 解放APIがあれば
+                con.println("E1 - nvme::read_lba failed.");
+                return false;
+            }
+            memcpy(current_buf, bounce, 4096);
+            pmm::free_pages(bounce, 1);
+        }
+        current_buf += 4096;
     }
-    memcpy(buf, bounce, need);
-    // pmm::free_pages(bounce, pages)
     return true;
 }
 
@@ -119,40 +126,44 @@ bool NvmeBlockDevice::write_blocks_4k(uint64_t lba4k, uint32_t count, const void
                                       bool fua, WriteVerifyMode verify, Console &con)
 {
     if (m_4k_to_nlb == 0)
-    {
-        con.println("Block(NVMe): sector size incompatible");
         return false;
-    }
-    const size_t need = (size_t)count * 4096u;
-    if (buf_bytes < need)
-    {
-        con.printf("Block(NVMe): write buffer too small (need %u)\n", (unsigned)need);
+    if (buf_bytes < (size_t)count * 4096u)
         return false;
-    }
 
-    uint64_t slba = 0;
-    uint16_t nlb = 0;
-    calc_nvme_range(lba4k, count, slba, nlb);
-
-    // まずは直接書き込みを試す
-    uint32_t flags = fua ? nvme::kWriteFua : nvme::kWriteNone;
-    if (!nvme::write_lba(m_nsid, slba, nlb, buf, need, flags, con))
+    // 読み込みと同様に、1ブロック(4KiB)ずつ個別に転送する
+    const uint8_t *current_buf = reinterpret_cast<const uint8_t *>(buf);
+    for (uint32_t i = 0; i < count; ++i)
     {
-        // フォールバック：DMA32 バウンスにコピーしてから書く
-        void *bounce = alloc_dma32_bounce(need, con);
-        if (!bounce)
-            return false;
-        std::memcpy(bounce, buf, need);
-        if (!nvme::write_lba(m_nsid, slba, nlb, bounce, need, flags, con))
+        uint64_t current_lba4k = lba4k + i;
+        uint64_t slba = 0;
+        uint16_t nlb = 0;
+        calc_nvme_range(current_lba4k, 1, slba, nlb);
+
+        uint32_t flags = fua ? nvme::kWriteFua : nvme::kWriteNone;
+
+        if (!nvme::write_lba(m_nsid, slba, nlb, current_buf, 4096, flags, con))
         {
-            return false;
+            // バウンス経由で再試行
+            void *bounce = alloc_dma32_bounce(4096, con);
+            if (!bounce)
+                return false;
+            memcpy(bounce, current_buf, 4096);
+            if (!nvme::write_lba(m_nsid, slba, nlb, bounce, 4096, flags, con))
+            {
+                // pmm::free_pages(bounce, 1);
+                return false;
+            }
+            // pmm::free_pages(bounce, 1);
         }
-    }
 
-    if (verify == kVerifyAfterWrite)
-    {
-        if (!verify_write_range(lba4k, count, buf, need, con))
-            return false;
+        if (verify == kVerifyAfterWrite)
+        {
+            if (!verify_write_range(current_lba4k, 1, current_buf, 4096, con))
+            {
+                return false;
+            }
+        }
+        current_buf += 4096;
     }
     return true;
 }

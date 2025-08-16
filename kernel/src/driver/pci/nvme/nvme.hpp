@@ -13,10 +13,12 @@ namespace nvme
     };
 
     bool init(void *bar0_va, Console &con);
+    bool init_and_create_queues(void *bar0_va, Console &con, uint16_t want_qsize);
 
     // デバッグ用：初期化後に CAP / VS を取得
     uint64_t cap();
     uint32_t vs();
+    uint32_t debug_read_vs();
 
     uint32_t lba_bytes();
 
@@ -27,5 +29,7 @@ namespace nvme
                   void *buf, size_t buf_bytes, Console &con);
     bool write_lba(uint32_t nsid, uint64_t slba, uint16_t nlb,
                    const void *buf, size_t buf_bytes, uint32_t flags, Console &con);
+
+    bool debug_test_write_lba0(Console &con);
 
 } // namespace nvme
