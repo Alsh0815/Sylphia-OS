@@ -5,11 +5,12 @@ CXX := clang++
 LD  := ld.lld
 
 CXXFLAGS := -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector \
-            -fno-plt -mno-red-zone -O2 -Wall -Wextra \
+            -fno-plt -mno-red-zone -O0 -Wall -Wextra \
             -std=c++20 -Iinclude
 LDFLAGS  := -nostdlib -T linker.ld
 
 SRCS := src/kernel.cpp \
+		src/__cxa.cpp \
 		src/console.cpp \
 		src/gdt.cpp \
 		src/heap.cpp \

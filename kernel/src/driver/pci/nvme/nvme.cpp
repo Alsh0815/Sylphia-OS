@@ -87,7 +87,7 @@ namespace nvme
 
     static void tiny_pause()
     {
-        for (volatile int i = 0; i < 200000; i++)
+        for (volatile int i = 0; i < 2000000; i++)
             asm volatile("");
     }
 
@@ -126,14 +126,28 @@ namespace nvme
         for (uint32_t spin = 0; spin < 10000000; ++spin)
         {
             const volatile CqEntry *ce = &g.io_cq[g.io_cq_head];
+
+            // volatileなstatusを読み込む
             uint16_t st = ce->status;
+
             if ((st & 1) == g.io_cq_phase)
             {
-                memcpy(&out_ce, (const void *)ce, sizeof(CqEntry));
+                // memcpyを使わず、フィールドを一つずつvolatileとして読み込む
+                out_ce.dw0 = ce->dw0;
+                out_ce.dw1 = ce->dw1;
+                out_ce.sq_head = ce->sq_head;
+                out_ce.sq_id = ce->sq_id;
+                out_ce.cid = ce->cid;
+                out_ce.status = st; // 最初に読んだstを最後に入れる
+
+                // グローバルな状態変数を更新
                 g.io_cq_head = (uint16_t)((g.io_cq_head + 1) % g.io_qsize);
                 if (g.io_cq_head == 0)
                     g.io_cq_phase ^= 1;
+
+                // ドアベルを更新してコントローラに通知
                 *doorbell_cq(1) = g.io_cq_head;
+
                 out_status = (uint16_t)(st >> 1);
                 return true;
             }
@@ -167,14 +181,21 @@ namespace nvme
         return ((uint64_t)hi1 << 32) | lo1;
     }
 
-    static bool alloc_dma32_page(void **out_va, uint64_t &out_pa)
+    static bool alloc_dma32_page(void **out_va, uint64_t &out_pa, Console &con)
     {
         for (int t = 0; t < 32; ++t)
         {
             void *va = pmm::alloc_pages(1);
+            con.printf("Debug: pmm::alloc_pages(1) returned physical address: %p\n", va);
             if (!va)
                 return false;
             uint64_t pa = paging::virt_to_phys((uint64_t)(uintptr_t)va);
+            con.printf("Debug: virt_to_phys(%p) returned: %p\n", va, (void *)pa);
+            if (pa == (uint64_t)-1)
+            {
+                con.printf("NVMe Error: virt_to_phys failed for VA %p\n", va);
+                return false;
+            }
             if (((pa & 0xFFF) == 0) && (pa < (1ull << 32)))
             {
                 *out_va = va;
@@ -192,14 +213,32 @@ namespace nvme
         for (uint32_t spin = 0; spin < 10000000; ++spin)
         {
             const volatile CqEntry *ce = &g.acq[g.cq_head];
+
+            // volatileなstatusを読み込む
             uint16_t st = ce->status;
+
             if ((st & 1) == g.cq_phase)
             {
-                memcpy(&out_ce, (const void *)ce, sizeof(CqEntry));
+                // volatileな完了エントリの内容を安全にコピー
+                out_ce.dw0 = ce->dw0;
+                out_ce.dw1 = ce->dw1;
+                out_ce.sq_head = ce->sq_head;
+                out_ce.sq_id = ce->sq_id;
+                out_ce.cid = ce->cid;
+                out_ce.status = st;
+
+                // CPUによる状態変数の更新と、デバイスに見えるMMIO書き込みの順序を保証する
+                // ために、sfence (ストアフェンス) をここに配置する
+                asm volatile("sfence" ::: "memory");
+
+                // グローバルな状態変数を更新
                 g.cq_head = (uint16_t)((g.cq_head + 1) % g.qsize);
                 if (g.cq_head == 0)
                     g.cq_phase ^= 1;
+
+                // ドアベルを更新してコントローラに通知
                 *doorbell_cq(0) = g.cq_head;
+
                 out_status = (uint16_t)(st >> 1);
                 return true;
             }
@@ -273,7 +312,7 @@ namespace nvme
     // --- Create IOCQ (qid=1) ---
     static bool create_iocq_q1(uint16_t qid, uint16_t qsize, Console &con)
     {
-        if (!alloc_dma32_page((void **)&g.io_cq, g.io_cq_phys))
+        if (!alloc_dma32_page((void **)&g.io_cq, g.io_cq_phys, con))
         {
             con.println("NVMe: alloc IOCQ DMA32 page failed");
             return false;
@@ -356,7 +395,7 @@ namespace nvme
     // --- Create IOSQ (qid=1) ---
     static bool create_iosq_q1(uint16_t qid, uint16_t qsize, Console &con)
     {
-        if (!alloc_dma32_page((void **)&g.io_sq, g.io_sq_phys))
+        if (!alloc_dma32_page((void **)&g.io_sq, g.io_sq_phys, con))
         {
             con.println("NVMe: alloc IOSQ DMA32 page failed");
             return false;
@@ -537,55 +576,45 @@ namespace nvme
         con.printf("DBG: DB(SQ0)=%u (addr=%p)\n",
                    (unsigned)g.sq_tail, doorbell_sq(0));
 
-        // CQ待ち (超簡易ポーリング)
-        for (uint32_t spin = 0; spin < 10000000; ++spin)
+        uint16_t st = 0;
+        CqEntry ce{};
+        if (!admin_wait_complete(con, st, ce))
         {
-            const volatile CqEntry *ce = &g.acq[g.cq_head];
-            uint16_t status = ce->status;
-            if ((status & 1) == g.cq_phase)
-            {
-                // 完了
-                g.cq_head = (uint16_t)((g.cq_head + 1) % g.qsize);
-                if (g.cq_head == 0)
-                    g.cq_phase ^= 1;
-                *doorbell_cq(0) = g.cq_head; // CQ head doorbell
-
-                uint16_t st = (uint16_t)(status >> 1);
-                if (st != 0)
-                {
-                    con.printf("NVMe: Identify failed, status=%04x\n", (unsigned)st);
-                    return false;
-                }
-                uint8_t *ctrl = (uint8_t *)buf;
-                // 安全策: バッファ長は 4096 固定。一般的な配置では byte offset 77 に MDTS がある。
-                uint8_t mdts_val = ctrl[77];
-
-                // 現在プログラム済みのページサイズ (CC.MPS) から MPS バイト数を算出
-                uint32_t cc_rb = g.r->CC;                  // すでに有効化後
-                uint32_t mps_exp = (cc_rb >> 7) & 0xF;     // CC.MPS = log2(bytes) - 12
-                uint32_t mps_bytes = 1u << (12 + mps_exp); // 例: MPS=0 -> 4096B
-
-                uint64_t max_bytes64;
-                if (mdts_val == 0)
-                {
-                    // MDTS=0 は“制限なし”扱いで運用（実機相性のため大きめ許容）
-                    max_bytes64 = 0xFFFFFFFFull;
-                }
-                else
-                {
-                    // max = MPS * 2^MDTS
-                    max_bytes64 = ((uint64_t)mps_bytes) << mdts_val;
-                    if (max_bytes64 > 0xFFFFFFFFull)
-                        max_bytes64 = 0xFFFFFFFFull;
-                }
-                g.mdts = mdts_val;
-                g.max_xfer_bytes = (uint32_t)max_bytes64;
-                con.println("NVMe: Identify Controller OK");
-                return true;
-            }
+            con.println("NVMe: Identify timeout");
+            return false;
         }
-        con.println("NVMe: Identify timeout");
-        return false;
+        if (st != 0)
+        {
+            con.printf("NVMe: Identify failed, status=%04x\n", (unsigned)st);
+            return false;
+        }
+
+        // 成功後の処理
+        uint8_t *ctrl = (uint8_t *)buf;
+        uint8_t mdts_val = ctrl[77];
+
+        // 現在プログラム済みのページサイズ (CC.MPS) から MPS バイト数を算出
+        uint32_t cc_rb = g.r->CC;                  // すでに有効化後
+        uint32_t mps_exp = (cc_rb >> 7) & 0xF;     // CC.MPS = log2(bytes) - 12
+        uint32_t mps_bytes = 1u << (12 + mps_exp); // 例: MPS=0 -> 4096B
+
+        uint64_t max_bytes64;
+        if (mdts_val == 0)
+        {
+            // MDTS=0 は“制限なし”扱いで運用（実機相性のため大きめ許容）
+            max_bytes64 = 0xFFFFFFFFull;
+        }
+        else
+        {
+            // max = MPS * 2^MDTS
+            max_bytes64 = ((uint64_t)mps_bytes) << mdts_val;
+            if (max_bytes64 > 0xFFFFFFFFull)
+                max_bytes64 = 0xFFFFFFFFull;
+        }
+        g.mdts = mdts_val;
+        g.max_xfer_bytes = (uint32_t)max_bytes64;
+        con.println("NVMe: Identify Controller OK");
+        return true;
     }
 
     static bool identify_namespace(uint32_t nsid, Console &con)
@@ -616,77 +645,65 @@ namespace nvme
         g.sq_tail = (uint16_t)((g.sq_tail + 1) % g.qsize);
         *doorbell_sq(0) = g.sq_tail; // SQ tail doorbell
 
-        // 完了待ち（簡易ポーリング）
-        for (uint32_t spin = 0; spin < 10000000; ++spin)
+        uint16_t st = 0;
+        CqEntry ce{};
+        if (!admin_wait_complete(con, st, ce))
         {
-            const volatile CqEntry *ce = &g.acq[g.cq_head];
-            uint16_t status = ce->status;
-            if ((status & 1) == g.cq_phase)
-            {
-                // CQ 進める
-                g.cq_head = (uint16_t)((g.cq_head + 1) % g.qsize);
-                if (g.cq_head == 0)
-                    g.cq_phase ^= 1;
-                *doorbell_cq(0) = g.cq_head; // CQ head doorbell
-
-                uint16_t sc = (uint16_t)(status >> 1);
-                if (sc != 0)
-                {
-                    con.printf("NVMe: Identify NS #%u failed, status=%04x\n",
-                               (unsigned)nsid, (unsigned)sc);
-                    return false;
-                }
-
-                // 解析
-                const NvmeIdentifyNamespace *ns =
-                    reinterpret_cast<const NvmeIdentifyNamespace *>(buf);
-
-                // 使用 LBAF index とセクタサイズ算出（FLBAS[3:0] = idx, LBADS = log2(bytes)）
-                uint8_t idx = (uint8_t)(ns->flbas & 0x0F);
-                uint8_t max = (uint8_t)(ns->nlbaf & 0x1F); // 仕様上「数-1」
-                if (idx > max)
-                {
-                    con.printf("NVMe: FLBAS index %u > NLBAF %u, fallback to 0\n",
-                               (unsigned)idx, (unsigned)max);
-                    idx = 0;
-                }
-                uint32_t sector_size = 1u << ns->lbaf[idx].lbads; // bytes
-                if (sector_size == 0)
-                    sector_size = 512;
-
-                g.ns_active = nsid;
-                g.lba_bytes = sector_size;
-
-                // 容量換算（LBA数 × セクタサイズ）
-                auto mul64_clamp = [](uint64_t a, uint64_t b) -> __uint128_t
-                {
-                    return ((__uint128_t)a) * ((__uint128_t)b);
-                };
-                __uint128_t nsze_bytes = mul64_clamp(ns->nsze, sector_size);
-                __uint128_t ncap_bytes = mul64_clamp(ns->ncap, sector_size);
-                __uint128_t nuse_bytes = mul64_clamp(ns->nuse, sector_size);
-
-                // ログ出力（128bit は下位64bitのみを十進で出す簡易表示）
-                auto lo64 = [](__uint128_t x) -> uint64_t
-                { return (uint64_t)x; };
-                con.printf("NVMe: Identify Namespace #%u OK\n", (unsigned)nsid);
-                con.printf("  Sector size : %u bytes  (LBAF=%u, LBADS=%u)\n",
-                           (unsigned)sector_size, (unsigned)idx, (unsigned)ns->lbaf[idx].lbads);
-                con.printf("  NSZE : %llu LBAs  (%llu bytes)\n",
-                           (unsigned long long)ns->nsze,
-                           (unsigned long long)lo64(nsze_bytes));
-                con.printf("  NCAP : %llu LBAs  (%llu bytes)\n",
-                           (unsigned long long)ns->ncap,
-                           (unsigned long long)lo64(ncap_bytes));
-                con.printf("  NUSE : %llu LBAs  (%llu bytes)\n",
-                           (unsigned long long)ns->nuse,
-                           (unsigned long long)lo64(nuse_bytes));
-
-                return true;
-            }
+            con.println("NVMe: Identify timeout");
+            return false;
         }
-        con.println("NVMe: Identify NS timeout");
-        return false;
+        if (st != 0)
+        {
+            con.printf("NVMe: Identify failed, status=%04x\n", (unsigned)st);
+            return false;
+        }
+
+        // 成功後の処理
+        const NvmeIdentifyNamespace *ns =
+            reinterpret_cast<const NvmeIdentifyNamespace *>(buf);
+
+        // 使用 LBAF index とセクタサイズ算出（FLBAS[3:0] = idx, LBADS = log2(bytes)）
+        uint8_t idx = (uint8_t)(ns->flbas & 0x0F);
+        uint8_t max = (uint8_t)(ns->nlbaf & 0x1F); // 仕様上「数-1」
+        if (idx > max)
+        {
+            con.printf("NVMe: FLBAS index %u > NLBAF %u, fallback to 0\n",
+                       (unsigned)idx, (unsigned)max);
+            idx = 0;
+        }
+        uint32_t sector_size = 1u << ns->lbaf[idx].lbads; // bytes
+        if (sector_size == 0)
+            sector_size = 512;
+
+        g.ns_active = nsid;
+        g.lba_bytes = sector_size;
+
+        // 容量換算（LBA数 × セクタサイズ）
+        auto mul64_clamp = [](uint64_t a, uint64_t b) -> __uint128_t
+        {
+            return ((__uint128_t)a) * ((__uint128_t)b);
+        };
+        __uint128_t nsze_bytes = mul64_clamp(ns->nsze, sector_size);
+        __uint128_t ncap_bytes = mul64_clamp(ns->ncap, sector_size);
+        __uint128_t nuse_bytes = mul64_clamp(ns->nuse, sector_size);
+
+        // ログ出力（128bit は下位64bitのみを十進で出す簡易表示）
+        auto lo64 = [](__uint128_t x) -> uint64_t
+        { return (uint64_t)x; };
+        con.printf("NVMe: Identify Namespace #%u OK\n", (unsigned)nsid);
+        con.printf("  Sector size : %u bytes  (LBAF=%u, LBADS=%u)\n",
+                   (unsigned)sector_size, (unsigned)idx, (unsigned)ns->lbaf[idx].lbads);
+        con.printf("  NSZE : %llu LBAs  (%llu bytes)\n",
+                   (unsigned long long)ns->nsze,
+                   (unsigned long long)lo64(nsze_bytes));
+        con.printf("  NCAP : %llu LBAs  (%llu bytes)\n",
+                   (unsigned long long)ns->ncap,
+                   (unsigned long long)lo64(ncap_bytes));
+        con.printf("  NUSE : %llu LBAs  (%llu bytes)\n",
+                   (unsigned long long)ns->nuse,
+                   (unsigned long long)lo64(nuse_bytes));
+        con.println("NVMe: Identify Namespace OK");
+        return true;
     }
 
     bool init(void *bar0_va, Console &con)
@@ -794,6 +811,87 @@ namespace nvme
         return true;
     }
 
+    bool init_and_create_queues(void *bar0_va, Console &con, uint16_t want_qsize)
+    {
+        g.r = (volatile NvmeRegs *)bar0_va;
+        g.cap_cache = g.r->CAP;
+        g.db_stride = 4u << ((g.cap_cache >> 32) & 0xF);
+
+        // --- ステップ1: コントローラを無効化 ---
+        g.r->CC &= ~1u;
+        for (uint32_t i = 0; i < 100000; ++i)
+        {
+            if ((g.r->CSTS & 1u) == 0)
+                break;
+        }
+        if ((g.r->CSTS & 1u) != 0)
+        {
+            con.println("NVMe: disable timeout");
+            return false;
+        }
+
+        // --- ステップ2: Admin Queueを設定 ---
+        g.qsize = 32;
+        g.asq = (SqEntry *)pmm::alloc_pages(1);
+        g.acq = (CqEntry *)pmm::alloc_pages(1);
+        if (!g.asq || !g.acq)
+            return false;
+        bzero(g.asq, 4096);
+        bzero(g.acq, 4096);
+        g.sq_tail = 0;
+        g.cq_head = 0;
+        g.cq_phase = 1;
+
+        uint64_t asq_phys = paging::virt_to_phys((uint64_t)(uintptr_t)g.asq);
+        uint64_t acq_phys = paging::virt_to_phys((uint64_t)(uintptr_t)g.acq);
+        if (asq_phys == (uint64_t)-1 || acq_phys == (uint64_t)-1)
+            return false;
+
+        g.r->AQA = ((uint32_t)(g.qsize - 1) << 16) | (uint32_t)(g.qsize - 1);
+        g.r->ASQ_LO = (uint32_t)asq_phys;
+        g.r->ASQ_HI = (uint32_t)(asq_phys >> 32);
+        g.r->ACQ_LO = (uint32_t)acq_phys;
+        g.r->ACQ_HI = (uint32_t)(acq_phys >> 32);
+
+        // --- ステップ3: コントローラ設定(CC)を書き込み、有効化する ---
+        uint32_t cc = (4u << 20) | (6u << 16) | (0u << 7) | (0u << 4);
+        g.r->CC = cc;
+        asm volatile("sfence" ::: "memory");
+        g.r->CC = cc | 1u; // EN=1
+        for (uint32_t i = 0; i < 100000; ++i)
+        {
+            if ((g.r->CSTS & 1u) == 1)
+                break;
+        }
+        if ((g.r->CSTS & 1u) != 1)
+        {
+            con.println("NVMe: enable timeout");
+            return false;
+        }
+        con.println("NVMe: Admin queues ready.");
+
+        // --- ステップ4: AdminコマンドでコントローラとNSを識別 ---
+        if (!identify_controller(con))
+            return false;
+        if (!identify_namespace(1, con))
+            return false;
+
+        // --- ステップ5: AdminコマンドでI/Oキューの数を設定 ---
+        if (!set_features_num_queues(0, 0, con))
+            return false;
+
+        // --- ステップ6: I/Oキューを作成 ---
+        uint16_t q = clamp_io_qsize(want_qsize);
+        g.io_qsize = q;
+        if (!create_iocq_q1(1, q, con))
+            return false;
+        if (!create_iosq_q1(1, q, con))
+            return false;
+
+        con.printf("NVMe: I/O queues (QID=1, QSIZE=%u) created successfully.\n", (unsigned)q);
+        return true;
+    }
+
     bool flush(uint32_t nsid, Console &con)
     {
         if (!g.io_sq || !g.io_cq || g.io_qsize == 0)
@@ -822,7 +920,7 @@ namespace nvme
         // 投入
         uint16_t slot = (uint16_t)(g.io_sq_tail % g.io_qsize);
         g.io_sq[slot] = cmd;
-        mmio_wmb();
+        asm volatile("sfence" ::: "memory");
         g.io_sq_tail = (uint16_t)((g.io_sq_tail + 1) % g.io_qsize);
         *doorbell_sq(1) = g.io_sq_tail;
 
@@ -907,7 +1005,7 @@ namespace nvme
 
             auto alloc_new_prp_list_page = [&]() -> bool
             {
-                if (!alloc_dma32_page(&list_cur_va, list_cur_pa))
+                if (!alloc_dma32_page(&list_cur_va, list_cur_pa, con))
                     return false;
                 bzero(list_cur_va, 4096);
                 list_ptr = (uint64_t *)list_cur_va;
@@ -949,7 +1047,7 @@ namespace nvme
                     {
                         void *nxt_va = nullptr;
                         uint64_t nxt_pa = 0;
-                        if (!alloc_dma32_page(&nxt_va, nxt_pa))
+                        if (!alloc_dma32_page(&nxt_va, nxt_pa, con))
                         {
                             con.println("NVMe: alloc next PRP List page failed");
                             return false;
@@ -995,7 +1093,7 @@ namespace nvme
 
             uint16_t slot = (uint16_t)(g.io_sq_tail % g.io_qsize);
             g.io_sq[slot] = cmd;
-            mmio_wmb();
+            asm volatile("sfence" ::: "memory");
             g.io_sq_tail = (uint16_t)((g.io_sq_tail + 1) % g.io_qsize);
             *doorbell_sq(1) = g.io_sq_tail;
 
@@ -1097,7 +1195,7 @@ namespace nvme
 
             auto alloc_new_prp_list_page = [&]() -> bool
             {
-                if (!alloc_dma32_page(&list_cur_va, list_cur_pa))
+                if (!alloc_dma32_page(&list_cur_va, list_cur_pa, con))
                     return false;
                 bzero(list_cur_va, 4096);
                 list_ptr = (uint64_t *)list_cur_va;
@@ -1139,7 +1237,7 @@ namespace nvme
                     {
                         void *nxt_va = nullptr;
                         uint64_t nxt_pa = 0;
-                        if (!alloc_dma32_page(&nxt_va, nxt_pa))
+                        if (!alloc_dma32_page(&nxt_va, nxt_pa, con))
                         {
                             con.println("NVMe: alloc next PRP List page failed");
                             return false;
@@ -1188,7 +1286,7 @@ namespace nvme
 
             uint16_t slot = (uint16_t)(g.io_sq_tail % g.io_qsize);
             g.io_sq[slot] = cmd;
-            mmio_wmb();
+            asm volatile("sfence" ::: "memory");
             g.io_sq_tail = (uint16_t)((g.io_sq_tail + 1) % g.io_qsize);
             *doorbell_sq(1) = g.io_sq_tail;
 
@@ -1237,5 +1335,73 @@ namespace nvme
     }
 
     uint32_t lba_bytes() { return g.lba_bytes; }
+
+    bool debug_test_write_lba0(Console &con)
+    {
+        con.println("\n--- Running minimal WRITE test to LBA 0 ---");
+
+        // 1. ページアラインされたバッファを確保
+        void *buffer_va = pmm::alloc_pages(1);
+        if (!buffer_va)
+        {
+            con.println("Minimal test: pmm::alloc_pages failed.");
+            return false;
+        }
+        uint64_t buffer_pa = paging::virt_to_phys((uint64_t)(uintptr_t)buffer_va);
+        if (buffer_pa == (uint64_t)-1)
+        {
+            con.println("Minimal test: virt_to_phys failed.");
+            return false;
+        }
+        con.printf("Minimal test: Buffer VA=%p, PA=%p\n", buffer_va, (void *)buffer_pa);
+
+        // バッファをテストパターンで埋める
+        for (int i = 0; i < 512; ++i)
+            ((uint8_t *)buffer_va)[i] = 0xAA;
+
+        // 2. WRITEコマンドを構築 (bzeroに頼らず全フィールドを明示)
+        SqEntry cmd{};
+        cmd.opc = 0x01; // WRITE
+        cmd.fuse = 0;
+        cmd.cid = (uint16_t)(g.io_sq_tail & 0xFFFF);
+        cmd.nsid = 1; // NameSpace 1 を想定
+        cmd.rsv2 = 0;
+        cmd.mptr = 0;
+        cmd.prp1 = buffer_pa;
+        cmd.prp2 = 0;  // 転送は1ページ内に収まるのでPRP2は0
+        cmd.cdw10 = 0; // SLBA (lower 32bit) = 0
+        cmd.cdw11 = 0; // SLBA (upper 32bit) = 0
+        cmd.cdw12 = 0; // NLB = 0 (1ブロック転送)
+        cmd.cdw13 = 0;
+        cmd.cdw14 = 0;
+        cmd.cdw15 = 0;
+
+        // 3. コマンド投入
+        con.println("Minimal test: Submitting WRITE command...");
+        uint16_t slot = (uint16_t)(g.io_sq_tail % g.io_qsize);
+        g.io_sq[slot] = cmd;
+        asm volatile("sfence" ::: "memory");
+        g.io_sq_tail = (uint16_t)((g.io_sq_tail + 1) % g.io_qsize);
+        *doorbell_sq(1) = g.io_sq_tail;
+
+        // 4. 完了待機
+        uint16_t st = 0;
+        CqEntry ce{};
+        if (!io_wait_complete(con, st, ce))
+        {
+            con.println("Minimal test: Completion timeout.");
+            return false;
+        }
+
+        if (st != 0)
+        {
+            dump_nvme_status(con, st);
+            con.printf("Minimal test: WRITE FAILED (SQID=%u CID=%u)\n", (unsigned)ce.sq_id, (unsigned)ce.cid);
+            return false;
+        }
+
+        con.println("\n--- Minimal WRITE test SUCCEEDED! ---\n");
+        return flush(1, con);
+    }
 
 } // namespace nvme

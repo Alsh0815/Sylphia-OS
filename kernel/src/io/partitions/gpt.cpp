@@ -108,8 +108,14 @@ namespace gpt
                 return false;
             }
             uint64_t lba4k = (uint64_t)(blk + ((bytes - remain) + inblk) / 4096u); // recompute per loop
+            con.printf("GPT: Attempting to read 4KiB LBA: %u\n", lba4k);
             if (!dev.read_blocks_4k(lba4k, 1, page, 4096, con))
+            {
+                con.println("GPT: dev.read_blocks_4k returned false");
+                pmm::free_pages(page, 1);
                 return false;
+            }
+            con.printf("GPT: Successfully read 4KiB LBA: %u\n", lba4k);
 
             size_t offset_in_page = (lba4k == blk) ? inblk : 0;
             size_t copy = min_u64(remain, 4096u - offset_in_page);
@@ -212,19 +218,15 @@ namespace gpt
             }
             // CRC update
             const uint8_t *p = page;
-            size_t remain = to_read;
-            pe_crc ^= 0xFFFFFFFFu;
-            for (size_t i = 0; i < remain; i++)
+            for (size_t i = 0; i < to_read; ++i)
             {
-                uint32_t x = (pe_crc ^ p[i]) & 0xFFu;
-                for (int b = 0; b < 8; b++)
+                pe_crc ^= p[i];
+                for (int b = 0; b < 8; ++b)
                 {
-                    uint32_t mask = -(int)(x & 1u);
-                    x = (x >> 1) ^ (0xEDB88320u & mask);
+                    uint32_t mask = -(int)(pe_crc & 1u);
+                    pe_crc = (pe_crc >> 1) ^ (0xEDB88320u & mask);
                 }
-                pe_crc = (pe_crc >> 8) ^ x; // ここは簡略化した逐次版でも可、ただし整合性を保つ
             }
-            pe_crc ^= 0xFFFFFFFFu;
 
             // 実パース（128B固定時のみ安全に行う）
             if (parse_direct)
@@ -252,12 +254,13 @@ namespace gpt
 
             off += to_read;
             processed += to_read;
-            // pmm::free_pages(page, 1); // 解放APIがあれば使用
+            pmm::free_pages(page, 1); // 解放APIがあれば使用
         }
+        pe_crc ^= 0xFFFFFFFFu;
 
         if (pe_crc != h->partition_entries_crc32)
         {
-            con.printf("GPT: entries CRC mismatch (calc=%08x stored=%08x)\n",
+            con.printf("GPT: entries CRC mismatch (calc=%x stored=%x)\n",
                        (unsigned)pe_crc, (unsigned)h->partition_entries_crc32);
             return false;
         }
