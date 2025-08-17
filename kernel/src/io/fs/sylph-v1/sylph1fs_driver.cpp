@@ -1,5 +1,6 @@
 #include "../../../../include/std/cstring.hpp"
 #include "../../../console.hpp"
+#include "../../../kernel_runtime.hpp"
 #include "sylph1fs_driver.hpp"
 
 namespace
@@ -27,31 +28,6 @@ namespace
         bool ok = false;
         bool clean = false;      // CLEANフラグ
         bool incomplete = false; // INCOMPLETEフラグ
-    };
-
-    // 最小マウントハンドル
-    class Sylph1Mount : public FsMount
-    {
-    public:
-        Sylph1Mount(BlockDevice &dev,
-                    const sylph1fs::Superblock &sb,
-                    bool read_only)
-            : m_dev(dev), m_sb(sb), m_ro(read_only) {}
-
-        void unmount(Console &con) override
-        {
-            // 読み取り専用でも flush は呼んでおく（BlockDevice側で無害）
-            (void)con;
-            m_dev.flush(con);
-        }
-
-        const sylph1fs::Superblock &superblock() const { return m_sb; }
-        bool read_only() const { return m_ro; }
-
-    private:
-        BlockDevice &m_dev;
-        sylph1fs::Superblock m_sb;
-        bool m_ro;
     };
 
     static SbCheck read_and_validate_sb(BlockDevice &dev, uint64_t lba4k,
@@ -251,4 +227,133 @@ bool register_sylph1fs_driver()
 {
     static Sylph1FsDriver g_drv;
     return vfs::register_driver(&g_drv);
+}
+
+bool Sylph1Mount::map_crc_entry(uint64_t data_idx, uint64_t &crc_lba4k, size_t &crc_off, Console &con) const
+{
+    // 境界チェック
+    if (data_idx >= m_sb.data_area_blocks)
+    {
+        con.printf("Sylph1FS: CRC map out-of-range (data_idx=%llu)\n",
+                   (unsigned long long)data_idx);
+        return false;
+    }
+    // サイドカー方式:
+    //   crc_byte_off = data_idx * 4
+    //   crc_lba4k    = crc_area_start + (crc_byte_off / 4096)
+    //   crc_off      = crc_byte_off % 4096
+    const uint64_t crc_byte_off = data_idx * 4ull;
+    crc_lba4k = m_sb.crc_area_start + (crc_byte_off >> 12); // /4096
+    crc_off = (size_t)(crc_byte_off & 0xFFFu);              // %4096
+
+    // CRC area の範囲も軽く検査
+    if (crc_lba4k < m_sb.crc_area_start ||
+        crc_lba4k >= m_sb.crc_area_start + m_sb.crc_area_blocks)
+    {
+        con.println("Sylph1FS: CRC LBA out-of-range");
+        return false;
+    }
+    // CRC は 4B なので、1ブロック内に収まる（4092/4093 を跨がない前提）
+    if (crc_off > 4092)
+    {
+        con.println("Sylph1FS: CRC offset misaligned");
+        return false;
+    }
+    return true;
+}
+
+bool Sylph1Mount::read_data_block(uint64_t data_idx, void *buf4096, Console &con) const
+{
+    if (!buf4096)
+        return false;
+    if (data_idx >= m_sb.data_area_blocks)
+    {
+        con.printf("Sylph1FS: read_data_block OOB (idx=%llu)\n",
+                   (unsigned long long)data_idx);
+        return false;
+    }
+
+    const uint64_t data_lba4k = m_sb.data_area_start + data_idx;
+    // データを読み出し
+    if (!m_dev.read_blocks_4k(data_lba4k, 1, buf4096, 4096, con))
+    {
+        con.printf("Sylph1FS: read_data_block I/O error (LBA=%llu)\n",
+                   (unsigned long long)data_lba4k);
+        return false;
+    }
+
+    // CRC 併読＋検証
+    return verify_data_block_crc(data_idx, buf4096, con);
+}
+
+bool Sylph1Mount::verify_data_block_crc(uint64_t data_idx, const void *buf4096, Console &con) const
+{
+    uint64_t crc_lba4k = 0;
+    size_t crc_off = 0;
+    if (!map_crc_entry(data_idx, crc_lba4k, crc_off, con))
+        return false;
+
+    alignas(4096) uint8_t crcblk[4096];
+    if (!m_dev.read_blocks_4k(crc_lba4k, 1, crcblk, sizeof(crcblk), con))
+    {
+        con.printf("Sylph1FS: CRC read I/O error (LBA=%llu)\n",
+                   (unsigned long long)crc_lba4k);
+        return false;
+    }
+    // 期待CRCをロード（little-endian 4B）
+    uint32_t expected = 0;
+    memcpy(&expected, crcblk + crc_off, sizeof(expected));
+
+    // 実測CRC（Castagnoli）を計算
+    const uint32_t actual = crc32c_reflected(buf4096, 4096);
+    if (expected != actual)
+    {
+        con.printf("Sylph1FS: CRC mismatch at data_idx=%llu (exp=%08x act=%08x)\n",
+                   (unsigned long long)data_idx, (unsigned)expected, (unsigned)actual);
+        return false;
+    }
+    return true;
+}
+
+bool Sylph1Mount::read_inode(uint64_t inode_id, sylph1fs::Inode &out, Console &con) const
+{
+    if (inode_id == 0 || inode_id > m_sb.total_inodes)
+    {
+        con.printf("Sylph1FS: read_inode invalid id=%llu\n",
+                   (unsigned long long)inode_id);
+        return false;
+    }
+
+    const uint64_t index = inode_id - 1;
+    const uint64_t byte_off = index * 256ull;
+    const uint64_t lba4k = m_sb.inode_table_start + (byte_off >> 12); // /4096
+    const size_t off = (size_t)(byte_off & 0xFFFu);                   // %4096
+
+    alignas(4096) uint8_t blk[4096];
+    if (!m_dev.read_blocks_4k(lba4k, 1, blk, sizeof(blk), con))
+    {
+        con.printf("Sylph1FS: read_inode I/O error (LBA=%llu)\n",
+                   (unsigned long long)lba4k);
+        return false;
+    }
+
+    // 256B を抽出
+    sylph1fs::Inode tmp{};
+    memcpy(&tmp, blk + off, sizeof(tmp));
+
+    // 末尾4B を期待値として取り出し、先頭252BのCRCと比較
+    const uint32_t stored = tmp.inode_crc32c;
+    tmp.inode_crc32c = 0; // 計算対象から除外（もしくは memcpy 前に別バッファで対応）
+    const uint32_t calc = crc32c_reflected(&tmp, 252);
+
+    if (stored != calc)
+    {
+        con.printf("Sylph1FS: inode CRC mismatch (id=%llu exp=%08x act=%08x)\n",
+                   (unsigned long long)inode_id, (unsigned)stored, (unsigned)calc);
+        return false;
+    }
+
+    // OK
+    out = tmp;
+    return true;
 }
