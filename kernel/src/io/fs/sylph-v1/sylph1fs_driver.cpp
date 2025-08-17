@@ -1,6 +1,7 @@
 #include "../../../../include/std/cstring.hpp"
 #include "../../../console.hpp"
 #include "../../../kernel_runtime.hpp"
+#include "../../../pmm.hpp"
 #include "sylph1fs_driver.hpp"
 
 namespace
@@ -114,8 +115,17 @@ namespace
 bool Sylph1FsDriver::probe(BlockDevice &device, Console &con)
 {
     // SBはLBA4K=0固定の想定。4KiB読み出して検証。
-    alignas(4096) uint8_t sb_buf[4096];
-    if (!device.read_blocks_4k(/*lba4k*/ 0, /*count*/ 1, sb_buf, sizeof(sb_buf), con))
+    uint8_t *sb_buf = (uint8_t *)pmm::alloc_pages(1);
+    if (!sb_buf)
+    {
+        con.println("Sylph1FS: probe failed to allocate buffer");
+        return false;
+    }
+
+    // ScopeExit を使って、関数を抜ける際に必ずメモリを解放する
+    ScopeExit free_buffer([&]()
+                          { pmm::free_pages(sb_buf, 1); });
+    if (!device.read_blocks_4k(/*lba4k*/ 0, /*count*/ 1, sb_buf, 4096, con))
         return false;
 
     const sylph1fs::Superblock *sb = reinterpret_cast<const sylph1fs::Superblock *>(sb_buf);
@@ -234,7 +244,7 @@ bool Sylph1Mount::map_crc_entry(uint64_t data_idx, uint64_t &crc_lba4k, size_t &
     // 境界チェック
     if (data_idx >= m_sb.data_area_blocks)
     {
-        con.printf("Sylph1FS: CRC map out-of-range (data_idx=%llu)\n",
+        con.printf("Sylph1FS: CRC map out-of-range (data_idx=%u)\n",
                    (unsigned long long)data_idx);
         return false;
     }
@@ -268,7 +278,7 @@ bool Sylph1Mount::read_data_block(uint64_t data_idx, void *buf4096, Console &con
         return false;
     if (data_idx >= m_sb.data_area_blocks)
     {
-        con.printf("Sylph1FS: read_data_block OOB (idx=%llu)\n",
+        con.printf("Sylph1FS: read_data_block OOB (idx=%u)\n",
                    (unsigned long long)data_idx);
         return false;
     }
@@ -277,7 +287,7 @@ bool Sylph1Mount::read_data_block(uint64_t data_idx, void *buf4096, Console &con
     // データを読み出し
     if (!m_dev.read_blocks_4k(data_lba4k, 1, buf4096, 4096, con))
     {
-        con.printf("Sylph1FS: read_data_block I/O error (LBA=%llu)\n",
+        con.printf("Sylph1FS: read_data_block I/O error (LBA=%u)\n",
                    (unsigned long long)data_lba4k);
         return false;
     }
@@ -293,10 +303,19 @@ bool Sylph1Mount::verify_data_block_crc(uint64_t data_idx, const void *buf4096, 
     if (!map_crc_entry(data_idx, crc_lba4k, crc_off, con))
         return false;
 
-    alignas(4096) uint8_t crcblk[4096];
-    if (!m_dev.read_blocks_4k(crc_lba4k, 1, crcblk, sizeof(crcblk), con))
+    uint8_t *crcblk = (uint8_t *)pmm::alloc_pages(1);
+    if (!crcblk)
     {
-        con.printf("Sylph1FS: CRC read I/O error (LBA=%llu)\n",
+        con.println("Sylph1FS: verify_data_block_crc failed to allocate buffer");
+        return false;
+    }
+
+    // ScopeExit を使って、関数を抜ける際に必ずメモリを解放する
+    ScopeExit free_buffer([&]()
+                          { pmm::free_pages(crcblk, 1); });
+    if (!m_dev.read_blocks_4k(crc_lba4k, 1, crcblk, 4096, con))
+    {
+        con.printf("Sylph1FS: CRC read I/O error (LBA=%u)\n",
                    (unsigned long long)crc_lba4k);
         return false;
     }
@@ -308,7 +327,7 @@ bool Sylph1Mount::verify_data_block_crc(uint64_t data_idx, const void *buf4096, 
     const uint32_t actual = crc32c_reflected(buf4096, 4096);
     if (expected != actual)
     {
-        con.printf("Sylph1FS: CRC mismatch at data_idx=%llu (exp=%08x act=%08x)\n",
+        con.printf("Sylph1FS: CRC mismatch at data_idx=%u (exp=%x act=%x)\n",
                    (unsigned long long)data_idx, (unsigned)expected, (unsigned)actual);
         return false;
     }
@@ -329,8 +348,19 @@ bool Sylph1Mount::read_inode(uint64_t inode_id, sylph1fs::Inode &out, Console &c
     const uint64_t lba4k = m_sb.inode_table_start + (byte_off >> 12); // /4096
     const size_t off = (size_t)(byte_off & 0xFFFu);                   // %4096
 
-    alignas(4096) uint8_t blk[4096];
-    if (!m_dev.read_blocks_4k(lba4k, 1, blk, sizeof(blk), con))
+    uint8_t *blk = (uint8_t *)pmm::alloc_pages(1);
+    if (!blk)
+    {
+        con.println("Sylph1FS: read_inode failed to allocate buffer");
+        return false;
+    }
+
+    // ScopeExit を使って、関数を抜ける際に必ずメモリを解放する
+    ScopeExit free_buffer([&]()
+                          { pmm::free_pages(blk, 1); });
+    con.printf("DEBUG: Calling m_dev.read_blocks_4k from read_inode. m_dev is at %p\n", &m_dev);
+    simple_wait(100000000);
+    if (!m_dev.read_blocks_4k(lba4k, 1, blk, 4096, con))
     {
         con.printf("Sylph1FS: read_inode I/O error (LBA=%llu)\n",
                    (unsigned long long)lba4k);
@@ -348,12 +378,80 @@ bool Sylph1Mount::read_inode(uint64_t inode_id, sylph1fs::Inode &out, Console &c
 
     if (stored != calc)
     {
-        con.printf("Sylph1FS: inode CRC mismatch (id=%llu exp=%08x act=%08x)\n",
+        con.printf("Sylph1FS: inode CRC mismatch (id=%u exp=%x act=%x)\n",
                    (unsigned long long)inode_id, (unsigned)stored, (unsigned)calc);
         return false;
     }
 
     // OK
     out = tmp;
+    return true;
+}
+
+bool Sylph1Mount::readdir_root(Console &con)
+{
+    con.println("DEBUG: Entered Sylph1Mount::readdir_root");
+    simple_wait(100000000);
+    sylph1fs::Inode ino{};
+    con.println("DEBUG: Calling read_inode...");
+    simple_wait(100000000);
+    if (!read_inode(1, ino, con))
+    {
+        con.println("Sylph1FS: readdir_root: failed to read inode #1");
+        return false;
+    }
+
+    // "." と ".."（ルートなのでどちらも inode=1）
+    con.printf(".  (inode=%u)\n", 1u);
+    con.printf(".. (inode=%u)\n", 1u);
+
+    // dir_header_block が未設定ならここで終了（空扱い）
+    if (ino.dir_format != 1 || ino.dir_header_block == 0)
+    {
+        con.println("(root dir: no header block; treated as empty)");
+        return true;
+    }
+
+    // DirHeader ブロックを CRC 付きで読む（sidecar CRC を verify）
+    uint8_t *blk = (uint8_t *)pmm::alloc_pages(1);
+    if (!blk)
+    {
+        con.println("Sylph1FS: readdir_root failed to allocate buffer");
+        return false;
+    }
+
+    // ScopeExit を使って、関数を抜ける際に必ずメモリを解放する
+    ScopeExit free_buffer([&]()
+                          { pmm::free_pages(blk, 1); });
+    if (!read_data_block(ino.dir_header_block, blk, con))
+    {
+        con.println("Sylph1FS: readdir_root: failed to read dir header block");
+        return false;
+    }
+
+    // ブロック内メタCRC（末尾4B）も検証
+    uint32_t stored = 0;
+    memcpy(&stored, blk + 4096 - 4, sizeof(stored));
+    const uint32_t calc = crc32c_reflected(blk, 4096 - 4);
+    if (stored != calc)
+    {
+        con.printf("Sylph1FS: dir header in-block CRC mismatch (exp=%x act=%x)\n",
+                   (unsigned)stored, (unsigned)calc);
+        return false;
+    }
+
+    // ヘッダ要約
+    const sylph1fs::DirHeader *hdr = reinterpret_cast<const sylph1fs::DirHeader *>(blk);
+    if (hdr->magic != sylph1fs::kDirMagic || hdr->version != 1)
+    {
+        con.println("Sylph1FS: dir header invalid");
+        return false;
+    }
+
+    // ここではまだ bucket を走査せず、状態の要約だけ出す（最小実装）
+    con.printf("(root dir: buckets=%u, entries=%u)\n",
+               (unsigned)hdr->bucket_count, (unsigned)hdr->entry_count);
+
+    // 将来: bucket[0..N) を辿って実エントリを列挙
     return true;
 }

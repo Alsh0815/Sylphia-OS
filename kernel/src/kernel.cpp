@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include "../../uefi/include/efi/base.h"
 #include "../include/bootinfo.h"
 #include "../include/framebuffer.hpp"
 #include "../include/font8x8.hpp"
@@ -14,6 +15,7 @@
 #include "gdt.hpp"
 #include "heap.hpp"
 #include "idt.hpp"
+#include "kernel_runtime.hpp"
 #include "painter.hpp"
 #include "paging.hpp"
 #include "pmm.hpp"
@@ -22,18 +24,10 @@
 struct EFIMemoryDescriptor
 {
     uint32_t Type;
-    uint32_t Pad;
     uint64_t PhysicalStart;
     uint64_t VirtualStart;
     uint64_t NumberOfPages;
     uint64_t Attribute;
-};
-
-enum
-{
-    EfiBootServicesCode = 3,
-    EfiBootServicesData = 4,
-    EfiConventionalMemory = 7 /* boot_services.h の列挙と合わせる */
 };
 
 static inline void bzero(void *p, size_t n)
@@ -80,26 +74,44 @@ extern "C" __attribute__((sysv_abi)) void kernel_main(BootInfo *bi)
 
     ((volatile uint32_t *)(uintptr_t)bi->fb_base)[0] = 0x00FFFF;
     uint64_t cr3 = paging::init_identity(*bi);
+    if (cr3 == 0)
+    {
+        con.setColors({255, 255, 255}, {255, 0, 0});
+        con.println("!!! PAGING INIT FAILED !!! --- SYSTEM HALTED ---");
+        for (;;)
+            __asm__ __volatile__("hlt");
+    }
     con.printf("Paging: CR3=0x%p, mapped up to %u MiB\n",
                (void *)cr3, (unsigned)((paging::mapped_limit() >> 20)));
 
-    // ここで低位スタックを確保して移行（もう新CR3なので確実にマップ済み）
-    paging::init_allocator(*bi);
-    void *new_sp = paging::alloc_low_stack(16 * 4096); // 64KiB くらい
-    if (new_sp)
+    // ▼▼▼ ここからが修正箇所 ▼▼▼
+
+    // ページングが有効になったので、すぐにPMMを初期化する
+    uint64_t managed = pmm::init(*bi);
+
+    // PMMを使って新しいスタックを確保する (64KiB)
+    const size_t stack_pages = 16;
+    void *new_stack_base = pmm::alloc_pages(stack_pages);
+    if (new_stack_base)
     {
-        uintptr_t sp = ((uintptr_t)new_sp) & ~0xFULL; // 16B アライン
+        // スタックは上（アドレスの大きい方）から使うので、確保領域の終端を渡す
+        uintptr_t sp = (uintptr_t)new_stack_base + (stack_pages * 4096);
+        sp &= ~0xFULL; // 16B アライン
+
         // RDI に bi（SysV ABIの第1引数）を積んで、新スタックで kernel_after_stack へ
         asm volatile(
             "mov %0, %%rsp\n\t"
-            "xor %%rbp, %%rbp\n\t"        // フレームポインタ無効化（お守り）
-            "call kernel_after_stack\n\t" // ← 戻らない設計
+            "xor %%rbp, %%rbp\n\t"
+            "call kernel_after_stack\n\t"
             :
             : "r"(sp), "D"(bi)
             : "memory");
-        __builtin_unreachable(); // ここには来ない想定
+        __builtin_unreachable();
     }
 
+    // ▲▲▲ ここまで修正 ▲▲▲
+
+    con.println("!!! FAILED TO ALLOCATE NEW STACK !!! --- SYSTEM HALTED ---");
     for (;;)
         __asm__ __volatile__("hlt");
 }
@@ -144,7 +156,7 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
     paint.drawTextWrap(tx, ty, "SYLPHIA OS (text-color-clip)", right);
 
     con.setColors({255, 255, 255}, {0, 0, 0});
-    con.printf("Version: v.%d.%d.%d.%d\n", 0, 1, 4, 3);
+    con.printf("Version: v.%d.%d.%d.%d\n", 0, 1, 4, 4);
 
     con.println("Switched to low stack.");
 
@@ -164,8 +176,6 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
     idt::init(bi);
     idt::install_double_fault(1);
 
-    uint64_t managed = pmm::init(*bi);
-
     if (bi->kernel_ranges_ptr && bi->kernel_ranges_cnt)
     {
         auto *kr = (const PhysRange *)(uintptr_t)bi->kernel_ranges_ptr;
@@ -175,7 +185,7 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
         }
     }
 
-    con.printf("PMM: managing up to %u MiB\n", (unsigned)(managed >> 20));
+    con.printf("PMM: managing up to %u MiB\n", (unsigned)(pmm::total_bytes() >> 20));
     con.printf("PMM: total=%u MiB free=%u MiB used=%u MiB\n",
                (unsigned)(pmm::total_bytes() >> 20),
                (unsigned)(pmm::free_bytes() >> 20),
@@ -249,18 +259,19 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
 
             if (found > 0)
             {
+                // 2. probeしてみて、もし失敗したらmkfsを実行する
+                Sylph1FS::MkfsOptions opt{};
+                opt.version = 1;
+                opt.minor_version = 0;
+                opt.dir_bucket_count = 256;
                 // 最初のパーティションを対象にする
                 BlockDeviceSlice slice(*dev, parts[0].first_lba4k, parts[0].blocks4k);
-
-                // --- ここから追加 ---
-
                 // probeしてみて、もし失敗したらmkfsを実行する
                 Sylph1FsDriver temp_driver;
                 if (!temp_driver.probe(slice, con))
                 {
                     con.println("Sylph1FS: probe failed, attempting to format...");
                     Sylph1FS fs(slice, con);
-                    Sylph1FS::MkfsOptions opt{}; // デフォルトオプションでフォーマット
                     if (fs.mkfs(opt) == FsStatus::Ok)
                     {
                         con.println("Sylph1FS: mkfs successful.");
@@ -270,15 +281,21 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
                         con.println("Sylph1FS: mkfs failed.");
                     }
                 }
+                Sylph1FS fs(slice, con);
+                FsStatus stat = fs.mkfs(opt);
+                con.printf("mkfs: ret=%d\n", stat);
 
-                // --- ここまで追加 ---
-            }
-
-            FsMount *mnt = nullptr;
-            FsStatus st = vfs::mount_auto_on_partitions(*dev, parts, found, con, &mnt);
-            if (st != FsStatus::Ok)
-            {
-                con.printf("mount_auto_on_partitions failed (%d)\n", (int)st);
+                FsMount *mnt = nullptr;
+                if (vfs::mount_auto(slice, con, &mnt) == FsStatus::Ok && mnt != nullptr)
+                {
+                    con.println("VFS: mount successful, trying readdir_root...");
+                    Sylph1Mount *sylph_mnt = (Sylph1Mount *)mnt;
+                    sylph_mnt->readdir_root(con);
+                }
+                else
+                {
+                    con.printf("VFS: mount failed after probe/mkfs.\n");
+                }
             }
         }
     }

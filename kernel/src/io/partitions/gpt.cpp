@@ -108,21 +108,21 @@ namespace gpt
                 return false;
             }
             uint64_t lba4k = (uint64_t)(blk + ((bytes - remain) + inblk) / 4096u); // recompute per loop
-            con.printf("GPT: Attempting to read 4KiB LBA: %u\n", lba4k);
+            // con.printf("GPT: Attempting to read 4KiB LBA: %u\n", lba4k);
             if (!dev.read_blocks_4k(lba4k, 1, page, 4096, con))
             {
                 con.println("GPT: dev.read_blocks_4k returned false");
                 pmm::free_pages(page, 1);
                 return false;
             }
-            con.printf("GPT: Successfully read 4KiB LBA: %u\n", lba4k);
+            // con.printf("GPT: Successfully read 4KiB LBA: %u\n", lba4k);
 
             size_t offset_in_page = (lba4k == blk) ? inblk : 0;
             size_t copy = min_u64(remain, 4096u - offset_in_page);
             std::memcpy(out, page + offset_in_page, copy);
             out += copy;
             remain -= copy;
-            // pmm::free_pages(page, 1); // 解放APIがあれば使用
+            pmm::free_pages(page, 1);
         }
         return true;
     }
@@ -254,7 +254,7 @@ namespace gpt
 
             off += to_read;
             processed += to_read;
-            pmm::free_pages(page, 1); // 解放APIがあれば使用
+            pmm::free_pages(page, 1);
         }
         pe_crc ^= 0xFFFFFFFFu;
 

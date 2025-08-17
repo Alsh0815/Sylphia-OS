@@ -52,4 +52,25 @@ private:
     bool finalize_superblocks(const Layout &L, const MkfsOptions &opt);
     bool init_root_inode(const Layout &L, const MkfsOptions &opt);
     bool clear_meta_areas(const Layout &L);
+
+    // ルート用の 4KiB ブロックを確保・初期化（DirHeader + BucketTable）し、
+    // Data bitmap と CRC Area を更新する。返り値: 成功時 true、data_idx_out に
+    // Data area 相対 index を返す（通常 0 を使う）。
+    bool allocate_and_init_root_dir_block(const Layout &L,
+                                          uint32_t bucket_count,
+                                          uint64_t &data_idx_out);
+
+    // CRC Area: data_idx -> (crc_lba4k, crc_off) を算出
+    static inline bool crc_map_entry(const Layout &L, uint64_t data_idx,
+                                     uint64_t &crc_lba4k, size_t &crc_off)
+    {
+        if (data_idx >= L.data_area_blocks)
+            return false;
+        const uint64_t crc_byte_off = data_idx * 4ull;
+        crc_lba4k = L.crc_area_start + (crc_byte_off >> 12); // /4096
+        crc_off = (size_t)(crc_byte_off & 0xFFFu);           // %4096
+        return (crc_lba4k >= L.crc_area_start) &&
+               (crc_lba4k < L.crc_area_start + L.crc_area_blocks) &&
+               (crc_off <= 4092);
+    }
 };

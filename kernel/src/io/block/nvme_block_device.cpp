@@ -49,7 +49,7 @@ void *NvmeBlockDevice::alloc_dma32_bounce(size_t bytes, Console &con)
         if ((pa & 0xFFFu) != 0 || (pa >> 32) != 0)
         {
             // 低位物理が取れなかった場合は失敗（戻すAPIがあるならここで解放）
-            // pmm::free_pages(va, (uint32_t)pages);
+            pmm::free_pages(va, (uint32_t)pages);
             con.println("Block(NVMe): bounce page not DMA32-aligned/located");
             return nullptr;
         }
@@ -66,7 +66,7 @@ bool NvmeBlockDevice::read_blocks_4k(uint64_t lba4k, uint32_t count, void *buf, 
     }
     if (buf_bytes < (size_t)count * 4096u)
     {
-        con.println("buf_types < count * 4096u");
+        con.printf("buf_bytes < count * 4096u | buf_bytes=%d, count=%d\n", buf_bytes, count);
         return false;
     }
 
@@ -80,7 +80,7 @@ bool NvmeBlockDevice::read_blocks_4k(uint64_t lba4k, uint32_t count, void *buf, 
         calc_nvme_range(current_lba4k, 1, slba, nlb); // 常に1ブロック(4KiB)で計算
 
         // 直接バッファへ読み込みを試行
-        con.printf("read_blocks_4k: nsid=%d, slba=%d, nlb=%d, buf=%p\n", m_nsid, slba, nlb, current_buf);
+        // con.printf("read_blocks_4k: nsid=%d, slba=%d, nlb=%d, buf=%p\n", m_nsid, slba, nlb, current_buf);
         if (!nvme::read_lba(m_nsid, slba, nlb, current_buf, 4096, con))
         {
             // 失敗した場合はバウンス経由で再試行
@@ -150,10 +150,10 @@ bool NvmeBlockDevice::write_blocks_4k(uint64_t lba4k, uint32_t count, const void
             memcpy(bounce, current_buf, 4096);
             if (!nvme::write_lba(m_nsid, slba, nlb, bounce, 4096, flags, con))
             {
-                // pmm::free_pages(bounce, 1);
+                pmm::free_pages(bounce, 1);
                 return false;
             }
-            // pmm::free_pages(bounce, 1);
+            pmm::free_pages(bounce, 1);
         }
 
         if (verify == kVerifyAfterWrite)

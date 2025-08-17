@@ -203,7 +203,7 @@ namespace nvme
                 return true;
             }
             // 低位が取れなかった。free_pages があれば解放する（無ければ諦めて次）。
-            // pmm::free_pages(va, 1);  // ←APIがあれば使う
+            pmm::free_pages(va, 1);  // ←APIがあれば使う
         }
         return false;
     }
@@ -1112,7 +1112,6 @@ namespace nvme
 
         if (total_bytes > maxb)
         {
-            // 参考ログ（一度だけ）
             size_t chunks_est = (total_bytes + maxb - 1) / maxb;
             con.printf("NVMe: MDTS split READ (%uB -> max %uB) chunks=%u\n",
                        (unsigned)total_bytes, (unsigned)maxb, (unsigned)chunks_est);

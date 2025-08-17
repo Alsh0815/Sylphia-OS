@@ -32,6 +32,7 @@ public:
     bool read_data_block(uint64_t data_idx, void *buf4096, Console &con) const;
     bool verify_data_block_crc(uint64_t data_idx, const void *buf4096, Console &con) const;
     bool read_inode(uint64_t inode_id, sylph1fs::Inode &out, Console &con) const;
+    bool readdir_root(Console &con);
 
     const sylph1fs::Superblock &superblock() const { return m_sb; }
     bool read_only() const { return m_ro; }

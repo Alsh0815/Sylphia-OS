@@ -80,8 +80,21 @@ namespace sylph1fs
         uint8_t reserved3[92];
         uint32_t inode_crc32c;
     };
-
 #pragma pack(pop)
+
+#pragma pack(push, 1)
+    struct DirHeader
+    {
+        uint32_t magic;                            // "SYLD" = 0x53494C44
+        uint32_t version;                          // 1
+        uint32_t bucket_count;                     // バケット数（例: 256）
+        uint32_t entry_count;                      // 実エントリ数
+        uint8_t seed[16];                          // SBのdirhash_secretなどをコピー可（任意）
+        uint8_t reserved[64 - 4 - 4 - 4 - 4 - 16]; // ヘッダ合計64Bに調整
+    };
+#pragma pack(pop)
+
+    static constexpr uint32_t kDirMagic = 0x53494C44u; // 'S''Y''L''D'
 
     static_assert(offsetof(Superblock, magic) == 0x000, "Superblock magic offset mismatch");
     static_assert(offsetof(Superblock, version) == 0x004, "Superblock version offset mismatch");
@@ -137,4 +150,6 @@ namespace sylph1fs
     static_assert(offsetof(Inode, dir_header_block) == 0x98, "Inode dir_header_block offset mismatch");
     static_assert(offsetof(Inode, inode_crc32c) == 0xFC, "Inode inode_crc32c offset mismatch");
     static_assert(sizeof(Inode) == 256, "Inode struct size mismatch");
+
+    static_assert(sizeof(DirHeader) == 64, "DirHeader struct size mismatch");
 }

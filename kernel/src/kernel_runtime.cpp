@@ -1,7 +1,5 @@
 #include "kernel_runtime.hpp"
 
-#include <cstddef>
-
 extern "C" void *memset(void *p, int c, size_t n)
 {
     unsigned char *b = (unsigned char *)p;
@@ -43,4 +41,10 @@ extern "C" int memcmp(const void *a, const void *b, size_t n)
             return (int)p[i] - (int)q[i];
     }
     return 0;
+}
+
+void simple_wait(uint64_t n)
+{
+    for (uint64_t i = 0; i < n; i++)
+        asm volatile("");
 }

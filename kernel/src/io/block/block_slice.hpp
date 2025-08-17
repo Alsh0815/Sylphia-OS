@@ -1,5 +1,7 @@
 #pragma once
 #include <cstdint>
+#include "../../console.hpp"
+#include "../../kernel_runtime.hpp"
 #include "block_device.hpp"
 
 // BlockDevice の 4KiB 論理空間をスライス（オフセット/長さを与えてパーティション view にする）
@@ -16,6 +18,8 @@ public:
     {
         if (lba4k >= m_len)
             return false;
+        con.println("DEBUG: Entered BlockDeviceSlice::read_blocks_4k");
+        simple_wait(100000000);
         uint64_t end = lba4k + count;
         if (end > m_len)
             return false;

@@ -2,6 +2,7 @@
 #include "../../../../include/std/cstring.hpp"
 #include "../../../console.hpp"
 #include "../../../kernel_runtime.hpp"
+#include "../../../pmm.hpp"
 #include "sylph1fs.hpp"
 
 Sylph1FS::Sylph1FS(BlockDevice &dev, Console &con)
@@ -28,11 +29,18 @@ uint32_t Sylph1FS::crc32c(const void *data, size_t len)
 // --- 4KiBゼロブロックを blocks 回連続書込み ---
 bool Sylph1FS::write_zeros(uint64_t start_lba4k, uint64_t blocks)
 {
-    alignas(4096) uint8_t zero[4096];
-    memset(zero, 0, sizeof(zero));
+    uint8_t *zero = (uint8_t *)pmm::alloc_pages(1);
+    if (!zero)
+    {
+        m_con.println("mkfs: write_zeros: failed to allocate page");
+        return false;
+    }
+    ScopeExit free_page([&]()
+                        { pmm::free_pages(zero, 1); });
+    memset(zero, 0, 4096);
     for (uint64_t i = 0; i < blocks; ++i)
     {
-        if (!m_dev.write_blocks_4k(start_lba4k + i, 1, zero, sizeof(zero),
+        if (!m_dev.write_blocks_4k(start_lba4k + i, 1, zero, 4096,
                                    /*fua*/ true, BlockDevice::kVerifyAfterWrite, m_con))
         {
             m_con.printf("mkfs: write_zeros failed at LBA=%llu\n", (unsigned long long)(start_lba4k + i));
@@ -143,62 +151,70 @@ bool Sylph1FS::compute_layout(Layout &L, uint64_t total_inodes_hint)
 // --- Superblock 初期書込み（INCOMPLETE=1, CLEAN=0） ---
 bool Sylph1FS::write_superblock_initial(const Layout &L, const MkfsOptions &opt)
 {
-    // あなたの sylphfs_structs.hpp に定義された on-disk Superblock 構造を想定
-    sylph1fs::Superblock sb{};
-    memset(&sb, 0, sizeof(sb));
+    uint8_t *buf = (uint8_t *)pmm::alloc_pages(1);
+    if (!buf)
+    {
+        m_con.println("mkfs: write_superblock_initial: failed to allocate page");
+        return false;
+    }
+    ScopeExit free_page([&]()
+                        { pmm::free_pages(buf, 1); });
 
-    sb.magic = 0x53494C46u; // 'S''Y''L''F'
-    sb.version = opt.version;
-    sb.minor_version = opt.minor_version;
-    sb.block_size_log2 = 12;
-    sb.csum_kind = 1; // CRC32C
-    sb.sb_flags = 0;
+    sylph1fs::Superblock *sb = reinterpret_cast<sylph1fs::Superblock *>(buf);
+    memset(sb, 0, sizeof(sylph1fs::Superblock));
+
+    sb->magic = 0x53494C46u; // 'S''Y''L''F'
+    sb->version = opt.version;
+    sb->minor_version = opt.minor_version;
+    sb->block_size_log2 = 12;
+    sb->csum_kind = 1; // CRC32C
+    sb->sb_flags = 0;
     // bit: CLEAN(1)=0, INCOMPLETE(2)=1
-    sb.sb_flags |= (1u << 1);
+    sb->sb_flags |= (1u << 1);
 
-    sb.features_compat = opt.features_compat;
-    sb.features_ro_compat = opt.features_ro_compat;
-    sb.features_incompat = opt.features_incompat;
+    sb->features_compat = opt.features_compat;
+    sb->features_ro_compat = opt.features_ro_compat;
+    sb->features_incompat = opt.features_incompat;
 
     // uuid/label
     if (opt.uuid16)
-        memcpy(sb.uuid, opt.uuid16, 16);
+        memcpy(sb->uuid, opt.uuid16, 16);
     if (opt.label)
     {
-        size_t n = min<size_t>(strlen(opt.label), sizeof(sb.label));
-        memcpy(sb.label, opt.label, n);
-        if (n < sizeof(sb.label))
-            sb.label[n] = '\0';
+        size_t n = min<size_t>(strlen(opt.label), sizeof(sb->label));
+        memcpy(sb->label, opt.label, n);
+        if (n < sizeof(sb->label))
+            sb->label[n] = '\0';
     }
 
-    sb.total_blocks = L.total_blocks;
-    sb.total_inodes = L.total_inodes;
-    sb.inode_size = 256;
+    sb->total_blocks = L.total_blocks;
+    sb->total_inodes = L.total_inodes;
+    sb->inode_size = 256;
 
-    sb.root_inode = 1;
-    sb.sb_primary_lba4k = L.sb_primary_lba4k;
-    sb.sb_backup_lba4k = L.sb_backup_lba4k;
+    sb->root_inode = 1;
+    sb->sb_primary_lba4k = L.sb_primary_lba4k;
+    sb->sb_backup_lba4k = L.sb_backup_lba4k;
 
-    sb.bm_inode_start = L.bm_inode_start;
-    sb.bm_inode_blocks = L.bm_inode_blocks;
-    sb.bm_data_start = L.bm_data_start;
-    sb.bm_data_blocks = L.bm_data_blocks;
-    sb.inode_table_start = L.inode_table_start;
-    sb.inode_table_blocks = L.inode_table_blocks;
-    sb.data_area_start = L.data_area_start;
-    sb.data_area_blocks = L.data_area_blocks;
-    sb.crc_area_start = L.crc_area_start;
-    sb.crc_area_blocks = L.crc_area_blocks;
+    sb->bm_inode_start = L.bm_inode_start;
+    sb->bm_inode_blocks = L.bm_inode_blocks;
+    sb->bm_data_start = L.bm_data_start;
+    sb->bm_data_blocks = L.bm_data_blocks;
+    sb->inode_table_start = L.inode_table_start;
+    sb->inode_table_blocks = L.inode_table_blocks;
+    sb->data_area_start = L.data_area_start;
+    sb->data_area_blocks = L.data_area_blocks;
+    sb->crc_area_start = L.crc_area_start;
+    sb->crc_area_blocks = L.crc_area_blocks;
 
     // ヒント/シークレットは0で開始（将来：ランダム生成）
     // dirhash_secret も0（マウント後に設定/更新可）
 
     // CRC計算（先頭4092B）
-    sb.sb_crc32c = 0;
-    sb.sb_crc32c = crc32c(&sb, 4092);
+    sb->sb_crc32c = 0;
+    sb->sb_crc32c = crc32c(sb, 4092);
 
     // Primary SB 書込み+検証
-    if (!write_and_verify(L.sb_primary_lba4k, &sb))
+    if (!write_and_verify(L.sb_primary_lba4k, sb))
         return false;
 
     return true;
@@ -207,63 +223,71 @@ bool Sylph1FS::write_superblock_initial(const Layout &L, const MkfsOptions &opt)
 // --- Superblock 最終化（CLEAN=1, INCOMPLETE=0） ---
 bool Sylph1FS::finalize_superblocks(const Layout &L, const MkfsOptions &opt)
 {
-    sylph1fs::Superblock sb{};
-    // Primary を読み戻してから flags だけ更新するのが堅いが、
-    // ここでは同じ値を再生成して flags を反転させて書く。
     if (!write_superblock_initial(L, opt))
         return false; // 先に Primary を最新に（INCOMPLETE=1）
+
+    uint8_t *buf = (uint8_t *)pmm::alloc_pages(1);
+    if (!buf)
+    {
+        m_con.println("mkfs: finalize_superblocks: failed to allocate page");
+        return false;
+    }
+    ScopeExit free_page([&]()
+                        { pmm::free_pages(buf, 1); });
+
+    sylph1fs::Superblock *sb = reinterpret_cast<sylph1fs::Superblock *>(buf);
+    memset(sb, 0, sizeof(sylph1fs::Superblock));
 
     // Primary を再構築し CLEAN=1 に変更
     // 上の関数で書いた内容をもう一度作る（冪等）
     // ここではローカルに再構築
-    memset(&sb, 0, sizeof(sb));
-    sb.magic = 0x53494C46u;
-    sb.version = opt.version;
-    sb.minor_version = opt.minor_version;
-    sb.block_size_log2 = 12;
-    sb.csum_kind = 1;
-    sb.sb_flags = 0;          // CLEAN=1, INCOMPLETE=0 にしたいので0から
-    sb.sb_flags |= (1u << 0); // CLEAN
-    sb.features_compat = opt.features_compat;
-    sb.features_ro_compat = opt.features_ro_compat;
-    sb.features_incompat = opt.features_incompat;
+    sb->magic = 0x53494C46u;
+    sb->version = opt.version;
+    sb->minor_version = opt.minor_version;
+    sb->block_size_log2 = 12;
+    sb->csum_kind = 1;
+    sb->sb_flags = 0;          // CLEAN=1, INCOMPLETE=0 にしたいので0から
+    sb->sb_flags |= (1u << 0); // CLEAN
+    sb->features_compat = opt.features_compat;
+    sb->features_ro_compat = opt.features_ro_compat;
+    sb->features_incompat = opt.features_incompat;
 
     if (opt.uuid16)
-        memcpy(sb.uuid, opt.uuid16, 16);
+        memcpy(sb->uuid, opt.uuid16, 16);
     if (opt.label)
     {
-        size_t n = min<size_t>(strlen(opt.label), sizeof(sb.label));
-        memcpy(sb.label, opt.label, n);
-        if (n < sizeof(sb.label))
-            sb.label[n] = '\0';
+        size_t n = min<size_t>(strlen(opt.label), sizeof(sb->label));
+        memcpy(sb->label, opt.label, n);
+        if (n < sizeof(sb->label))
+            sb->label[n] = '\0';
     }
 
-    sb.total_blocks = L.total_blocks;
-    sb.total_inodes = L.total_inodes;
-    sb.inode_size = 256;
+    sb->total_blocks = L.total_blocks;
+    sb->total_inodes = L.total_inodes;
+    sb->inode_size = 256;
 
-    sb.root_inode = 1;
-    sb.sb_primary_lba4k = L.sb_primary_lba4k;
-    sb.sb_backup_lba4k = L.sb_backup_lba4k;
+    sb->root_inode = 1;
+    sb->sb_primary_lba4k = L.sb_primary_lba4k;
+    sb->sb_backup_lba4k = L.sb_backup_lba4k;
 
-    sb.bm_inode_start = L.bm_inode_start;
-    sb.bm_inode_blocks = L.bm_inode_blocks;
-    sb.bm_data_start = L.bm_data_start;
-    sb.bm_data_blocks = L.bm_data_blocks;
-    sb.inode_table_start = L.inode_table_start;
-    sb.inode_table_blocks = L.inode_table_blocks;
-    sb.data_area_start = L.data_area_start;
-    sb.data_area_blocks = L.data_area_blocks;
-    sb.crc_area_start = L.crc_area_start;
-    sb.crc_area_blocks = L.crc_area_blocks;
+    sb->bm_inode_start = L.bm_inode_start;
+    sb->bm_inode_blocks = L.bm_inode_blocks;
+    sb->bm_data_start = L.bm_data_start;
+    sb->bm_data_blocks = L.bm_data_blocks;
+    sb->inode_table_start = L.inode_table_start;
+    sb->inode_table_blocks = L.inode_table_blocks;
+    sb->data_area_start = L.data_area_start;
+    sb->data_area_blocks = L.data_area_blocks;
+    sb->crc_area_start = L.crc_area_start;
+    sb->crc_area_blocks = L.crc_area_blocks;
 
-    sb.sb_crc32c = 0;
-    sb.sb_crc32c = crc32c(&sb, 4092);
+    sb->sb_crc32c = 0;
+    sb->sb_crc32c = crc32c(sb, 4092);
 
     // Primary SB 上書き → Backup SB へも書く
-    if (!write_and_verify(L.sb_primary_lba4k, &sb))
+    if (!write_and_verify(L.sb_primary_lba4k, sb))
         return false;
-    if (!write_and_verify(L.sb_backup_lba4k, &sb))
+    if (!write_and_verify(L.sb_backup_lba4k, sb))
         return false;
 
     return true;
@@ -283,54 +307,88 @@ bool Sylph1FS::clear_meta_areas(const Layout &L)
     return true;
 }
 
-// --- ルートinode(#1) 初期化（最小：サイズ0 / extentsなし / ディレクトリ） ---
 bool Sylph1FS::init_root_inode(const Layout &L, const MkfsOptions &opt)
 {
+    m_con.println("call: init_root_inode");
+    // まず dir_header 用の 1ブロックを確保・初期化
+    uint64_t dir_data_idx = 0;
+    if (!allocate_and_init_root_dir_block(L, opt.dir_bucket_count, dir_data_idx))
+    {
+        return false;
+    }
+
+    uint8_t *buf = (uint8_t *)pmm::alloc_pages(1);
+    uint8_t *bm_buf = (uint8_t *)pmm::alloc_pages(1);
+
+    if (!buf || !bm_buf)
+    {
+        if (buf)
+            pmm::free_pages(buf, 1);
+        if (bm_buf)
+            pmm::free_pages(bm_buf, 1);
+        m_con.println("mkfs: init_root_inode: failed to allocate pages");
+        return false;
+    }
+
+    ScopeExit free_pages([&]()
+                         {
+        pmm::free_pages(buf, 1);
+        pmm::free_pages(bm_buf, 1); });
+
     // Inode#1 の位置計算
     const uint64_t index = 0; // inode_id=1 -> index0
     const uint64_t byte_off = index * 256ull;
     const uint64_t lba4k = L.inode_table_start + (byte_off / 4096ull);
     const size_t off = (size_t)(byte_off % 4096ull);
 
-    alignas(4096) uint8_t buf[4096];
-    if (!m_dev.read_blocks_4k(lba4k, 1, buf, sizeof(buf), m_con))
+    if (!m_dev.read_blocks_4k(lba4k, 1, buf, 4096, m_con))
         return false;
 
-    // 256Bの領域をゼロ化してから Inode を構築
-    memset(buf + off, 0, 256);
-    sylph1fs::Inode *ino = reinterpret_cast<sylph1fs::Inode *>(buf + off);
+    // 256B をゼロ化して Inode を構築
+    alignas(16) sylph1fs::Inode local_ino{}; // ローカルに変数を確保
+    memset(&local_ino, 0, sizeof(local_ino));
 
-    ino->inode_id = 1;
-    ino->mode = 0x4000 | 0755; // DIR | 0755
-    ino->links = 1;
-    ino->uid = 0;
-    ino->gid = 0;
-    ino->flags = 0;
-    ino->size_bytes = 0; // ここでは最小化（DirHeader等は後で拡張）
-    ino->atime = ino->mtime = ino->ctime = 0;
-    ino->extent_count = 0;
-    ino->overflow_extents_block = 0;
-    ino->xattr_block = 0;
-    ino->dir_format = 1;       // ハッシュ化ディレクトリを既定に
-    ino->dir_header_block = 0; // まだ未割当（空ディレクトリとして扱う）
+    local_ino.inode_id = 1;
+    local_ino.mode = 0x4000 | 0755; // DIR | 0755
+    local_ino.links = 1;
+    local_ino.uid = 0;
+    local_ino.gid = 0;
+    local_ino.flags = 0;
+    local_ino.size_bytes = 4096;
+    local_ino.atime = local_ino.mtime = local_ino.ctime = 0;
+
+    local_ino.extent_count = 1;
+    local_ino.extents_inline[0].start_block_rel = dir_data_idx;
+    local_ino.extents_inline[0].length_blocks = 1;
+
+    local_ino.overflow_extents_block = 0;
+    local_ino.xattr_block = 0;
+
+    local_ino.dir_format = 1; // hashed
+    local_ino.dir_header_block = dir_data_idx;
+
     // 末尾CRC
-    ino->inode_crc32c = 0;
-    ino->inode_crc32c = crc32c(ino, 252);
+    local_ino.inode_crc32c = 0;
+    uint32_t crc_val = crc32c(&local_ino, 252);
+    local_ino.inode_crc32c = crc_val; // ローカル変数で計算
 
-    // ブロックへ書戻し
+    // 計算済みのinodeをバッファにコピー
+    memcpy(buf + off, &local_ino, sizeof(local_ino));
+
+    m_con.printf("init_root_inode: crc=%x\n", crc_val);
+
+    // ブロックへ書戻し（FUA+verify）
     if (!write_and_verify(lba4k, buf))
         return false;
 
-    // Inode bitmap で #1 を使用中にする（LSB-first: bit0が inode#1）
-    // 対象バイトの読み→bit set→書戻し
+    // Inode bitmap #1 を使用中に
     const uint64_t bm_byte_index = 0; // inode#1 は byte0 bit0
     const uint64_t bm_lba = L.bm_inode_start + (bm_byte_index / 4096ull);
     const size_t bm_off = (size_t)(bm_byte_index % 4096ull);
 
-    alignas(4096) uint8_t bm_buf[4096];
-    if (!m_dev.read_blocks_4k(bm_lba, 1, bm_buf, sizeof(bm_buf), m_con))
+    if (!m_dev.read_blocks_4k(bm_lba, 1, bm_buf, 4096, m_con))
         return false;
-    bm_buf[bm_off] |= 0x01; // bit0 = 1
+    bm_buf[bm_off] |= 0x01;
     if (!write_and_verify(bm_lba, bm_buf))
         return false;
 
@@ -383,4 +441,100 @@ FsStatus Sylph1FS::mkfs(const MkfsOptions &opt)
 
     m_con.println("mkfs: Sylph1FS format complete");
     return FsStatus::Ok;
+}
+
+bool Sylph1FS::allocate_and_init_root_dir_block(const Layout &L,
+                                                uint32_t bucket_count,
+                                                uint64_t &data_idx_out)
+{
+    uint8_t *blk = (uint8_t *)pmm::alloc_pages(1);
+    uint8_t *crcblk = (uint8_t *)pmm::alloc_pages(1);
+    uint8_t *bm = (uint8_t *)pmm::alloc_pages(1);
+
+    // 確保に失敗した場合は即座にエラーを返す
+    if (!blk || !crcblk || !bm)
+    {
+        if (blk)
+            pmm::free_pages(blk, 1);
+        if (crcblk)
+            pmm::free_pages(crcblk, 1);
+        if (bm)
+            pmm::free_pages(bm, 1);
+        m_con.println("mkfs: failed to allocate pages for dir block init");
+        return false;
+    }
+
+    ScopeExit free_pages([&]()
+                         {
+        pmm::free_pages(blk, 1);
+        pmm::free_pages(crcblk, 1);
+        pmm::free_pages(bm, 1); });
+
+    if (L.data_area_blocks == 0)
+        return false;
+    const uint64_t data_idx = 0;
+    const uint64_t data_lba4k = L.data_area_start + data_idx;
+
+    memset(blk, 0, 4096);
+
+    // ヘッダを書き込み
+    sylph1fs::DirHeader *hdr = reinterpret_cast<sylph1fs::DirHeader *>(blk);
+    hdr->magic = sylph1fs::kDirMagic;
+    hdr->version = 1;
+    hdr->bucket_count = bucket_count;
+    hdr->entry_count = 0;
+    // seed は SB の dirhash_secret を将来コピーしても良いが、現状は 0 のまま
+
+    // バケットテーブルを 0 クリア（空）
+    const size_t buckets_bytes = (size_t)bucket_count * sizeof(uint32_t);
+    const size_t header_bytes = sizeof(sylph1fs::DirHeader);
+    const size_t payload_bytes = header_bytes + buckets_bytes;
+    if (payload_bytes + 4 > 4096)
+    { // 末尾CRC分の4Bを確保
+        m_con.println("mkfs: bucket_count too large for 4KiB DirHeader block");
+        return false;
+    }
+    // 0埋めは既に済。必要ならここで既定値を入れる。
+
+    // メタ用のブロック内 CRC32C（末尾4B）
+    const uint32_t inblk_crc = crc32c(blk, 4096 - 4);
+    memcpy(blk + 4096 - 4, &inblk_crc, sizeof(inblk_crc));
+
+    // まずデータブロックを書き込む（FUA+verify）
+    if (!write_and_verify(data_lba4k, blk))
+    {
+        m_con.println("mkfs: write dir header block failed");
+        return false;
+    }
+
+    // サイドカー CRC（Data area per-4KiB）を書き込む
+    uint64_t crc_lba4k = 0;
+    size_t crc_off = 0;
+    if (!crc_map_entry(L, data_idx, crc_lba4k, crc_off))
+    {
+        m_con.println("mkfs: CRC map failed for dir header block");
+        return false;
+    }
+    if (!m_dev.read_blocks_4k(crc_lba4k, 1, crcblk, 4096, m_con))
+        return false;
+    const uint32_t side_crc = crc32c(blk, 4096);
+    memcpy(crcblk + crc_off, &side_crc, sizeof(side_crc));
+    if (!write_and_verify(crc_lba4k, crcblk))
+        return false;
+
+    // Data bitmap: data_idx を使用中にセット（LSB-first）
+    const uint64_t bit_index = data_idx;
+    const uint64_t byte_index = bit_index >> 3; // /8
+    const uint8_t bit_mask = (uint8_t)(1u << (bit_index & 7u));
+    const uint64_t bm_lba = L.bm_data_start + (byte_index >> 12); // /4096
+    const size_t bm_off = (size_t)(byte_index & 0xFFFu);          // %4096
+
+    if (!m_dev.read_blocks_4k(bm_lba, 1, bm, 4096, m_con))
+        return false;
+    bm[bm_off] |= bit_mask;
+    if (!write_and_verify(bm_lba, bm))
+        return false;
+
+    data_idx_out = data_idx;
+    return true;
 }

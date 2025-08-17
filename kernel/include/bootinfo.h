@@ -1,12 +1,15 @@
 #pragma once
 #include "./../../uefi/include/efi/base.h"
 
+#pragma pack(push, 1)
 typedef struct
 {
     UINT64 base;  // 物理先頭 (4KiB アライン)
     UINT64 pages; // 4KiB ページ数
 } PhysRange;
+#pragma pack(pop)
 
+#pragma pack(push, 1)
 typedef struct
 {
     UINT64 magic; /* "SLPHUEFI" などの目印 */
@@ -23,3 +26,4 @@ typedef struct
     UINT32 kernel_ranges_cnt; // 要素数
     UINT32 _pad_kr_;          // アライン用
 } BootInfo;
+#pragma pack(pop)
