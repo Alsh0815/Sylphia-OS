@@ -83,4 +83,6 @@ private:
 
     bool file_block_to_data_idx(const sylph1fs::Inode &ino, uint64_t file_blk, uint64_t &data_idx_out);
     bool append_allocate_run(sylph1fs::Inode &ino, uint32_t need_blocks, uint64_t &out_start_idx, Console &con);
+
+    bool rmw_data_block(uint64_t data_idx, size_t off_in_block, const uint8_t *src, size_t n, Console &con);
 };

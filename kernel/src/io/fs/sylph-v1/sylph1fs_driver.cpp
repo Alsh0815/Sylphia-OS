@@ -2342,24 +2342,14 @@ bool Sylph1Mount::append_allocate_run(sylph1fs::Inode &ino, uint32_t need_blocks
     return true;
 }
 
-bool Sylph1Mount::write_path(const char *abs_path, const void *buf, uint64_t len, uint64_t off, Console &con)
+bool Sylph1Mount::write_path(const char *abs_path, const void *vbuf, uint64_t len, uint64_t off, Console &con)
 {
-    if (m_ro)
-    {
-        con.println("Sylph1FS: read-only mount");
+    if (m_ro || !abs_path || !vbuf)
         return false;
-    }
-    if (!abs_path || !buf)
-        return false;
-    if ((sx_mod(len, 4096) != 0) || (sx_mod(off, 4096) != 0))
-    {
-        con.println("Sylph1FS: write_path requires 4KiB-aligned off/len");
-        return false;
-    }
+    const uint8_t *buf = reinterpret_cast<const uint8_t *>(vbuf);
     if (len == 0)
         return true;
 
-    // 対象 inode を取得
     uint64_t ino_id = 0;
     uint16_t ty = 0;
     if (!resolve_path_inode(abs_path, ino_id, ty, con))
@@ -2374,76 +2364,77 @@ bool Sylph1Mount::write_path(const char *abs_path, const void *buf, uint64_t len
     if (!read_inode(ino_id, ino, con))
         return false;
 
-    const uint64_t fb = sx_div_floor(off, 4096);
-    const uint32_t bc = (uint32_t)sx_div_floor(len, 4096);
+    const uint64_t end_pos = off + len;
+    const uint64_t cur_blocks = [&]()
+    { uint64_t t=0; for (uint32_t i=0;i<ino.extent_count;++i) t+=ino.extents_inline[i].length_blocks; return t; }();
+    const uint64_t need_blocks_end = (end_pos + 4095) / 4096;
 
-    // 現在の総ブロック数
-    uint64_t total_blocks = 0;
-    for (uint32_t i = 0; i < ino.extent_count; ++i)
-        total_blocks += ino.extents_inline[i].length_blocks;
-
-    // “穴”は未対応：fb が total より先のときは不可（MVP）
-    if (fb > total_blocks)
+    // 途中の未割当（fb < cur_blocks なのに map できない）への書込みは未サポート
+    // 末尾越えは append で拡張
+    if (need_blocks_end > cur_blocks)
     {
-        con.println("Sylph1FS: sparse write not supported");
-        return false;
-    }
-
-    // 書き込みで必要な範囲が既存範囲を越える場合は append 確保
-    const uint64_t need_end = fb + bc;
-    if (need_end > total_blocks)
-    {
-        const uint32_t need = (uint32_t)(need_end - total_blocks);
+        const uint32_t add_blocks = (uint32_t)(need_blocks_end - cur_blocks);
         uint64_t alloc_start = 0;
-        if (!append_allocate_run(ino, need, alloc_start, con))
+        if (!append_allocate_run(ino, add_blocks, alloc_start, con))
             return false;
-        // inode を先に書き戻さず、まずデータを書き、成功したら inode を更新する方針でもOK
+
+        // 新規確保領域は 0 で初期化（sidecar CRC 同期）
+        alignas(4096) uint8_t zero[4096];
+        memset(zero, 0, sizeof(zero));
+        for (uint32_t i = 0; i < add_blocks; ++i)
+        {
+            if (!write_block_with_sidecar_crc(alloc_start + i, zero, con))
+                return false;
+        }
+        // **最後に** bitmap を立てる（クラッシュ耐性）
+        if (!set_data_bitmap_range(alloc_start, add_blocks, true, con))
+            return false;
     }
 
-    // 実データ書き込み（1ブロックずつ）
-    const uint8_t *p = reinterpret_cast<const uint8_t *>(buf);
-    for (uint32_t i = 0; i < bc; ++i)
+    // ブロック範囲
+    const uint64_t first_blk = off / 4096;
+    const uint64_t last_blk = (end_pos - 1) / 4096;
+    size_t buf_off = 0;
+
+    for (uint64_t fb = first_blk; fb <= last_blk; ++fb)
     {
+        // ブロック内の書込み範囲
+        const size_t begin_in_blk = (fb == first_blk) ? (size_t)(off % 4096) : 0;
+        const size_t end_in_blk = (fb == last_blk) ? (size_t)((off + len) % 4096 ? (off + len) % 4096 : 4096) : 4096;
+        const size_t nbytes = end_in_blk - begin_in_blk;
+
         uint64_t data_idx = 0;
-        if (!file_block_to_data_idx(ino, fb + i, data_idx))
+        if (!file_block_to_data_idx(ino, fb, data_idx))
         {
-            con.println("Sylph1FS: mapping failed (internal)");
+            con.println("Sylph1FS: write_path: hole write not supported");
             return false;
         }
-        if (!write_block_with_sidecar_crc(data_idx, p + (uint64_t)i * 4096, con))
-            return false;
+
+        if (begin_in_blk == 0 && end_in_blk == 4096 && (reinterpret_cast<uintptr_t>(buf + buf_off) % 16 == 0))
+        {
+            // ちょうど 4KiB：本体ごと置換
+            if (!write_block_with_sidecar_crc(data_idx, buf + buf_off, con))
+                return false;
+        }
+        else
+        {
+            // 部分書き：R-M-W
+            if (!rmw_data_block(data_idx, begin_in_blk, buf + buf_off, nbytes, con))
+                return false;
+        }
+        buf_off += nbytes;
     }
 
-    // bitmap を使用済みに（appendで新規確保した分のみ、厳密には追跡が必要だが、簡便に全範囲再立てでもOK）
-    // ここでは安全側に “現在の extents 全体” を一通り used としてマークし直すのではなく、
-    // append 確保分のみを立てたいところですが、追跡していないので省略。
-    // （実環境に合わせて append_allocate_run() で確保した開始/長さを覚えて立てるのが理想）
-
-    // サイズ更新
-    const uint64_t end_pos = off + len;
     if (end_pos > ino.size_bytes)
         ino.size_bytes = end_pos;
-
-    // inode 書き戻し（CRC付与）
-    if (!write_inode(ino, con))
-        return false;
-
-    con.printf("Sylph1FS: write %u KiB at off %u to '%s'\n",
-               (unsigned long long)(len / 1024),
-               (unsigned long long)off,
-               abs_path);
-    return true;
+    return write_inode(ino, con);
 }
 
-bool Sylph1Mount::read_path(const char *abs_path, void *buf, uint64_t len, uint64_t off, Console &con)
+bool Sylph1Mount::read_path(const char *abs_path, void *vbuf, uint64_t len, uint64_t off, Console &con)
 {
-    if (!abs_path || !buf)
+    if (!abs_path || !vbuf)
         return false;
-    if ((sx_mod(len, 4096) != 0) || (sx_mod(off, 4096) != 0))
-    {
-        con.println("Sylph1FS: read_path requires 4KiB-aligned off/len");
-        return false;
-    }
+    uint8_t *buf = reinterpret_cast<uint8_t *>(vbuf);
     if (len == 0)
         return true;
 
@@ -2461,31 +2452,44 @@ bool Sylph1Mount::read_path(const char *abs_path, void *buf, uint64_t len, uint6
     if (!read_inode(ino_id, ino, con))
         return false;
 
-    const uint64_t fb = sx_div_floor(off, 4096);
-    const uint32_t bc = (uint32_t)sx_div_floor(len, 4096);
-
-    // ファイル末尾越えの読みは “不在ブロック” を含む可能性→MVPでは不可
-    uint64_t total_blocks = 0;
-    for (uint32_t i = 0; i < ino.extent_count; ++i)
-        total_blocks += ino.extents_inline[i].length_blocks;
-    if (fb + bc > total_blocks)
+    // ファイルサイズ超えは未対応（MVP）
+    if (off + len > ino.size_bytes)
     {
-        con.println("Sylph1FS: read beyond allocated extents");
+        con.println("Sylph1FS: read beyond EOF");
         return false;
     }
 
-    uint8_t *p = reinterpret_cast<uint8_t *>(buf);
-    for (uint32_t i = 0; i < bc; ++i)
+    const uint64_t first_blk = off / 4096;
+    const uint64_t last_blk = (off + len - 1) / 4096;
+    size_t buf_off = 0;
+
+    alignas(4096) uint8_t tmp[4096];
+
+    for (uint64_t fb = first_blk; fb <= last_blk; ++fb)
     {
+        const size_t begin_in_blk = (fb == first_blk) ? (size_t)(off % 4096) : 0;
+        const size_t end_in_blk = (fb == last_blk) ? (size_t)(((off + len) % 4096) ? (off + len) % 4096 : 4096) : 4096;
+        const size_t nbytes = end_in_blk - begin_in_blk;
+
         uint64_t data_idx = 0;
-        if (!file_block_to_data_idx(ino, fb + i, data_idx))
+        if (!file_block_to_data_idx(ino, fb, data_idx))
         {
-            con.println("Sylph1FS: mapping failed (internal)");
+            con.println("Sylph1FS: read_path: hole read not supported");
             return false;
         }
-        if (!read_data_block(data_idx, p + (uint64_t)i * 4096, con))
-            return false;
-        // read_data_block 内で sidecar/in-block の検証を済ませている想定
+
+        if (begin_in_blk == 0 && end_in_blk == 4096)
+        {
+            if (!read_data_block(data_idx, buf + buf_off, con))
+                return false;
+        }
+        else
+        {
+            if (!read_data_block(data_idx, tmp, con))
+                return false;
+            memcpy(buf + buf_off, tmp + begin_in_blk, nbytes);
+        }
+        buf_off += nbytes;
     }
     return true;
 }
@@ -2609,4 +2613,22 @@ bool Sylph1Mount::truncate_path(const char *abs_path, uint64_t new_size, Console
 
     ino.size_bytes = new_size;
     return write_inode(ino, con);
+}
+
+bool Sylph1Mount::rmw_data_block(uint64_t data_idx, size_t off_in_block,
+                                 const uint8_t *src, size_t n, Console &con)
+{
+    if (off_in_block >= 4096 || n == 0 || off_in_block + n > 4096)
+        return false;
+
+    alignas(4096) uint8_t blk[4096];
+    // 既存ブロックを読みつつ CRC 検証
+    if (!read_data_block(data_idx, blk, con))
+        return false;
+
+    // パッチ
+    memcpy(blk + off_in_block, src, n);
+
+    // 書き戻し（データ本体 + サイドカーCRC更新）
+    return write_block_with_sidecar_crc(data_idx, blk, con);
 }

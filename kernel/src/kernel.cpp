@@ -291,35 +291,23 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
                     sm->create_path("/D/f1", con);
                     sm->mkdir_path("/D/SUB", con);
                     sm->create_path("/D/SUB/x", con);
-                    sm->mkdir_path("/D/test", con);
-                    sm->create_path("/D/test/tmp.txt", con);
-                    sm->readdir_path("/D", con);
-                    sm->unlink_path("/D/test/tmp.txt", con);
-                    sm->rmdir_path("/D/test", con);
-                    sm->readdir_path("/D", con);
-                    sm->create_path("/D/zero", con);
-                    // 48KiB へ拡張（4KiB整列）
-                    sm->truncate_path("/D/zero", 48ull * 1024ull, con);
-                    // 読み戻して全0確認
-                    alignas(4096) uint8_t buf[4096];
-                    bool allzero = true;
-                    for (int i = 0; i < 12; i++)
-                    {
-                        if (!sm->read_path("/D/zero", buf, 4096, (uint64_t)i * 4096, con))
+                    sm->create_path("/D/f", con);
+                    sm->truncate_path("/D/f", 12 * 1024, con);
+                    uint8_t w[5000];
+                    for (int i = 0; i < 5000; i++)
+                        w[i] = (uint8_t)(i & 0xFF);
+                    sm->write_path("/D/f", w, 5000, 1000, con);
+                    uint8_t r[5000];
+                    memset(r, 0, sizeof(r));
+                    sm->read_path("/D/f", r, 5000, 1000, con);
+                    bool ok = true;
+                    for (int i = 0; i < 5000; i++)
+                        if (r[i] != w[i])
                         {
-                            allzero = false;
+                            ok = false;
                             break;
                         }
-                        for (int j = 0; j < 4096; j++)
-                            if (buf[j] != 0)
-                            {
-                                allzero = false;
-                                break;
-                            }
-                        if (!allzero)
-                            break;
-                    }
-                    con.printf("extend zero-fill check: %s\n", allzero ? "OK" : "NG");
+                    con.printf("unaligned RMW compare: %s\n", ok ? "OK" : "NG");
                 }
                 else
                 {
