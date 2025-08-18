@@ -266,12 +266,12 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
                 opt.dir_bucket_count = 256;
                 // 最初のパーティションを対象にする
                 BlockDeviceSlice slice(*dev, parts[0].first_lba4k, parts[0].blocks4k);
+                Sylph1FS fs(slice, con);
                 // probeしてみて、もし失敗したらmkfsを実行する
                 Sylph1FsDriver temp_driver;
-                if (!temp_driver.probe(slice, con))
+                if (!temp_driver.probe(slice, con) || true)
                 {
                     con.println("Sylph1FS: probe failed, attempting to format...");
-                    Sylph1FS fs(slice, con);
                     if (fs.mkfs(opt) == FsStatus::Ok)
                     {
                         con.println("Sylph1FS: mkfs successful.");
@@ -280,17 +280,16 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
                     {
                         con.println("Sylph1FS: mkfs failed.");
                     }
-                }
-                Sylph1FS fs(slice, con);
-                FsStatus stat = fs.mkfs(opt);
-                con.printf("mkfs: ret=%d\n", stat);
+                };
 
                 FsMount *mnt = nullptr;
                 if (vfs::mount_auto(slice, con, &mnt) == FsStatus::Ok && mnt != nullptr)
                 {
                     con.println("VFS: mount successful, trying readdir_root...");
-                    Sylph1Mount *sylph_mnt = (Sylph1Mount *)mnt;
-                    sylph_mnt->readdir_root(con);
+                    auto sm = static_cast<Sylph1Mount *>(mnt);
+                    sm->test_create("a.txt", con);
+                    sm->test_mkdir("sub", con);
+                    sm->readdir_root(con);
                 }
                 else
                 {

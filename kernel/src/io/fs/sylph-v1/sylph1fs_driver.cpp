@@ -110,6 +110,28 @@ namespace
                    label);
     }
 
+    inline uint64_t fnv1a64(const char *s, size_t n, uint64_t seed)
+    {
+        uint64_t h = 0xcbf29ce484222325ULL ^ seed;
+        const uint64_t p = 0x100000001b3ULL;
+        for (size_t i = 0; i < n; ++i)
+        {
+            h ^= (uint8_t)s[i];
+            h *= p;
+        }
+        return h;
+    }
+
+    inline uint32_t align_up_u32(uint32_t x, uint32_t a)
+    {
+        // a==0 は“アラインしない”扱い
+        if (a == 0)
+            return x;
+        // 汎用（非2の累乗でも可）。オーバーフローしない範囲で使用する前提（本FSでは 4096 と 8 が主）
+        uint32_t r = x % a;
+        return r ? (x + (a - r)) : x;
+    }
+
 } // namespace
 
 bool Sylph1FsDriver::probe(BlockDevice &device, Console &con)
@@ -400,13 +422,14 @@ bool Sylph1Mount::readdir_root(Console &con)
         con.println("Sylph1FS: readdir_root: failed to read inode #1");
         return false;
     }
+    con.printf("DEBUG: readdir_root read inode #1, dir_header_block=%u\n", ino.dir_header_block);
 
     // "." と ".."（ルートなのでどちらも inode=1）
     con.printf(".  (inode=%u)\n", 1u);
     con.printf(".. (inode=%u)\n", 1u);
 
     // dir_header_block が未設定ならここで終了（空扱い）
-    if (ino.dir_format != 1 || ino.dir_header_block == 0)
+    if (ino.dir_format != 1 || ino.dir_header_block >= m_sb.data_area_blocks)
     {
         con.println("(root dir: no header block; treated as empty)");
         return true;
@@ -453,5 +476,458 @@ bool Sylph1Mount::readdir_root(Console &con)
                (unsigned)hdr->bucket_count, (unsigned)hdr->entry_count);
 
     // 将来: bucket[0..N) を辿って実エントリを列挙
+    return true;
+}
+
+bool Sylph1Mount::write_block_with_sidecar_crc(uint64_t data_idx, const void *buf4096, Console &con)
+{
+    const uint64_t data_lba = m_sb.data_area_start + data_idx;
+    if (!m_dev.write_blocks_4k(data_lba, 1, buf4096, 4096, /*fua*/ true,
+                               BlockDevice::kVerifyAfterWrite, con))
+    {
+        con.printf("Sylph1FS: write data LBA=%llu failed\n", (unsigned long long)data_lba);
+        return false;
+    }
+
+    uint64_t crc_lba;
+    size_t crc_off;
+    if (!map_crc_entry(data_idx, crc_lba, crc_off, con))
+        return false;
+
+    alignas(4096) uint8_t crcblk[4096];
+    if (!m_dev.read_blocks_4k(crc_lba, 1, crcblk, sizeof(crcblk), con))
+        return false;
+    const uint32_t side_crc = crc32c_reflected(buf4096, 4096);
+    memcpy(crcblk + crc_off, &side_crc, sizeof(side_crc));
+    if (!m_dev.write_blocks_4k(crc_lba, 1, crcblk, sizeof(crcblk),
+                               /*fua*/ true, BlockDevice::kVerifyAfterWrite, con))
+    {
+        con.printf("Sylph1FS: write sidecar CRC LBA=%llu failed\n", (unsigned long long)crc_lba);
+        return false;
+    }
+    return true;
+}
+
+// Data bitmap: first-fit 連続ラン確保（commitは別）
+bool Sylph1Mount::alloc_data_blocks(uint32_t need, uint64_t &start_idx, Console &con)
+{
+    const uint64_t bits_per_block = 4096ull * 8ull; // 32768
+    const uint64_t total = m_sb.data_area_blocks;
+    uint64_t run = 0, run_start = 0;
+
+    for (uint64_t bm_blk = 0; bm_blk < m_sb.bm_data_blocks; ++bm_blk)
+    {
+        alignas(4096) uint8_t bm[4096];
+        if (!m_dev.read_blocks_4k(m_sb.bm_data_start + bm_blk, 1, bm, sizeof(bm), con))
+            return false;
+
+        for (uint64_t byte = 0; byte < 4096; ++byte)
+        {
+            uint8_t v = bm[byte];
+            for (int b = 0; b < 8; ++b)
+            {
+                const uint64_t idx = bm_blk * bits_per_block + byte * 8 + b;
+                if (idx >= total)
+                    break;
+                const bool used = (v >> b) & 1;
+                if (!used)
+                {
+                    if (run == 0)
+                        run_start = idx;
+                    if (++run >= need)
+                    {
+                        start_idx = run_start;
+                        return true;
+                    }
+                }
+                else
+                {
+                    run = 0;
+                }
+            }
+        }
+    }
+    con.println("Sylph1FS: alloc_data_blocks failed (no space)");
+    return false;
+}
+
+bool Sylph1Mount::set_data_bitmap_range(uint64_t start_idx, uint32_t count, bool used, Console &con)
+{
+    for (uint32_t i = 0; i < count; ++i)
+    {
+        const uint64_t bit = start_idx + i;
+        const uint64_t byte_index = bit >> 3;
+        const uint8_t mask = (uint8_t)(1u << (bit & 7u));
+        const uint64_t lba = m_sb.bm_data_start + (byte_index >> 12);
+        const size_t off = (size_t)(byte_index & 0xFFFu);
+
+        alignas(4096) uint8_t bm[4096];
+        if (!m_dev.read_blocks_4k(lba, 1, bm, sizeof(bm), con))
+            return false;
+        if (used)
+            bm[off] |= mask;
+        else
+            bm[off] &= (uint8_t)~mask;
+        if (!m_dev.write_blocks_4k(lba, 1, bm, sizeof(bm), /*fua*/ true,
+                                   BlockDevice::kVerifyAfterWrite, con))
+            return false;
+    }
+    return true;
+}
+
+bool Sylph1Mount::alloc_inode(uint64_t &out_id, Console &con)
+{
+    const uint64_t bits_per_block = 4096ull * 8ull;
+    for (uint64_t bm_blk = 0; bm_blk < m_sb.bm_inode_blocks; ++bm_blk)
+    {
+        alignas(4096) uint8_t bm[4096];
+        if (!m_dev.read_blocks_4k(m_sb.bm_inode_start + bm_blk, 1, bm, sizeof(bm), con))
+            return false;
+
+        for (uint64_t byte = 0; byte < 4096; ++byte)
+        {
+            if (bm[byte] == 0xFF)
+                continue;
+            for (int b = 0; b < 8; ++b)
+            {
+                if (!(bm[byte] & (1u << b)))
+                {
+                    uint64_t id = bm_blk * bits_per_block + byte * 8 + b + 1; // 1起算
+                    if (id == 0 || id > m_sb.total_inodes)
+                        break;
+                    out_id = id;
+                    return true;
+                }
+            }
+        }
+    }
+    con.println("Sylph1FS: alloc_inode failed (no space)");
+    return false;
+}
+
+bool Sylph1Mount::set_inode_bitmap(uint64_t inode_id, bool used, Console &con)
+{
+    const uint64_t idx = inode_id - 1;
+    const uint64_t byte_index = idx >> 3;
+    const uint8_t mask = (uint8_t)(1u << (idx & 7u));
+    const uint64_t lba = m_sb.bm_inode_start + (byte_index >> 12);
+    const size_t off = (size_t)(byte_index & 0xFFFu);
+
+    alignas(4096) uint8_t bm[4096];
+    if (!m_dev.read_blocks_4k(lba, 1, bm, sizeof(bm), con))
+        return false;
+    if (used)
+        bm[off] |= mask;
+    else
+        bm[off] &= (uint8_t)~mask;
+    return m_dev.write_blocks_4k(lba, 1, bm, sizeof(bm), /*fua*/ true,
+                                 BlockDevice::kVerifyAfterWrite, con);
+}
+
+bool Sylph1Mount::init_dir_block(uint32_t bucket_count, uint64_t &data_idx_out, Console &con)
+{
+    uint64_t idx = 0;
+    if (!alloc_data_blocks(1, idx, con))
+        return false;
+
+    alignas(4096) uint8_t blk[4096];
+    memset(blk, 0, sizeof(blk));
+
+    sylph1fs::DirHeader *hdr = reinterpret_cast<sylph1fs::DirHeader *>(blk);
+    hdr->magic = sylph1fs::kDirMagic;
+    hdr->version = 1;
+    hdr->bucket_count = bucket_count;
+    hdr->entry_count = 0;
+
+    // 末尾CRC（in-block）
+    const uint32_t inblk_crc = crc32c_reflected(blk, 4096 - 4);
+    memcpy(blk + 4096 - 4, &inblk_crc, sizeof(inblk_crc));
+
+    // 本体→サイドカーCRC→bitmap の順で確定
+    if (!write_block_with_sidecar_crc(idx, blk, con))
+        return false;
+    if (!set_data_bitmap_range(idx, 1, true, con))
+        return false;
+
+    data_idx_out = idx;
+    return true;
+}
+
+bool Sylph1Mount::dir_add_entry_root(const char *name, uint16_t type, uint64_t child_ino, Console &con)
+{
+    if (!name)
+        return false;
+    const size_t nlen = strlen(name);
+    if (nlen == 0 || nlen > 255)
+    {
+        con.println("Sylph1FS: invalid name");
+        return false;
+    }
+
+    // ルート inode と ヘッダブロックを読む
+    sylph1fs::Inode root{};
+    if (!read_inode(1, root, con))
+        return false;
+    con.printf("DEBUG: dir_add_entry_root('%s') read inode #1, dir_header_block=%u\n", name, root.dir_header_block);
+    if (root.dir_format != 1 || root.dir_header_block >= m_sb.data_area_blocks)
+    {
+        con.println("Sylph1FS: root dir is not hashed");
+        return false;
+    }
+    const uint64_t hdr_idx = root.dir_header_block;
+
+    alignas(4096) uint8_t hdrblk[4096];
+    if (!read_data_block(hdr_idx, hdrblk, con))
+        return false;
+    // in-block CRC も検証
+    uint32_t stored = 0;
+    memcpy(&stored, hdrblk + 4096 - 4, 4);
+    const uint32_t calc = crc32c_reflected(hdrblk, 4096 - 4);
+    if (stored != calc)
+    {
+        con.println("Sylph1FS: dir header in-block CRC mismatch");
+        return false;
+    }
+    sylph1fs::DirHeader *hdr = reinterpret_cast<sylph1fs::DirHeader *>(hdrblk);
+    if (hdr->magic != sylph1fs::kDirMagic || hdr->version != 1)
+        return false;
+
+    // バケットを決める
+    const uint64_t seed = 0; // v1はSBのdirhash_secret未使用なら0
+    const uint64_t h = fnv1a64(name, nlen, seed);
+    const uint32_t b = (hdr->bucket_count ? (uint32_t)(h % hdr->bucket_count) : 0);
+    uint32_t *buckets = reinterpret_cast<uint32_t *>(hdrblk + sizeof(sylph1fs::DirHeader));
+    uint32_t slot = buckets[b];
+
+    // スラブの先頭を用意（空なら1ブロック新規確保）
+    uint64_t slab_idx = 0;
+    bool slab_is_external = true;
+    if (slot == sylph1fs::kBucketEmpty)
+    {
+        // 1ブロック確保してスラブ化
+        if (!alloc_data_blocks(1, slab_idx, con))
+            return false;
+
+        alignas(4096) uint8_t slab[4096];
+        memset(slab, 0, sizeof(slab));
+        sylph1fs::DirSlabHeader *sh = reinterpret_cast<sylph1fs::DirSlabHeader *>(slab);
+        sh->used_bytes = sizeof(sylph1fs::DirSlabHeader);
+        sh->entry_count = 0;
+        sh->next_block_rel = 0;
+
+        // 末尾CRC（in-block）
+        uint32_t s_crc = crc32c_reflected(slab, 4096 - 4);
+        memcpy(slab + 4096 - 4, &s_crc, 4);
+
+        if (!write_block_with_sidecar_crc(slab_idx, slab, con))
+            return false;
+        // バケットに反映
+        buckets[b] = (uint32_t)slab_idx;
+
+        // ヘッダブロックの in-block CRC 更新 → 書戻し
+        uint32_t h_crc = crc32c_reflected(hdrblk, 4096 - 4);
+        memcpy(hdrblk + 4096 - 4, &h_crc, 4);
+        if (!write_block_with_sidecar_crc(hdr_idx, hdrblk, con))
+            return false;
+
+        // データbitmap確定
+        if (!set_data_bitmap_range(slab_idx, 1, true, con))
+            return false;
+    }
+    else if (slot == sylph1fs::kBucketEmbedded)
+    {
+        con.println("Sylph1FS: embedded slab not implemented (yet)");
+        return false;
+    }
+    else
+    {
+        slab_idx = slot;
+    }
+
+    // スラブブロックを読み、重複名チェック → 追記
+    alignas(4096) uint8_t slab[4096];
+    if (!read_data_block(slab_idx, slab, con))
+        return false;
+    uint32_t in_crc = 0;
+    memcpy(&in_crc, slab + 4096 - 4, 4);
+    if (in_crc != crc32c_reflected(slab, 4096 - 4))
+    {
+        con.println("Sylph1FS: slab in-block CRC mismatch");
+        return false;
+    }
+
+    sylph1fs::DirSlabHeader *sh = reinterpret_cast<sylph1fs::DirSlabHeader *>(slab);
+    uint32_t off = sh->used_bytes;
+    // 既存走査（重複確認）
+    {
+        uint32_t p = sizeof(sylph1fs::DirSlabHeader);
+        for (uint32_t i = 0; i < sh->entry_count && p + 8 <= 4096 - 4; ++i)
+        {
+            if (p + 8 > sh->used_bytes)
+                break;
+            uint16_t nlen2 = 0, type2 = 0;
+            memcpy(&nlen2, slab + p + 0, 2);
+            memcpy(&type2, slab + p + 2, 2);
+            uint64_t ino2 = 0;
+            memcpy(&ino2, slab + p + 4, 8);
+            (void)type2;
+            (void)ino2;
+            if (p + 12 + nlen2 > 4096 - 4)
+                break;
+            bool same = (nlen2 == nlen) && (memcmp(slab + p + 12, name, nlen) == 0);
+            // 8バイト境界にそろえて次へ
+            uint32_t adv = align_up_u32((uint32_t)(12 + nlen2), 8);
+            p += adv;
+            if (same)
+            {
+                con.println("Sylph1FS: duplicate name");
+                return false;
+            }
+        }
+    }
+
+    // 追記
+    const uint32_t need = align_up_u32((uint32_t)(12 + nlen), 8);
+    if (off + need > 4096 - 4)
+    {
+        con.println("Sylph1FS: slab is full (spill not implemented yet)");
+        return false; // 将来: 新スラブを確保して next に繋ぐ
+    }
+
+    // [name_len(2)][type(2)][inode(8)][name...][pad]
+    memcpy(slab + off + 0, &nlen, 2);
+    memcpy(slab + off + 2, &type, 2);
+    memcpy(slab + off + 4, &child_ino, 8);
+    memcpy(slab + off + 12, name, nlen);
+    // 残りは0で良い（パディング）
+    // used/entry_count 更新
+    sh->used_bytes = off + need;
+    sh->entry_count = sh->entry_count + 1;
+
+    // 末尾CRC更新 → 本体+サイドカーCRC 書戻し
+    uint32_t s_crc = crc32c_reflected(slab, 4096 - 4);
+    memcpy(slab + 4096 - 4, &s_crc, 4);
+    if (!write_block_with_sidecar_crc(slab_idx, slab, con))
+        return false;
+
+    // メインヘッダの entry_count を更新して書き戻す
+    hdr->entry_count = hdr->entry_count + 1;
+
+    // ヘッダブロックの in-block CRC 更新 → 書戻し
+    uint32_t h_crc = crc32c_reflected(hdrblk, 4096 - 4);
+    memcpy(hdrblk + 4096 - 4, &h_crc, 4);
+    if (!write_block_with_sidecar_crc(hdr_idx, hdrblk, con))
+        return false;
+
+    return true;
+}
+
+bool Sylph1Mount::test_create(const char *name, Console &con)
+{
+    if (m_ro)
+    {
+        con.println("Sylph1FS: read-only mount");
+        return false;
+    }
+
+    // 1) inode を確保（テーブル書き→CRC→bitmapは最後）
+    uint64_t ino_id = 0;
+    if (!alloc_inode(ino_id, con))
+        return false;
+
+    // 2) 空ファイル inode を構築
+    const uint64_t index = ino_id - 1;
+    const uint64_t byte_off = index * 256ull;
+    const uint64_t lba4k = m_sb.inode_table_start + (byte_off >> 12);
+    const size_t off = (size_t)(byte_off & 0xFFFu);
+
+    alignas(4096) uint8_t blk[4096];
+    if (!m_dev.read_blocks_4k(lba4k, 1, blk, sizeof(blk), con))
+        return false;
+    memset(blk + off, 0, 256);
+
+    sylph1fs::Inode *ino = reinterpret_cast<sylph1fs::Inode *>(blk + off);
+    ino->inode_id = (uint64_t)ino_id;
+    ino->mode = 0x8000 | 0644; // FILE
+    ino->links = 1;
+    ino->size_bytes = 0;
+    ino->atime = ino->mtime = ino->ctime = 0;
+    ino->extent_count = 0;
+    ino->dir_format = 0;
+    ino->dir_header_block = 0;
+    ino->inode_crc32c = 0;
+    ino->inode_crc32c = crc32c_reflected(ino, 252);
+
+    if (!m_dev.write_blocks_4k(lba4k, 1, blk, sizeof(blk), /*fua*/ true,
+                               BlockDevice::kVerifyAfterWrite, con))
+        return false;
+
+    // 3) ルートにエントリを追加
+    if (!dir_add_entry_root(name, sylph1fs::kDirEntTypeFile, ino_id, con))
+        return false;
+
+    // 4) inode bitmap を確定
+    if (!set_inode_bitmap(ino_id, true, con))
+        return false;
+
+    con.printf("Sylph1FS: created file \"%s\" (ino=%u)\n", name, (unsigned long long)ino_id);
+    return true;
+}
+
+bool Sylph1Mount::test_mkdir(const char *name, Console &con)
+{
+    if (m_ro)
+    {
+        con.println("Sylph1FS: read-only mount");
+        return false;
+    }
+
+    // 1) ディレクトリブロックを1つ作成
+    uint64_t dir_idx = 0;
+    if (!init_dir_block(/*bucket_count*/ 256, dir_idx, con))
+        return false;
+
+    // 2) inode を確保し、DIR inode を書き込む
+    uint64_t ino_id = 0;
+    if (!alloc_inode(ino_id, con))
+        return false;
+
+    const uint64_t index = ino_id - 1;
+    const uint64_t byte_off = index * 256ull;
+    const uint64_t lba4k = m_sb.inode_table_start + (byte_off >> 12);
+    const size_t off = (size_t)(byte_off & 0xFFFu);
+
+    alignas(4096) uint8_t blk[4096];
+    if (!m_dev.read_blocks_4k(lba4k, 1, blk, sizeof(blk), con))
+        return false;
+    memset(blk + off, 0, 256);
+
+    sylph1fs::Inode *ino = reinterpret_cast<sylph1fs::Inode *>(blk + off);
+    ino->inode_id = (uint64_t)ino_id;
+    ino->mode = 0x4000 | 0755; // DIR
+    ino->links = 1;
+    ino->size_bytes = 4096;
+    ino->extent_count = 1;
+    ino->extents_inline[0].start_block_rel = dir_idx;
+    ino->extents_inline[0].length_blocks = 1;
+    ino->dir_format = 1;
+    ino->dir_header_block = dir_idx;
+    ino->inode_crc32c = 0;
+    ino->inode_crc32c = crc32c_reflected(ino, 252);
+
+    if (!m_dev.write_blocks_4k(lba4k, 1, blk, sizeof(blk), /*fua*/ true,
+                               BlockDevice::kVerifyAfterWrite, con))
+        return false;
+
+    // 3) ルートにエントリ追加
+    if (!dir_add_entry_root(name, sylph1fs::kDirEntTypeDir, ino_id, con))
+        return false;
+
+    // 4) inode bitmap を確定
+    if (!set_inode_bitmap(ino_id, true, con))
+        return false;
+
+    con.printf("Sylph1FS: created directory \"%s\" (ino=%u idx=%u)\n",
+               name, (unsigned long long)ino_id, (unsigned long long)dir_idx);
     return true;
 }

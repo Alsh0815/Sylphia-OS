@@ -37,10 +37,23 @@ public:
     const sylph1fs::Superblock &superblock() const { return m_sb; }
     bool read_only() const { return m_ro; }
 
+    bool test_create(const char *name, Console &con);
+    bool test_mkdir(const char *name, Console &con);
+
 private:
     BlockDevice &m_dev;
     sylph1fs::Superblock m_sb;
     bool m_ro;
 
     bool map_crc_entry(uint64_t data_idx, uint64_t &crc_lba4k, size_t &crc_off, Console &con) const;
+
+    bool write_block_with_sidecar_crc(uint64_t data_idx, const void *buf4096, Console &con);
+
+    bool alloc_data_blocks(uint32_t need, uint64_t &start_idx, Console &con); // first-fit、確保は最後に commit
+    bool set_data_bitmap_range(uint64_t start_idx, uint32_t count, bool used, Console &con);
+    bool alloc_inode(uint64_t &out_id, Console &con); // ビットは後で立てる
+    bool set_inode_bitmap(uint64_t inode_id, bool used, Console &con);
+
+    bool init_dir_block(uint32_t bucket_count, uint64_t &data_idx_out, Console &con);
+    bool dir_add_entry_root(const char *name, uint16_t type, uint64_t child_ino, Console &con);
 };

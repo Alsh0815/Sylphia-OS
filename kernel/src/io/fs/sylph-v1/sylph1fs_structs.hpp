@@ -94,7 +94,20 @@ namespace sylph1fs
     };
 #pragma pack(pop)
 
-    static constexpr uint32_t kDirMagic = 0x53494C44u; // 'S''Y''L''D'
+#pragma pack(push, 1)
+    struct DirSlabHeader
+    {
+        uint32_t used_bytes;     // このスラブ内で使用しているバイト数（ヘッダ含む、CRC末尾は含まない）
+        uint32_t entry_count;    // 登録済みエントリ数
+        uint64_t next_block_rel; // 次のスラブ（0=終端）。Data area 相対 4KiB ブロック番号
+    };
+#pragma pack(pop)
+
+    static constexpr uint32_t kDirMagic = 0x53494C44u;      // 'S''Y''L''D'
+    static constexpr uint32_t kBucketEmpty = 0;             // 未使用
+    static constexpr uint32_t kBucketEmbedded = 0xFFFFFFFF; // （将来用）ヘッダ内“埋め込みスラブ”
+    static constexpr uint16_t kDirEntTypeDir = 1;
+    static constexpr uint16_t kDirEntTypeFile = 2;
 
     static_assert(offsetof(Superblock, magic) == 0x000, "Superblock magic offset mismatch");
     static_assert(offsetof(Superblock, version) == 0x004, "Superblock version offset mismatch");
@@ -152,4 +165,6 @@ namespace sylph1fs
     static_assert(sizeof(Inode) == 256, "Inode struct size mismatch");
 
     static_assert(sizeof(DirHeader) == 64, "DirHeader struct size mismatch");
+
+    static_assert(sizeof(DirSlabHeader) == 16, "DirSlabHeader struct size mismatch");
 }

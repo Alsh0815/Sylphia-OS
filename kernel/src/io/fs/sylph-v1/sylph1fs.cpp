@@ -380,6 +380,7 @@ bool Sylph1FS::init_root_inode(const Layout &L, const MkfsOptions &opt)
     // ブロックへ書戻し（FUA+verify）
     if (!write_and_verify(lba4k, buf))
         return false;
+    m_con.printf("DEBUG: init_root_inode wrote inode #1 with dir_header_block=%u\n", local_ino.dir_header_block);
 
     // Inode bitmap #1 を使用中に
     const uint64_t bm_byte_index = 0; // inode#1 は byte0 bit0
@@ -391,6 +392,24 @@ bool Sylph1FS::init_root_inode(const Layout &L, const MkfsOptions &opt)
     bm_buf[bm_off] |= 0x01;
     if (!write_and_verify(bm_lba, bm_buf))
         return false;
+
+    m_con.println("DEBUG: Verifying inode bitmap write...");
+    uint8_t verify_bm_buf[4096];
+    if (!m_dev.read_blocks_4k(bm_lba, 1, verify_bm_buf, 4096, m_con))
+    {
+        m_con.println("DEBUG: Failed to re-read bitmap for verification.");
+    }
+    else
+    {
+        if ((verify_bm_buf[bm_off] & 0x01) != 0)
+        {
+            m_con.println("DEBUG: Inode bitmap for #1 is set correctly on disk.");
+        }
+        else
+        {
+            m_con.println("!!! DEBUG: Inode bitmap for #1 is NOT set on disk. Write failed? !!!");
+        }
+    }
 
     return true;
 }
