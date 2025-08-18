@@ -291,13 +291,8 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
                     sm->create_path("/D/f1", con);
                     sm->mkdir_path("/D/SUB", con);
                     sm->create_path("/D/SUB/x", con);
-                    uint64_t ino = 0;
-                    uint16_t ty = 0;
-                    sm->lookup_in_root("D", ino, ty, con);
-                    if (sm->lookup_in_dir(ino, "SUB", ino, ty, con))
-                    {
-                        con.printf("SUB inode=%u type=%u\n", (unsigned long long)ino, (unsigned)ty);
-                    }
+                    sm->readdir_path("/D", con);
+                    sm->readdir_path("/D/SUB", con);
                 }
                 else
                 {

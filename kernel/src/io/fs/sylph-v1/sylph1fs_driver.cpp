@@ -380,7 +380,7 @@ bool Sylph1Mount::read_inode(uint64_t inode_id, sylph1fs::Inode &out, Console &c
     // ScopeExit を使って、関数を抜ける際に必ずメモリを解放する
     ScopeExit free_buffer([&]()
                           { pmm::free_pages(blk, 1); });
-    //con.printf("DEBUG: Calling m_dev.read_blocks_4k from read_inode. m_dev is at %p\n", &m_dev);
+    // con.printf("DEBUG: Calling m_dev.read_blocks_4k from read_inode. m_dev is at %p\n", &m_dev);
     if (!m_dev.read_blocks_4k(lba4k, 1, blk, 4096, con))
     {
         con.printf("Sylph1FS: read_inode I/O error (LBA=%llu)\n",
@@ -1627,7 +1627,7 @@ bool Sylph1Mount::create_path(const char *abs_path, Console &con)
     if (!set_inode_bitmap(ino_id, true, con))
         return false;
 
-    con.printf("Sylph1FS: create '%s' under ino=%llu -> ino=%llu\n",
+    con.printf("Sylph1FS: create '%s' under ino=%u -> ino=%u\n",
                name, (unsigned long long)parent, (unsigned long long)ino_id);
     return true;
 }
@@ -1713,4 +1713,192 @@ bool Sylph1Mount::split_parent_basename(const char *abs_path,
         }
     }
     return false; // 正常なら上の is_last に入る
+}
+
+bool Sylph1Mount::readdir_dir(uint64_t dir_inode_id, Console &con)
+{
+    sylph1fs::Inode ino{};
+    if (!read_inode(dir_inode_id, ino, con))
+    {
+        con.printf("Sylph1FS: readdir_dir: failed to read inode #%u\n",
+                   (unsigned long long)dir_inode_id);
+        return false;
+    }
+    if (ino.dir_format != 1 || ino.dir_header_block >= m_sb.data_area_blocks)
+    {
+        con.println("Sylph1FS: readdir_dir: target is not a hashed directory");
+        return false;
+    }
+
+    // 合成エントリ（親 inode はまだ管理していないため、ここでは自分で代用）
+    con.printf(".  (inode=%u)\n", (unsigned long long)dir_inode_id);
+    con.printf(".. (inode=%u)\n", (unsigned long long)dir_inode_id);
+
+    // DirHeader 読み＋CRC検証
+    alignas(4096) uint8_t blk[4096];
+    if (!read_data_block(ino.dir_header_block, blk, con))
+        return false;
+
+    uint32_t stored = 0;
+    memcpy(&stored, blk + 4096 - 4, 4);
+    const uint32_t calc = crc32c_reflected(blk, 4096 - 4);
+    if (stored != calc)
+    {
+        con.println("Sylph1FS: dir header in-block CRC mismatch");
+        return false;
+    }
+
+    const sylph1fs::DirHeader *hdr =
+        reinterpret_cast<const sylph1fs::DirHeader *>(blk);
+    if (hdr->magic != sylph1fs::kDirMagic || hdr->version != 1)
+    {
+        con.println("Sylph1FS: dir header invalid");
+        return false;
+    }
+
+    const uint32_t bucket_count = hdr->bucket_count;
+    con.printf("(dir ino=%u: buckets=%u, entries=%u)\n",
+               (unsigned long long)dir_inode_id,
+               (unsigned)bucket_count, (unsigned)hdr->entry_count);
+
+    // 全バケット列挙
+    const uint32_t *buckets =
+        reinterpret_cast<const uint32_t *>(blk + sizeof(sylph1fs::DirHeader));
+    uint32_t listed = 0;
+
+    for (uint32_t b = 0; b < bucket_count; ++b)
+    {
+        uint32_t slot = buckets[b];
+        if (slot == sylph1fs::kBucketEmpty)
+            continue;
+        if (slot == sylph1fs::kBucketEmbedded)
+        {
+            con.println("Sylph1FS: embedded slab not implemented (skip)");
+            continue;
+        }
+        uint64_t slab_idx = slot;
+        while (slab_idx != 0)
+        {
+            if (!enumerate_slab(slab_idx, con, listed))
+                return false;
+
+            // 次スラブを辿る
+            alignas(4096) uint8_t slab[4096];
+            if (!read_data_block(slab_idx, slab, con))
+                return false;
+            const sylph1fs::DirSlabHeader *sh =
+                reinterpret_cast<const sylph1fs::DirSlabHeader *>(slab);
+            slab_idx = sh->next_block_rel;
+        }
+    }
+
+    if (listed != hdr->entry_count)
+    {
+        con.printf("Sylph1FS: WARN entries mismatch header=%u actual=%u\n",
+                   (unsigned)hdr->entry_count, (unsigned)listed);
+    }
+    return true;
+}
+
+bool Sylph1Mount::resolve_path_inode(const char *abs_path,
+                                     uint64_t &inode_out, uint16_t &type_out, Console &con)
+{
+    inode_out = 0;
+    type_out = 0;
+    if (!abs_path || abs_path[0] != '/')
+        return false;
+
+    // ルート
+    uint64_t cur = 1;
+    uint16_t cur_ty = sylph1fs::kDirEntTypeDir;
+
+    const char *p = abs_path;
+    while (*p == '/')
+        ++p; // 先頭の'/'群をスキップ
+    if (*p == '\0')
+    { // "/" はルート
+        inode_out = cur;
+        type_out = cur_ty;
+        return true;
+    }
+
+    char seg[256];
+    while (*p)
+    {
+        // セグメント抽出
+        size_t n = 0;
+        while (p[n] && p[n] != '/' && n < 255)
+        {
+            seg[n] = p[n];
+            ++n;
+        }
+        seg[n] = '\0';
+
+        const char *next = p + n;
+        while (*next == '/')
+            ++next;
+        const bool is_last = (*next == '\0');
+
+        if (n == 0)
+        {
+            p = next;
+            continue;
+        }
+        if (n == 1 && seg[0] == '.')
+        {
+            p = next;
+            continue;
+        }
+        if (n == 2 && seg[0] == '.' && seg[1] == '.')
+        {
+            con.println("Sylph1FS: '..' in path not supported yet");
+            return false;
+        }
+
+        // 現在位置がディレクトリである必要
+        if (cur_ty != sylph1fs::kDirEntTypeDir)
+        {
+            con.println("Sylph1FS: path walks into non-directory");
+            return false;
+        }
+
+        uint64_t next_ino = 0;
+        uint16_t next_ty = 0;
+        if (!lookup_in_dir(cur, seg, next_ino, next_ty, con))
+        {
+            if (is_last)
+            {
+                // 最終要素が存在しない場合、呼び出し側のポリシにより NotFound とする
+                return false;
+            }
+            con.printf("Sylph1FS: path segment '%s' not found\n", seg);
+            return false;
+        }
+
+        cur = next_ino;
+        cur_ty = next_ty;
+        p = next;
+    }
+
+    inode_out = cur;
+    type_out = cur_ty;
+    return true;
+}
+
+bool Sylph1Mount::readdir_path(const char *abs_path, Console &con)
+{
+    uint64_t ino = 0;
+    uint16_t ty = 0;
+    if (!resolve_path_inode(abs_path, ino, ty, con))
+    {
+        con.printf("Sylph1FS: readdir_path: resolve failed for '%s'\n",
+                   abs_path ? abs_path : "(null)");
+        return false;
+    }
+    if (ty != sylph1fs::kDirEntTypeDir)
+    {
+        con.printf("Sylph1FS: readdir_path: '%s' is not a directory\n", abs_path);
+        return false;
+    }
+    return readdir_dir(ino, con);
 }

@@ -33,6 +33,8 @@ public:
     bool verify_data_block_crc(uint64_t data_idx, const void *buf4096, Console &con) const;
     bool read_inode(uint64_t inode_id, sylph1fs::Inode &out, Console &con) const;
     bool readdir_root(Console &con);
+    bool readdir_dir(uint64_t dir_inode_id, Console &con);
+    bool readdir_path(const char *abs_path, Console &con);
     bool lookup_in_root(const char *name, uint64_t &inode_out, uint16_t &type_out, Console &con);
 
     bool lookup_in_dir(uint64_t dir_inode_id, const char *name, uint64_t &inode_out, uint16_t &type_out, Console &con);
@@ -66,4 +68,5 @@ private:
     bool dir_add_entry_root(const char *name, uint16_t type, uint64_t child_ino, Console &con);
 
     bool split_parent_basename(const char *abs_path, uint64_t &parent_ino, char *base_out, size_t &base_len, Console &con);
+    bool resolve_path_inode(const char *abs_path, uint64_t &inode_out, uint16_t &type_out, Console &con);
 };
