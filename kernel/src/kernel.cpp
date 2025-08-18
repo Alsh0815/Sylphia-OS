@@ -269,7 +269,7 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
                 Sylph1FS fs(slice, con);
                 // probeしてみて、もし失敗したらmkfsを実行する
                 Sylph1FsDriver temp_driver;
-                if (!temp_driver.probe(slice, con))
+                if (!temp_driver.probe(slice, con) || true)
                 {
                     con.println("Sylph1FS: probe failed, attempting to format...");
                     if (fs.mkfs(opt) == FsStatus::Ok)
@@ -291,8 +291,12 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
                     sm->create_path("/D/f1", con);
                     sm->mkdir_path("/D/SUB", con);
                     sm->create_path("/D/SUB/x", con);
+                    sm->mkdir_path("/D/test", con);
+                    sm->create_path("/D/test/tmp.txt", con);
                     sm->readdir_path("/D", con);
-                    sm->readdir_path("/D/SUB", con);
+                    sm->unlink_path("/D/test/tmp.txt", con);
+                    sm->rmdir_path("/D/test", con);
+                    sm->readdir_path("/D", con);
                 }
                 else
                 {

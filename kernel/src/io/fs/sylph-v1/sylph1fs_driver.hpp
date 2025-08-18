@@ -42,6 +42,9 @@ public:
     bool mkdir_path(const char *abs_path, Console &con);
     bool create_path(const char *abs_path, Console &con);
 
+    bool unlink_path(const char *abs_path, Console &con);
+    bool rmdir_path(const char *abs_path, Console &con);
+
     const sylph1fs::Superblock &superblock() const { return m_sb; }
     bool read_only() const { return m_ro; }
 
@@ -70,4 +73,7 @@ private:
 
     bool split_parent_basename(const char *abs_path, uint64_t &parent_ino, char *base_out, size_t &base_len, Console &con);
     bool resolve_path_inode(const char *abs_path, uint64_t &inode_out, uint16_t &type_out, Console &con);
+
+    bool dir_remove_entry(uint64_t parent_inode_id, const char *name, uint16_t &type_out, uint64_t &child_ino_out, Console &con);
+    bool is_dir_empty(uint64_t dir_inode_id, Console &con);
 };

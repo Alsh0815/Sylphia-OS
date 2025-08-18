@@ -1021,14 +1021,18 @@ bool Sylph1Mount::enumerate_slab(uint64_t slab_idx, Console &con, uint32_t &out_
         if (need > 4096 - 4 || p + need > used)
             break; // 破損/終端保護
 
-        const char *name = reinterpret_cast<const char *>(slab + p + 12);
-        // 名前はそのまま出力（NUL終端ではない）
-        // 表示用途：最大255までの範囲でプリント
-        con.printf("%s %d %s (inode=%u)\n",
-                   (type == sylph1fs::kDirEntTypeDir ? 'd' : 'f'),
-                   (int)nlen, name, (unsigned long long)ino);
+        if (type != 0) // type が 0 (削除済み) でない有効なエントリのみ処理する
+        {
+            const char *name = reinterpret_cast<const char *>(slab + p + 12);
+            char name_buf[256];
+            memcpy(name_buf, name, nlen);
+            name_buf[nlen] = '\0';
+            con.printf("  %s  (inode=%u, type=%c)\n",
+                       name_buf, (unsigned long long)ino,
+                       (type == sylph1fs::kDirEntTypeDir ? 'd' : 'f'));
 
-        ++local;
+            ++local;
+        }
         // 8バイト境界まで前進
         const uint32_t adv = align_up_u32(need, 8);
         if (adv == 0)
@@ -1946,4 +1950,321 @@ bool Sylph1Mount::write_inode(const sylph1fs::Inode &ino, Console &con)
     p->inode_crc32c = crc32c_reflected(p, 252);
 
     return m_dev.write_blocks_4k(lba4k, 1, blk, sizeof(blk), true, BlockDevice::kVerifyAfterWrite, con);
+}
+
+bool Sylph1Mount::dir_remove_entry(uint64_t parent_inode_id, const char *name,
+                                   uint16_t &type_out, uint64_t &child_ino_out, Console &con)
+{
+    type_out = 0;
+    child_ino_out = 0;
+    if (!name)
+        return false;
+    const size_t nlen = strlen(name);
+    if (nlen == 0 || nlen > 255)
+    {
+        con.println("Sylph1FS: remove invalid name");
+        return false;
+    }
+
+    sylph1fs::Inode parent{};
+    if (!read_inode(parent_inode_id, parent, con))
+        return false;
+    if (parent.dir_format != 1 || parent.dir_header_block >= m_sb.data_area_blocks)
+    {
+        con.println("Sylph1FS: parent not hashed dir");
+        return false;
+    }
+    const uint64_t hdr_idx = parent.dir_header_block;
+
+    // ヘッダブロック
+    alignas(4096) uint8_t hdrblk[4096];
+    if (!read_data_block(hdr_idx, hdrblk, con))
+        return false;
+    uint32_t h_stored = 0;
+    memcpy(&h_stored, hdrblk + 4096 - 4, 4);
+    if (h_stored != crc32c_reflected(hdrblk, 4096 - 4))
+    {
+        con.println("Sylph1FS: dir header CRC mismatch");
+        return false;
+    }
+
+    sylph1fs::DirHeader *hdr = reinterpret_cast<sylph1fs::DirHeader *>(hdrblk);
+    if (hdr->magic != sylph1fs::kDirMagic || hdr->version != 1)
+        return false;
+
+    // バケット選択
+    const uint64_t h = fnv1a64(name, nlen, 0);
+    const uint32_t b = (uint32_t)(h % hdr->bucket_count);
+    uint32_t *buckets = reinterpret_cast<uint32_t *>(hdrblk + sizeof(sylph1fs::DirHeader));
+    uint32_t slot = buckets[b];
+    if (slot == sylph1fs::kBucketEmpty || slot == sylph1fs::kBucketEmbedded)
+    {
+        return false; // 未対応 or 無し
+    }
+
+    // スラブ鎖を辿って該当名を tombstone 化
+    uint64_t slab_idx = slot;
+    while (slab_idx != 0)
+    {
+        alignas(4096) uint8_t slab[4096];
+        if (!read_data_block(slab_idx, slab, con))
+            return false;
+
+        uint32_t s_stored = 0;
+        memcpy(&s_stored, slab + 4096 - 4, 4);
+        if (s_stored != crc32c_reflected(slab, 4096 - 4))
+        {
+            con.println("Sylph1FS: slab CRC mismatch");
+            return false;
+        }
+
+        sylph1fs::DirSlabHeader *sh = reinterpret_cast<sylph1fs::DirSlabHeader *>(slab);
+        uint32_t used = sh->used_bytes;
+        if (used < sizeof(sylph1fs::DirSlabHeader) || used > 4096 - 4)
+        {
+            con.println("Sylph1FS: slab used out-of-range");
+            return false;
+        }
+
+        uint32_t p = sizeof(sylph1fs::DirSlabHeader);
+        for (uint32_t i = 0; i < sh->entry_count && p + 12 <= used; ++i)
+        {
+            uint16_t nlen2 = 0, type2 = 0;
+            uint64_t ino2 = 0;
+            memcpy(&nlen2, slab + p + 0, 2);
+            memcpy(&type2, slab + p + 2, 2);
+            memcpy(&ino2, slab + p + 4, 8);
+            const uint32_t need = (uint32_t)(12u + nlen2);
+            if (need > 4096 - 4 || p + need > used)
+                break;
+
+            if (type2 != 0 && nlen2 == nlen && memcmp(slab + p + 12, name, nlen) == 0)
+            {
+                // tombstone 化：type を 0 に
+                uint16_t z = 0;
+                memcpy(slab + p + 2, &z, 2);
+                type_out = type2;
+                child_ino_out = ino2;
+
+                // スラブの entry_count をデクリメント
+                if (sh->entry_count > 0)
+                    sh->entry_count -= 1;
+
+                // in-block CRC → 書戻し（＋サイドカーCRC）
+                uint32_t s_crc = crc32c_reflected(slab, 4096 - 4);
+                memcpy(slab + 4096 - 4, &s_crc, 4);
+                if (!write_block_with_sidecar_crc(slab_idx, slab, con))
+                    return false;
+
+                // DirHeader.entry_count もデクリメント
+                if (hdr->entry_count > 0)
+                    hdr->entry_count -= 1;
+                uint32_t h_crc2 = crc32c_reflected(hdrblk, 4096 - 4);
+                memcpy(hdrblk + 4096 - 4, &h_crc2, 4);
+                if (!write_block_with_sidecar_crc(hdr_idx, hdrblk, con))
+                    return false;
+
+                return true;
+            }
+
+            const uint32_t adv = align_up_u32(need, 8);
+            if (!adv)
+                break;
+            p += adv;
+        }
+
+        slab_idx = sh->next_block_rel;
+    }
+    return false; // 見つからず
+}
+
+bool Sylph1Mount::is_dir_empty(uint64_t dir_inode_id, Console &con)
+{
+    sylph1fs::Inode ino{};
+    if (!read_inode(dir_inode_id, ino, con))
+        return false;
+    if (ino.dir_format != 1 || ino.dir_header_block >= m_sb.data_area_blocks)
+        return false;
+
+    alignas(4096) uint8_t hdrblk[4096];
+    if (!read_data_block(ino.dir_header_block, hdrblk, con))
+        return false;
+    uint32_t stored = 0;
+    memcpy(&stored, hdrblk + 4096 - 4, 4);
+    if (stored != crc32c_reflected(hdrblk, 4096 - 4))
+        return false;
+
+    const sylph1fs::DirHeader *hdr = reinterpret_cast<const sylph1fs::DirHeader *>(hdrblk);
+    if (hdr->magic != sylph1fs::kDirMagic || hdr->version != 1)
+        return false;
+
+    // ヘッダの entry_count が 2 なら候補（実体 "." と ".." のみの想定）
+    if (hdr->entry_count != 2)
+        return false;
+
+    // 念のため中身も確認：type!=0 の有効エントリが "." と ".." の2つだけか
+    const uint32_t *buckets = reinterpret_cast<const uint32_t *>(hdrblk + sizeof(sylph1fs::DirHeader));
+    uint32_t live = 0;
+
+    for (uint32_t b = 0; b < hdr->bucket_count; ++b)
+    {
+        uint32_t slot = buckets[b];
+        if (slot == sylph1fs::kBucketEmpty || slot == sylph1fs::kBucketEmbedded)
+            continue;
+        uint64_t slab_idx = slot;
+
+        while (slab_idx != 0)
+        {
+            alignas(4096) uint8_t slab[4096];
+            if (!read_data_block(slab_idx, slab, con))
+                return false;
+            uint32_t s_stored = 0;
+            memcpy(&s_stored, slab + 4096 - 4, 4);
+            if (s_stored != crc32c_reflected(slab, 4096 - 4))
+                return false;
+
+            const sylph1fs::DirSlabHeader *sh = reinterpret_cast<const sylph1fs::DirSlabHeader *>(slab);
+            uint32_t used = sh->used_bytes;
+            uint32_t p = sizeof(sylph1fs::DirSlabHeader);
+
+            for (uint32_t i = 0; i < sh->entry_count && p + 12 <= used; ++i)
+            {
+                uint16_t nlen = 0, type = 0;
+                uint64_t ino2 = 0;
+                memcpy(&nlen, slab + p + 0, 2);
+                memcpy(&type, slab + p + 2, 2);
+                memcpy(&ino2, slab + p + 4, 8);
+                const uint32_t need = (uint32_t)(12u + nlen);
+                if (need > 4096 - 4 || p + need > used)
+                    break;
+
+                if (type != 0)
+                {
+                    // "." or ".." 判定（文字列比較）
+                    bool is_dot = (nlen == 1 && slab[p + 12] == '.');
+                    bool is_dotdot = (nlen == 2 && slab[p + 12] == '.' && slab[p + 13] == '.');
+                    if (!is_dot && !is_dotdot)
+                        return false;
+                    ++live;
+                }
+
+                const uint32_t adv = align_up_u32(need, 8);
+                if (!adv)
+                    break;
+                p += adv;
+            }
+
+            slab_idx = sh->next_block_rel;
+        }
+    }
+    return (live == 2);
+}
+
+bool Sylph1Mount::unlink_path(const char *abs_path, Console &con)
+{
+    if (m_ro)
+    {
+        con.println("Sylph1FS: read-only mount");
+        return false;
+    }
+
+    // 親と basename を得る
+    char base[256];
+    size_t blen = 0;
+    uint64_t parent = 0;
+    if (!split_parent_basename(abs_path, parent, base, blen, con))
+        return false;
+
+    // 該当エントリを tombstone 化
+    uint16_t ty = 0;
+    uint64_t child = 0;
+    if (!dir_remove_entry(parent, base, ty, child, con))
+    {
+        con.println("Sylph1FS: unlink: entry not found");
+        return false;
+    }
+    if (ty != sylph1fs::kDirEntTypeFile)
+    {
+        con.println("Sylph1FS: unlink: not a file");
+        return false;
+    }
+
+    // 子 inode のリンクをデクリメント（0 になってもデータ解放は後段TODO）
+    sylph1fs::Inode c{};
+    if (!read_inode(child, c, con))
+        return false;
+    if (c.links > 0)
+        c.links -= 1;
+    if (!write_inode(c, con))
+        return false;
+
+    con.printf("Sylph1FS: unlinked '%s' (ino=%llu)\n",
+               base, (unsigned long long)child);
+    return true;
+}
+
+bool Sylph1Mount::rmdir_path(const char *abs_path, Console &con)
+{
+    if (m_ro)
+    {
+        con.println("Sylph1FS: read-only mount");
+        return false;
+    }
+
+    // 親と basename を得る
+    char base[256];
+    size_t blen = 0;
+    uint64_t parent = 0;
+    if (!split_parent_basename(abs_path, parent, base, blen, con))
+        return false;
+
+    // まず存在と型を確認
+    uint64_t child = 0;
+    uint16_t ty = 0;
+    if (!lookup_in_dir(parent, base, child, ty, con))
+    {
+        con.println("Sylph1FS: rmdir: entry not found");
+        return false;
+    }
+    if (ty != sylph1fs::kDirEntTypeDir)
+    {
+        con.println("Sylph1FS: rmdir: not a directory");
+        return false;
+    }
+
+    // 空かどうか（実体 "." ".." のみか）
+    if (!is_dir_empty(child, con))
+    {
+        con.println("Sylph1FS: rmdir: directory not empty");
+        return false;
+    }
+
+    // 親から tombstone 化（これで header.entry_count も減少）
+    uint16_t removed_ty = 0;
+    uint64_t removed_ino = 0;
+    if (!dir_remove_entry(parent, base, removed_ty, removed_ino, con))
+        return false;
+
+    // link count 調整：親 -1、子 0
+    sylph1fs::Inode pin{};
+    if (!read_inode(parent, pin, con))
+        return false;
+    if (pin.links > 0)
+        pin.links -= 1;
+    if (!write_inode(pin, con))
+        return false;
+
+    sylph1fs::Inode cin{};
+    if (!read_inode(child, cin, con))
+        return false;
+    cin.links = 0;
+    if (!write_inode(cin, con))
+        return false;
+
+    // TODO: 子ディレクトリ内の "." ".." を tombstone 化する/放置する の整合は
+    //       将来のGC/再利用時に整理。現段では親からの参照が切れた時点で到達不能。
+
+    con.printf("Sylph1FS: rmdir '%s' (ino=%llu)\n",
+               base, (unsigned long long)child);
+    return true;
 }
