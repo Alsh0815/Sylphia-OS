@@ -290,6 +290,17 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
                     sm->test_create("a.txt", con);
                     sm->test_mkdir("sub", con);
                     sm->readdir_root(con);
+                    uint64_t ino = 0;
+                    uint16_t ty = 0;
+                    if (sm->lookup_in_root("a.txt", ino, ty, con))
+                    {
+                        con.printf("LOOKUP: a.txt -> inode=%u type=%u\n",
+                                   (unsigned long long)ino, (unsigned)ty);
+                    }
+                    else
+                    {
+                        con.println("LOOKUP: a.txt not found");
+                    }
                 }
                 else
                 {

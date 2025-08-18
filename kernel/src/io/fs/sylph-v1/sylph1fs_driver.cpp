@@ -1031,3 +1031,128 @@ bool Sylph1Mount::enumerate_slab(uint64_t slab_idx, Console &con, uint32_t &out_
     out_count += local;
     return true;
 }
+
+bool Sylph1Mount::lookup_in_root(const char *name, uint64_t &inode_out, uint16_t &type_out, Console &con)
+{
+    inode_out = 0;
+    type_out = 0;
+    if (!name)
+        return false;
+
+    const size_t nlen = strlen(name);
+    if (nlen == 0 || nlen > 255)
+    {
+        con.println("Sylph1FS: lookup invalid name");
+        return false;
+    }
+
+    // ルート inode とヘッダブロックの検証
+    sylph1fs::Inode root{};
+    if (!read_inode(1, root, con))
+        return false;
+    if (root.dir_format != 1 || root.dir_header_block >= m_sb.data_area_blocks)
+    {
+        con.println("Sylph1FS: root dir is not hashed");
+        return false;
+    }
+
+    alignas(4096) uint8_t hdrblk[4096];
+    if (!read_data_block(root.dir_header_block, hdrblk, con))
+        return false;
+    uint32_t stored = 0;
+    memcpy(&stored, hdrblk + 4096 - 4, 4);
+    const uint32_t calc = crc32c_reflected(hdrblk, 4096 - 4);
+    if (stored != calc)
+    {
+        con.println("Sylph1FS: dir header in-block CRC mismatch");
+        return false;
+    }
+
+    const sylph1fs::DirHeader *hdr = reinterpret_cast<const sylph1fs::DirHeader *>(hdrblk);
+    if (hdr->magic != sylph1fs::kDirMagic || hdr->version != 1)
+    {
+        con.println("Sylph1FS: dir header invalid");
+        return false;
+    }
+
+    const uint32_t bucket_count = hdr->bucket_count;
+    if (bucket_count == 0)
+        return false;
+
+    // バケット選択（v1は seed=0 の FNV-1a 64）
+    const uint64_t h = fnv1a64(name, nlen, /*seed*/ 0);
+    const uint32_t b = (uint32_t)(h % bucket_count);
+    const uint32_t *buckets =
+        reinterpret_cast<const uint32_t *>(hdrblk + sizeof(sylph1fs::DirHeader));
+    uint32_t slot = buckets[b];
+
+    if (slot == sylph1fs::kBucketEmpty)
+    {
+        // 何も入っていない
+        return false;
+    }
+    if (slot == sylph1fs::kBucketEmbedded)
+    {
+        // まだ未実装（将来：ヘッダブロック内の埋め込みスラブ）
+        con.println("Sylph1FS: embedded slab not implemented");
+        return false;
+    }
+
+    // 外部スラブ鎖をたどって完全一致を探す
+    uint64_t slab_idx = slot;
+    while (slab_idx != 0)
+    {
+        alignas(4096) uint8_t slab[4096];
+        if (!read_data_block(slab_idx, slab, con))
+            return false;
+
+        uint32_t s_stored = 0;
+        memcpy(&s_stored, slab + 4096 - 4, 4);
+        const uint32_t s_calc = crc32c_reflected(slab, 4096 - 4);
+        if (s_stored != s_calc)
+        {
+            con.println("Sylph1FS: slab in-block CRC mismatch");
+            return false;
+        }
+
+        const sylph1fs::DirSlabHeader *sh =
+            reinterpret_cast<const sylph1fs::DirSlabHeader *>(slab);
+
+        uint32_t used = sh->used_bytes;
+        if (used < sizeof(sylph1fs::DirSlabHeader) || used > 4096 - 4)
+        {
+            con.println("Sylph1FS: slab used_bytes out-of-range");
+            return false;
+        }
+
+        uint32_t p = sizeof(sylph1fs::DirSlabHeader);
+        for (uint32_t i = 0; i < sh->entry_count && p + 12 <= used; ++i)
+        {
+            uint16_t nlen2 = 0, type2 = 0;
+            uint64_t ino2 = 0;
+            memcpy(&nlen2, slab + p + 0, 2);
+            memcpy(&type2, slab + p + 2, 2);
+            memcpy(&ino2, slab + p + 4, 8);
+
+            const uint32_t need = (uint32_t)(12u + nlen2);
+            if (need > 4096 - 4 || p + need > used)
+                break;
+
+            if (nlen2 == nlen && memcmp(slab + p + 12, name, nlen) == 0)
+            {
+                inode_out = ino2;
+                type_out = type2;
+                return true;
+            }
+
+            const uint32_t adv = align_up_u32(need, 8);
+            if (adv == 0)
+                break;
+            p += adv;
+        }
+
+        slab_idx = sh->next_block_rel;
+    }
+
+    return false;
+}
