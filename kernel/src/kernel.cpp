@@ -287,19 +287,16 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
                 {
                     con.println("VFS: mount successful, trying readdir_root...");
                     auto sm = static_cast<Sylph1Mount *>(mnt);
-                    sm->test_create("a.txt", con);
-                    sm->test_mkdir("sub", con);
-                    sm->readdir_root(con);
+                    sm->mkdir_path("/D", con);
+                    sm->create_path("/D/f1", con);
+                    sm->mkdir_path("/D/SUB", con);
+                    sm->create_path("/D/SUB/x", con);
                     uint64_t ino = 0;
                     uint16_t ty = 0;
-                    if (sm->lookup_in_root("a.txt", ino, ty, con))
+                    sm->lookup_in_root("D", ino, ty, con);
+                    if (sm->lookup_in_dir(ino, "SUB", ino, ty, con))
                     {
-                        con.printf("LOOKUP: a.txt -> inode=%u type=%u\n",
-                                   (unsigned long long)ino, (unsigned)ty);
-                    }
-                    else
-                    {
-                        con.println("LOOKUP: a.txt not found");
+                        con.printf("SUB inode=%u type=%u\n", (unsigned long long)ino, (unsigned)ty);
                     }
                 }
                 else
