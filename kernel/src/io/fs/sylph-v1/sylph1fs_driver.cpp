@@ -1517,12 +1517,12 @@ bool Sylph1Mount::mkdir_path(const char *abs_path, Console &con)
         return false;
     }
 
-    // 子ディレクトリ用のヘッダブロックを1つ確保
+    // 1) 子ディレクトリ用のヘッダブロックを1つ作成
     uint64_t dir_idx = 0;
     if (!init_dir_block(/*bucket_count*/ 256, dir_idx, con))
         return false;
 
-    // inode を確保してDIRを書き込み
+    // 2) inode を確保し、DIR inode を書き込み（links=1 で仮置き）
     uint64_t ino_id = 0;
     if (!alloc_inode(ino_id, con))
         return false;
@@ -1540,7 +1540,7 @@ bool Sylph1Mount::mkdir_path(const char *abs_path, Console &con)
     sylph1fs::Inode *ino = reinterpret_cast<sylph1fs::Inode *>(blk + off);
     ino->inode_id = (uint64_t)ino_id;
     ino->mode = 0x4000 | 0755; // DIR
-    ino->links = 1;            // TODO: 将来 '.' '..' を実体化したら調整
+    ino->links = 1;            // ← 後で 2 に更新
     ino->size_bytes = 4096;
     ino->extent_count = 1;
     ino->extents_inline[0].start_block_rel = dir_idx;
@@ -1554,16 +1554,44 @@ bool Sylph1Mount::mkdir_path(const char *abs_path, Console &con)
                                /*fua*/ true, BlockDevice::kVerifyAfterWrite, con))
         return false;
 
-    // 親へ登録（spill対応）
+    // 3) 親へ登録（spill対応）
     if (!dir_add_entry(parent, name, sylph1fs::kDirEntTypeDir, ino_id, con))
         return false;
 
-    // inode bitmap を確定
+    // 4) 子ディレクトリ自身に "." と ".." を実体として追加
+    if (!dir_add_entry(ino_id, ".", sylph1fs::kDirEntTypeDir, ino_id, con))
+        return false;
+    if (!dir_add_entry(ino_id, "..", sylph1fs::kDirEntTypeDir, parent, con))
+        return false;
+
+    // 5) link count を更新
+    //   子: 1 → 2（"." エントリで+1）
+    sylph1fs::Inode child{};
+    if (!read_inode(ino_id, child, con))
+        return false;
+    child.links = 2;
+    if (!write_inode(child, con))
+        return false;
+
+    //   親: 子の ".." により +1
+    sylph1fs::Inode pin{};
+    if (!read_inode(parent, pin, con))
+        return false;
+    pin.links = pin.links + 1;
+    if (!write_inode(pin, con))
+        return false;
+
+    // 6) inode bitmap を最後に確定
     if (!set_inode_bitmap(ino_id, true, con))
         return false;
 
-    con.printf("Sylph1FS: mkdir '%s' under ino=%llu -> ino=%llu idx=%llu\n",
-               name, (unsigned long long)parent, (unsigned long long)ino_id, (unsigned long long)dir_idx);
+    con.printf("Sylph1FS: mkdir '%s' under ino=%llu -> ino=%llu idx=%llu (links: parent=%u child=%u)\n",
+               name,
+               (unsigned long long)parent,
+               (unsigned long long)ino_id,
+               (unsigned long long)dir_idx,
+               (unsigned)pin.links,
+               (unsigned)child.links);
     return true;
 }
 
@@ -1730,11 +1758,7 @@ bool Sylph1Mount::readdir_dir(uint64_t dir_inode_id, Console &con)
         return false;
     }
 
-    // 合成エントリ（親 inode はまだ管理していないため、ここでは自分で代用）
-    con.printf(".  (inode=%u)\n", (unsigned long long)dir_inode_id);
-    con.printf(".. (inode=%u)\n", (unsigned long long)dir_inode_id);
-
-    // DirHeader 読み＋CRC検証
+    // DirHeader 読み＋CRC検証（以下は従来どおり）
     alignas(4096) uint8_t blk[4096];
     if (!read_data_block(ino.dir_header_block, blk, con))
         return false;
@@ -1761,7 +1785,6 @@ bool Sylph1Mount::readdir_dir(uint64_t dir_inode_id, Console &con)
                (unsigned long long)dir_inode_id,
                (unsigned)bucket_count, (unsigned)hdr->entry_count);
 
-    // 全バケット列挙
     const uint32_t *buckets =
         reinterpret_cast<const uint32_t *>(blk + sizeof(sylph1fs::DirHeader));
     uint32_t listed = 0;
@@ -1782,7 +1805,6 @@ bool Sylph1Mount::readdir_dir(uint64_t dir_inode_id, Console &con)
             if (!enumerate_slab(slab_idx, con, listed))
                 return false;
 
-            // 次スラブを辿る
             alignas(4096) uint8_t slab[4096];
             if (!read_data_block(slab_idx, slab, con))
                 return false;
@@ -1901,4 +1923,27 @@ bool Sylph1Mount::readdir_path(const char *abs_path, Console &con)
         return false;
     }
     return readdir_dir(ino, con);
+}
+
+bool Sylph1Mount::write_inode(const sylph1fs::Inode &ino, Console &con)
+{
+    const uint64_t inode_id = ino.inode_id;
+    if (inode_id == 0 || inode_id > m_sb.total_inodes)
+        return false;
+
+    const uint64_t index = inode_id - 1;
+    const uint64_t byte_off = index * 256ull;
+    const uint64_t lba4k = m_sb.inode_table_start + (byte_off >> 12);
+    const size_t off = (size_t)(byte_off & 0xFFFu);
+
+    alignas(4096) uint8_t blk[4096];
+    if (!m_dev.read_blocks_4k(lba4k, 1, blk, sizeof(blk), con))
+        return false;
+
+    sylph1fs::Inode *p = reinterpret_cast<sylph1fs::Inode *>(blk + off);
+    *p = ino; // 256B コピー（packed前提）
+    p->inode_crc32c = 0;
+    p->inode_crc32c = crc32c_reflected(p, 252);
+
+    return m_dev.write_blocks_4k(lba4k, 1, blk, sizeof(blk), true, BlockDevice::kVerifyAfterWrite, con);
 }
