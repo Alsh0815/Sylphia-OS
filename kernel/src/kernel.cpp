@@ -269,7 +269,7 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
                 Sylph1FS fs(slice, con);
                 // probeしてみて、もし失敗したらmkfsを実行する
                 Sylph1FsDriver temp_driver;
-                if (!temp_driver.probe(slice, con) || true)
+                if (!temp_driver.probe(slice, con))
                 {
                     con.println("Sylph1FS: probe failed, attempting to format...");
                     if (fs.mkfs(opt) == FsStatus::Ok)

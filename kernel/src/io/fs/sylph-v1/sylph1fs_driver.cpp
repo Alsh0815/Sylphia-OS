@@ -819,12 +819,20 @@ bool Sylph1Mount::dir_add_entry_root(const char *name, uint16_t type, uint64_t c
         }
     }
 
-    // 追記
     const uint32_t need = align_up_u32((uint32_t)(12 + nlen), 8);
     if (off + need > 4096 - 4)
     {
-        con.println("Sylph1FS: slab is full (spill not implemented yet)");
-        return false; // 将来: 新スラブを確保して next に繋ぐ
+        if (!append_entry_with_spill(slab_idx, name, type, child_ino, con))
+            return false;
+        if (!read_data_block(hdr_idx, hdrblk, con))
+            return false; // 最新を読み直すのが安全
+        sylph1fs::DirHeader *hdr2 = reinterpret_cast<sylph1fs::DirHeader *>(hdrblk);
+        hdr2->entry_count = hdr2->entry_count + 1;
+        uint32_t h_crc2 = crc32c_reflected(hdrblk, 4096 - 4);
+        memcpy(hdrblk + 4096 - 4, &h_crc2, 4);
+        if (!write_block_with_sidecar_crc(hdr_idx, hdrblk, con))
+            return false;
+        return true;
     }
 
     // [name_len(2)][type(2)][inode(8)][name...][pad]
@@ -1030,6 +1038,125 @@ bool Sylph1Mount::enumerate_slab(uint64_t slab_idx, Console &con, uint32_t &out_
     }
     out_count += local;
     return true;
+}
+
+bool Sylph1Mount::append_entry_with_spill(uint64_t slab_idx,
+                                          const char *name, uint16_t type, uint64_t child_ino,
+                                          Console &con)
+{
+    // --- 追記サイズ計算 ---
+    const uint32_t nlen = (uint32_t)strlen(name);
+    const uint32_t need = align_up_u32(12u + nlen, 8u); // [hdr12 + name] を8バイト境界へ
+    if (nlen == 0 || nlen > 255)
+    {
+        con.println("Sylph1FS: invalid name");
+        return false;
+    }
+
+    // スラブ鎖の末尾まで辿って、空きのある場所に追記
+    uint64_t cur = slab_idx;
+    for (;;)
+    {
+        alignas(4096) uint8_t slab[4096];
+        if (!read_data_block(cur, slab, con))
+            return false;
+
+        // in-block CRC 検証
+        uint32_t s_stored = 0;
+        memcpy(&s_stored, slab + 4096 - 4, 4);
+        if (s_stored != crc32c_reflected(slab, 4096 - 4))
+        {
+            con.println("Sylph1FS: slab in-block CRC mismatch");
+            return false;
+        }
+
+        sylph1fs::DirSlabHeader *sh = reinterpret_cast<sylph1fs::DirSlabHeader *>(slab);
+        if (sh->used_bytes < sizeof(sylph1fs::DirSlabHeader) || sh->used_bytes > 4096u - 4u)
+        {
+            con.println("Sylph1FS: slab used_bytes out-of-range");
+            return false;
+        }
+
+        // --- 空きがあればここに追記 ---
+        if (sh->used_bytes + need <= 4096u - 4u)
+        {
+            const uint32_t off = sh->used_bytes;
+            // 既存：重複名チェック（軽量版；このスラブ内だけ）
+            {
+                uint32_t p = sizeof(sylph1fs::DirSlabHeader);
+                for (uint32_t i = 0; i < sh->entry_count && p + 12 <= sh->used_bytes; ++i)
+                {
+                    uint16_t nlen2 = 0;
+                    memcpy(&nlen2, slab + p + 0, 2);
+                    if (nlen2 == nlen && memcmp(slab + p + 12, name, nlen) == 0)
+                    {
+                        con.println("Sylph1FS: duplicate name");
+                        return false;
+                    }
+                    const uint32_t adv = align_up_u32(12u + (uint32_t)nlen2, 8u);
+                    if (!adv)
+                        break;
+                    p += adv;
+                }
+            }
+
+            // [name_len(2)][type(2)][inode(8)][name…][pad]
+            memcpy(slab + off + 0, &nlen, 2);
+            memcpy(slab + off + 2, &type, 2);
+            memcpy(slab + off + 4, &child_ino, 8);
+            memcpy(slab + off + 12, name, nlen);
+
+            sh->used_bytes = off + need;
+            sh->entry_count = sh->entry_count + 1;
+
+            // in-block CRC を更新 → 書戻し（＋サイドカーCRC）
+            uint32_t s_crc = crc32c_reflected(slab, 4096 - 4);
+            memcpy(slab + 4096 - 4, &s_crc, 4);
+            if (!write_block_with_sidecar_crc(cur, slab, con))
+                return false;
+
+            return true;
+        }
+
+        // --- 空きがない：次のスラブがあればそちらへ ---
+        if (sh->next_block_rel != 0)
+        {
+            cur = sh->next_block_rel;
+            continue;
+        }
+
+        // --- 空きがない：次のスラブがない → 新規スラブを確保して連結 ---
+        uint64_t new_idx = 0;
+        if (!alloc_data_blocks(1, new_idx, con))
+            return false;
+
+        // 新スラブを初期化
+        alignas(4096) uint8_t new_slab[4096];
+        memset(new_slab, 0, sizeof(new_slab));
+        sylph1fs::DirSlabHeader *nsh = reinterpret_cast<sylph1fs::DirSlabHeader *>(new_slab);
+        nsh->used_bytes = sizeof(sylph1fs::DirSlabHeader);
+        nsh->entry_count = 0;
+        nsh->next_block_rel = 0;
+        uint32_t ns_crc = crc32c_reflected(new_slab, 4096 - 4);
+        memcpy(new_slab + 4096 - 4, &ns_crc, 4);
+        if (!write_block_with_sidecar_crc(new_idx, new_slab, con))
+            return false;
+
+        // 旧スラブに new_idx を連結
+        sh->next_block_rel = new_idx;
+        uint32_t s_crc2 = crc32c_reflected(slab, 4096 - 4);
+        memcpy(slab + 4096 - 4, &s_crc2, 4);
+        if (!write_block_with_sidecar_crc(cur, slab, con))
+            return false;
+
+        // 新ブロックの data bitmap を **最後に** 立てる
+        if (!set_data_bitmap_range(new_idx, 1, true, con))
+            return false;
+
+        // ループ続行：新スラブに追記
+        cur = new_idx;
+        // and loop…
+    }
 }
 
 bool Sylph1Mount::lookup_in_root(const char *name, uint64_t &inode_out, uint16_t &type_out, Console &con)

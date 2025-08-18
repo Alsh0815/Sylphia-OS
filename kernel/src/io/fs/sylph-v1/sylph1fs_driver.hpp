@@ -51,6 +51,7 @@ private:
     bool write_block_with_sidecar_crc(uint64_t data_idx, const void *buf4096, Console &con);
 
     bool enumerate_slab(uint64_t slab_idx, Console &con, uint32_t &out_count);
+    bool append_entry_with_spill(uint64_t slab_idx, const char *name, uint16_t type, uint64_t child_ino, Console &con);
     bool alloc_data_blocks(uint32_t need, uint64_t &start_idx, Console &con); // first-fit、確保は最後に commit
     bool set_data_bitmap_range(uint64_t start_idx, uint32_t count, bool used, Console &con);
     bool alloc_inode(uint64_t &out_id, Console &con); // ビットは後で立てる
