@@ -2530,8 +2530,52 @@ bool Sylph1Mount::truncate_path(const char *abs_path, uint64_t new_size, Console
 
     if (new_blocks > cur_blocks)
     {
-        con.println("Sylph1FS: extend via truncate not supported yet");
-        return false;
+        // === extend（ゼロ埋め） ===
+        const uint32_t add_blocks = (uint32_t)(new_blocks - cur_blocks);
+
+        // 連続ランを1本確保（MVP）
+        uint64_t alloc_start = 0;
+        if (!append_allocate_run(ino, add_blocks, alloc_start, con))
+        {
+            con.println("Sylph1FS: extend allocate failed");
+            return false;
+        }
+
+        // 確保した範囲を 0 で初期化（sidecar CRC 同期）
+        uint8_t *zero = (uint8_t *)pmm::alloc_pages(1);
+        if (!zero)
+        {
+            con.println("Sylph1FS: truncate failed to allocate zero buffer");
+            return false;
+        }
+        ScopeExit free_zero([&]()
+                            { pmm::free_pages(zero, 1); });
+        memset(zero, 0, 4096);
+        for (uint32_t i = 0; i < add_blocks; ++i)
+        {
+            const uint64_t data_idx = alloc_start + i;
+            if (!write_block_with_sidecar_crc(data_idx, zero, con))
+            {
+                con.println("Sylph1FS: zero fill failed");
+                return false;
+            }
+        }
+
+        // **最後に** Data bitmap を立てる（クラッシュ耐性：確保→書込み→ビットマップ確定の順）
+        if (!set_data_bitmap_range(alloc_start, add_blocks, true, con))
+        {
+            con.println("Sylph1FS: bitmap commit failed");
+            return false;
+        }
+
+        // サイズを更新して inode を書戻し
+        ino.size_bytes = new_size;
+        if (!write_inode(ino, con))
+            return false;
+
+        con.printf("Sylph1FS: truncate extend to %u (blocks +%u)\n",
+                   (unsigned long long)new_size, (unsigned)add_blocks);
+        return true;
     }
     if (new_blocks == cur_blocks)
     {

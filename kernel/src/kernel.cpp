@@ -297,29 +297,29 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
                     sm->unlink_path("/D/test/tmp.txt", con);
                     sm->rmdir_path("/D/test", con);
                     sm->readdir_path("/D", con);
-                    sm->create_path("/D/f", con);
-                    // 書き込み（8KiB）
-                    uint8_t w[8192];
-                    for (int i = 0; i < 8192; i++)
-                        w[i] = (uint8_t)(i & 0xFF);
-                    sm->write_path("/D/f", w, 8192, 0, con);
-
-                    // 読み戻し
-                    uint8_t r[8192];
-                    memset(r, 0, sizeof(r));
-                    sm->read_path("/D/f", r, 8192, 0, con);
-
-                    // 比較（適宜assert/ログ）
-                    bool ok = true;
-                    for (int i = 0; i < 8192; i++)
-                        if (r[i] != w[i])
+                    sm->create_path("/D/zero", con);
+                    // 48KiB へ拡張（4KiB整列）
+                    sm->truncate_path("/D/zero", 48ull * 1024ull, con);
+                    // 読み戻して全0確認
+                    alignas(4096) uint8_t buf[4096];
+                    bool allzero = true;
+                    for (int i = 0; i < 12; i++)
+                    {
+                        if (!sm->read_path("/D/zero", buf, 4096, (uint64_t)i * 4096, con))
                         {
-                            ok = false;
+                            allzero = false;
                             break;
                         }
-                    con.printf("IO compare: %s\n", ok ? "OK" : "NG");
-                    sm->truncate_path("/D/f", 0, con);
-                    sm->unlink_path("/D/f", con);
+                        for (int j = 0; j < 4096; j++)
+                            if (buf[j] != 0)
+                            {
+                                allzero = false;
+                                break;
+                            }
+                        if (!allzero)
+                            break;
+                    }
+                    con.printf("extend zero-fill check: %s\n", allzero ? "OK" : "NG");
                 }
                 else
                 {
