@@ -413,48 +413,38 @@ bool Sylph1Mount::read_inode(uint64_t inode_id, sylph1fs::Inode &out, Console &c
 bool Sylph1Mount::readdir_root(Console &con)
 {
     con.println("DEBUG: Entered Sylph1Mount::readdir_root");
-    simple_wait(100000000);
     sylph1fs::Inode ino{};
-    con.println("DEBUG: Calling read_inode...");
-    simple_wait(100000000);
     if (!read_inode(1, ino, con))
     {
         con.println("Sylph1FS: readdir_root: failed to read inode #1");
         return false;
     }
-    con.printf("DEBUG: readdir_root read inode #1, dir_header_block=%u\n", ino.dir_header_block);
-
-    // "." と ".."（ルートなのでどちらも inode=1）
     con.printf(".  (inode=%u)\n", 1u);
     con.printf(".. (inode=%u)\n", 1u);
 
-    // dir_header_block が未設定ならここで終了（空扱い）
     if (ino.dir_format != 1 || ino.dir_header_block >= m_sb.data_area_blocks)
     {
         con.println("(root dir: no header block; treated as empty)");
         return true;
     }
 
-    // DirHeader ブロックを CRC 付きで読む（sidecar CRC を verify）
+    // DirHeader 読み＋検証（既存）
     uint8_t *blk = (uint8_t *)pmm::alloc_pages(1);
     if (!blk)
     {
-        con.println("Sylph1FS: readdir_root failed to allocate buffer");
+        con.println("Sylph1FS: readdir_root oom");
         return false;
     }
+    ScopeExit free_hdr([&]()
+                       { pmm::free_pages(blk, 1); });
 
-    // ScopeExit を使って、関数を抜ける際に必ずメモリを解放する
-    ScopeExit free_buffer([&]()
-                          { pmm::free_pages(blk, 1); });
     if (!read_data_block(ino.dir_header_block, blk, con))
     {
         con.println("Sylph1FS: readdir_root: failed to read dir header block");
         return false;
     }
-
-    // ブロック内メタCRC（末尾4B）も検証
     uint32_t stored = 0;
-    memcpy(&stored, blk + 4096 - 4, sizeof(stored));
+    memcpy(&stored, blk + 4096 - 4, 4);
     const uint32_t calc = crc32c_reflected(blk, 4096 - 4);
     if (stored != calc)
     {
@@ -463,7 +453,6 @@ bool Sylph1Mount::readdir_root(Console &con)
         return false;
     }
 
-    // ヘッダ要約
     const sylph1fs::DirHeader *hdr = reinterpret_cast<const sylph1fs::DirHeader *>(blk);
     if (hdr->magic != sylph1fs::kDirMagic || hdr->version != 1)
     {
@@ -471,11 +460,55 @@ bool Sylph1Mount::readdir_root(Console &con)
         return false;
     }
 
-    // ここではまだ bucket を走査せず、状態の要約だけ出す（最小実装）
+    const uint32_t bucket_count = hdr->bucket_count;
     con.printf("(root dir: buckets=%u, entries=%u)\n",
-               (unsigned)hdr->bucket_count, (unsigned)hdr->entry_count);
+               (unsigned)bucket_count, (unsigned)hdr->entry_count); // 要約（既存）:contentReference[oaicite:3]{index=3}
 
-    // 将来: bucket[0..N) を辿って実エントリを列挙
+    // === 実エントリ列挙 ===
+    const uint32_t *buckets = reinterpret_cast<const uint32_t *>(blk + sizeof(sylph1fs::DirHeader));
+    uint32_t listed = 0;
+
+    for (uint32_t b = 0; b < bucket_count; ++b)
+    {
+        uint32_t slot = buckets[b];
+        if (slot == sylph1fs::kBucketEmpty)
+            continue;
+        if (slot == sylph1fs::kBucketEmbedded)
+        {
+            con.println("Sylph1FS: embedded slab not implemented (skip)");
+            continue;
+        }
+        // 外部スラブ鎖を辿る
+        uint64_t slab_idx = slot;
+        while (slab_idx != 0)
+        {
+            if (!enumerate_slab(slab_idx, con, listed))
+                return false;
+
+            // 次スラブを辿る
+            uint8_t *slab = (uint8_t *)pmm::alloc_pages(1);
+            if (!slab)
+            {
+                con.println("Sylph1FS: oom (follow)");
+                return false;
+            }
+            ScopeExit free_tmp([&]()
+                               { pmm::free_pages(slab, 1); });
+            if (!read_data_block(slab_idx, slab, con))
+                return false;
+
+            const sylph1fs::DirSlabHeader *sh =
+                reinterpret_cast<const sylph1fs::DirSlabHeader *>(slab);
+            slab_idx = sh->next_block_rel;
+        }
+    }
+
+    // 件数の整合性（参考：合わなければ警告）
+    if (listed != hdr->entry_count)
+    {
+        con.printf("Sylph1FS: WARN entries mismatch header=%u actual=%u\n",
+                   (unsigned)hdr->entry_count, (unsigned)listed);
+    }
     return true;
 }
 
@@ -485,7 +518,7 @@ bool Sylph1Mount::write_block_with_sidecar_crc(uint64_t data_idx, const void *bu
     if (!m_dev.write_blocks_4k(data_lba, 1, buf4096, 4096, /*fua*/ true,
                                BlockDevice::kVerifyAfterWrite, con))
     {
-        con.printf("Sylph1FS: write data LBA=%llu failed\n", (unsigned long long)data_lba);
+        con.printf("Sylph1FS: write data LBA=%u failed\n", (unsigned long long)data_lba);
         return false;
     }
 
@@ -502,7 +535,7 @@ bool Sylph1Mount::write_block_with_sidecar_crc(uint64_t data_idx, const void *bu
     if (!m_dev.write_blocks_4k(crc_lba, 1, crcblk, sizeof(crcblk),
                                /*fua*/ true, BlockDevice::kVerifyAfterWrite, con))
     {
-        con.printf("Sylph1FS: write sidecar CRC LBA=%llu failed\n", (unsigned long long)crc_lba);
+        con.printf("Sylph1FS: write sidecar CRC LBA=%u failed\n", (unsigned long long)crc_lba);
         return false;
     }
     return true;
@@ -929,5 +962,72 @@ bool Sylph1Mount::test_mkdir(const char *name, Console &con)
 
     con.printf("Sylph1FS: created directory \"%s\" (ino=%u idx=%u)\n",
                name, (unsigned long long)ino_id, (unsigned long long)dir_idx);
+    return true;
+}
+
+bool Sylph1Mount::enumerate_slab(uint64_t slab_idx, Console &con, uint32_t &out_count)
+{
+    // 読み出し＋サイドカーCRC検証
+    uint8_t *slab = (uint8_t *)pmm::alloc_pages(1);
+    if (!slab)
+    {
+        con.println("Sylph1FS: enumerate_slab oom");
+        return false;
+    }
+    ScopeExit free_slab([&]()
+                        { pmm::free_pages(slab, 1); });
+
+    if (!read_data_block(slab_idx, slab, con))
+        return false;
+
+    // in-block CRC 検証
+    uint32_t stored = 0;
+    memcpy(&stored, slab + 4096 - 4, 4);
+    const uint32_t calc = crc32c_reflected(slab, 4096 - 4);
+    if (stored != calc)
+    {
+        con.println("Sylph1FS: slab in-block CRC mismatch");
+        return false;
+    }
+
+    // ヘッダ
+    const sylph1fs::DirSlabHeader *sh = reinterpret_cast<const sylph1fs::DirSlabHeader *>(slab);
+    uint32_t used = sh->used_bytes;
+    if (used < sizeof(sylph1fs::DirSlabHeader) || used > 4096 - 4)
+    {
+        con.println("Sylph1FS: slab used_bytes out-of-range");
+        return false;
+    }
+
+    // 可変長エントリ列挙
+    uint32_t p = sizeof(sylph1fs::DirSlabHeader);
+    uint32_t local = 0;
+    while (p + 12 <= used)
+    {
+        uint16_t nlen = 0, type = 0;
+        uint64_t ino = 0;
+        memcpy(&nlen, slab + p + 0, 2);
+        memcpy(&type, slab + p + 2, 2);
+        memcpy(&ino, slab + p + 4, 8);
+
+        const uint32_t need = (uint32_t)(12u + nlen);
+        if (need > 4096 - 4 || p + need > used)
+            break; // 破損/終端保護
+
+        const char *name = reinterpret_cast<const char *>(slab + p + 12);
+        // 名前はそのまま出力（NUL終端ではない）
+        // 表示用途：最大255までの範囲でプリント
+        con.printf("%s %d %s (inode=%u)\n",
+                   (type == sylph1fs::kDirEntTypeDir ? 'd' : 'f'),
+                   (int)nlen, name, (unsigned long long)ino);
+
+        ++local;
+        // 8バイト境界まで前進
+        const uint32_t adv = align_up_u32(need, 8);
+        if (adv == 0)
+            break;
+        p += adv;
+    }
+    out_count += local;
     return true;
 }
