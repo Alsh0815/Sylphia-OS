@@ -2171,14 +2171,12 @@ bool Sylph1Mount::unlink_path(const char *abs_path, Console &con)
         return false;
     }
 
-    // 親と basename を得る
     char base[256];
     size_t blen = 0;
     uint64_t parent = 0;
     if (!split_parent_basename(abs_path, parent, base, blen, con))
         return false;
 
-    // 該当エントリを tombstone 化
     uint16_t ty = 0;
     uint64_t child = 0;
     if (!dir_remove_entry(parent, base, ty, child, con))
@@ -2192,18 +2190,38 @@ bool Sylph1Mount::unlink_path(const char *abs_path, Console &con)
         return false;
     }
 
-    // 子 inode のリンクをデクリメント（0 になってもデータ解放は後段TODO）
-    sylph1fs::Inode c{};
-    if (!read_inode(child, c, con))
+    // 子 inode のリンクをデクリメント
+    sylph1fs::Inode ino{};
+    if (!read_inode(child, ino, con))
         return false;
-    if (c.links > 0)
-        c.links -= 1;
-    if (!write_inode(c, con))
-        return false;
+    if (ino.links > 0)
+        ino.links -= 1;
 
-    con.printf("Sylph1FS: unlinked '%s' (ino=%llu)\n",
-               base, (unsigned long long)child);
-    return true;
+    if (ino.links == 0)
+    {
+        // データ領域を解放し、inode を空に
+        if (!free_file_storage(ino, con))
+            return false;
+        if (!write_inode(ino, con))
+            return false;
+
+        // 最後に Inode bitmap を free
+        if (!set_inode_bitmap(child, /*used=*/false, con))
+            return false;
+
+        con.printf("Sylph1FS: unlinked and freed '%s' (ino=%llu)\n",
+                   base, (unsigned long long)child);
+        return true;
+    }
+    else
+    {
+        // 参照が残る場合は inode だけ更新
+        if (!write_inode(ino, con))
+            return false;
+        con.printf("Sylph1FS: unlinked '%s' (ino=%llu, links=%u)\n",
+                   base, (unsigned long long)child, (unsigned)ino.links);
+        return true;
+    }
 }
 
 bool Sylph1Mount::rmdir_path(const char *abs_path, Console &con)
@@ -2214,14 +2232,12 @@ bool Sylph1Mount::rmdir_path(const char *abs_path, Console &con)
         return false;
     }
 
-    // 親と basename を得る
     char base[256];
     size_t blen = 0;
     uint64_t parent = 0;
     if (!split_parent_basename(abs_path, parent, base, blen, con))
         return false;
 
-    // まず存在と型を確認
     uint64_t child = 0;
     uint16_t ty = 0;
     if (!lookup_in_dir(parent, base, child, ty, con))
@@ -2234,21 +2250,19 @@ bool Sylph1Mount::rmdir_path(const char *abs_path, Console &con)
         con.println("Sylph1FS: rmdir: not a directory");
         return false;
     }
-
-    // 空かどうか（実体 "." ".." のみか）
     if (!is_dir_empty(child, con))
     {
         con.println("Sylph1FS: rmdir: directory not empty");
         return false;
     }
 
-    // 親から tombstone 化（これで header.entry_count も減少）
+    // 親から tombstone 化（header.entry_count 減算も内部で行われる）
     uint16_t removed_ty = 0;
     uint64_t removed_ino = 0;
     if (!dir_remove_entry(parent, base, removed_ty, removed_ino, con))
         return false;
 
-    // link count 調整：親 -1、子 0
+    // 親リンクを -1
     sylph1fs::Inode pin{};
     if (!read_inode(parent, pin, con))
         return false;
@@ -2257,17 +2271,15 @@ bool Sylph1Mount::rmdir_path(const char *abs_path, Console &con)
     if (!write_inode(pin, con))
         return false;
 
-    sylph1fs::Inode cin{};
-    if (!read_inode(child, cin, con))
-        return false;
-    cin.links = 0;
-    if (!write_inode(cin, con))
+    // 子ディレクトリの実体（ヘッダ/スラブ）を解放して inode を空に
+    if (!free_dir_storage(child, con))
         return false;
 
-    // TODO: 子ディレクトリ内の "." ".." を tombstone 化する/放置する の整合は
-    //       将来のGC/再利用時に整理。現段では親からの参照が切れた時点で到達不能。
+    // Inode bitmap を解放
+    if (!set_inode_bitmap(child, /*used=*/false, con))
+        return false;
 
-    con.printf("Sylph1FS: rmdir '%s' (ino=%llu)\n",
+    con.printf("Sylph1FS: rmdir and freed '%s' (ino=%llu)\n",
                base, (unsigned long long)child);
     return true;
 }
@@ -2631,4 +2643,97 @@ bool Sylph1Mount::rmw_data_block(uint64_t data_idx, size_t off_in_block,
 
     // 書き戻し（データ本体 + サイドカーCRC更新）
     return write_block_with_sidecar_crc(data_idx, blk, con);
+}
+
+bool Sylph1Mount::free_file_storage(sylph1fs::Inode &ino, Console &con)
+{
+    // inline extents だけを対象（v1）
+    for (uint32_t i = 0; i < ino.extent_count; ++i)
+    {
+        const uint64_t start = ino.extents_inline[i].start_block_rel;
+        const uint32_t len = (uint32_t)ino.extents_inline[i].length_blocks;
+        if (len == 0)
+            continue;
+        if (!set_data_bitmap_range(start, len, /*used=*/false, con))
+        {
+            con.printf("Sylph1FS: free_file_storage: bitmap free failed at [%llu,+%u]\n",
+                       (unsigned long long)start, (unsigned)len);
+            return false;
+        }
+    }
+    // メタデータを空に
+    ino.extent_count = 0;
+    for (uint32_t i = 0; i < 4; ++i)
+    { // 最大本数に合わせて調整
+        ino.extents_inline[i].start_block_rel = 0;
+        ino.extents_inline[i].length_blocks = 0;
+    }
+    ino.size_bytes = 0;
+    return true;
+}
+
+bool Sylph1Mount::free_dir_storage(uint64_t dir_inode_id, Console &con)
+{
+    sylph1fs::Inode ino{};
+    if (!read_inode(dir_inode_id, ino, con))
+        return false;
+    if (ino.dir_format != 1 || ino.dir_header_block >= m_sb.data_area_blocks)
+    {
+        con.println("Sylph1FS: free_dir_storage: not a hashed directory");
+        return false;
+    }
+
+    // ヘッダブロックを読み、スラブ鎖を辿る
+    alignas(4096) uint8_t hdr[4096];
+    if (!read_data_block(ino.dir_header_block, hdr, con))
+        return false;
+
+    const sylph1fs::DirHeader *dh = reinterpret_cast<const sylph1fs::DirHeader *>(hdr);
+    const uint32_t *buckets = reinterpret_cast<const uint32_t *>(hdr + sizeof(sylph1fs::DirHeader));
+
+    // 各バケットのスラブ鎖を解放（空ディレクトリ想定："." と ".." しかないため、実質1〜数スラブ）
+    for (uint32_t b = 0; b < dh->bucket_count; ++b)
+    {
+        uint32_t slot = buckets[b];
+        if (slot == sylph1fs::kBucketEmpty)
+            continue;
+        if (slot == sylph1fs::kBucketEmbedded)
+        {
+            // v1 未対応：embedded 形態はスキップ（今は使用していない想定）
+            continue;
+        }
+        // 外部スラブ鎖を FREE
+        uint64_t slab = slot;
+        while (slab != 0)
+        {
+            // 次ポインタを読む前にブロック取得
+            alignas(4096) uint8_t blk[4096];
+            if (!read_data_block(slab, blk, con))
+                return false;
+            const sylph1fs::DirSlabHeader *sh = reinterpret_cast<const sylph1fs::DirSlabHeader *>(blk);
+            const uint64_t next = sh->next_block_rel;
+
+            if (!set_data_bitmap_range(slab, 1, /*used=*/false, con))
+                return false;
+            slab = next;
+        }
+    }
+
+    // ヘッダブロックも FREE
+    if (!set_data_bitmap_range(ino.dir_header_block, 1, /*used=*/false, con))
+        return false;
+
+    // ディレクトリ inode 側のメタデータもクリーンアップ
+    ino.dir_header_block = 0;
+    ino.dir_format = 0;
+    // extents にヘッダブロックを入れていた場合は念のため空に
+    ino.extent_count = 0;
+    for (uint32_t i = 0; i < 4; ++i)
+    {
+        ino.extents_inline[i].start_block_rel = 0;
+        ino.extents_inline[i].length_blocks = 0;
+    }
+    ino.size_bytes = 0;
+
+    return write_inode(ino, con);
 }

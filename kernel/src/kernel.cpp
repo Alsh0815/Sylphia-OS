@@ -292,22 +292,14 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
                     sm->mkdir_path("/D/SUB", con);
                     sm->create_path("/D/SUB/x", con);
                     sm->create_path("/D/f", con);
-                    sm->truncate_path("/D/f", 12 * 1024, con);
-                    uint8_t w[5000];
-                    for (int i = 0; i < 5000; i++)
+                    uint8_t w[8192];
+                    for (int i = 0; i < 8192; i++)
                         w[i] = (uint8_t)(i & 0xFF);
-                    sm->write_path("/D/f", w, 5000, 1000, con);
-                    uint8_t r[5000];
-                    memset(r, 0, sizeof(r));
-                    sm->read_path("/D/f", r, 5000, 1000, con);
-                    bool ok = true;
-                    for (int i = 0; i < 5000; i++)
-                        if (r[i] != w[i])
-                        {
-                            ok = false;
-                            break;
-                        }
-                    con.printf("unaligned RMW compare: %s\n", ok ? "OK" : "NG");
+                    sm->write_path("/D/f", w, 8192, 0, con);
+                    sm->unlink_path("/D/f", con);
+                    sm->mkdir_path("/D/empty", con);
+                    sm->rmdir_path("/D/empty", con);
+                    sm->readdir_path("/D", con);
                 }
                 else
                 {
