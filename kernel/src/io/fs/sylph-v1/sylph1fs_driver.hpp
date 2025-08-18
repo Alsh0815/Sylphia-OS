@@ -42,6 +42,10 @@ public:
     bool mkdir_path(const char *abs_path, Console &con);
     bool create_path(const char *abs_path, Console &con);
 
+    bool write_path(const char *abs_path, const void *buf, uint64_t len, uint64_t off, Console &con);
+    bool read_path(const char *abs_path, void *buf, uint64_t len, uint64_t off, Console &con);
+    bool truncate_path(const char *abs_path, uint64_t new_size, Console &con);
+
     bool unlink_path(const char *abs_path, Console &con);
     bool rmdir_path(const char *abs_path, Console &con);
 
@@ -76,4 +80,7 @@ private:
 
     bool dir_remove_entry(uint64_t parent_inode_id, const char *name, uint16_t &type_out, uint64_t &child_ino_out, Console &con);
     bool is_dir_empty(uint64_t dir_inode_id, Console &con);
+
+    bool file_block_to_data_idx(const sylph1fs::Inode &ino, uint64_t file_blk, uint64_t &data_idx_out);
+    bool append_allocate_run(sylph1fs::Inode &ino, uint32_t need_blocks, uint64_t &out_start_idx, Console &con);
 };

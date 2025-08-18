@@ -297,6 +297,29 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
                     sm->unlink_path("/D/test/tmp.txt", con);
                     sm->rmdir_path("/D/test", con);
                     sm->readdir_path("/D", con);
+                    sm->create_path("/D/f", con);
+                    // 書き込み（8KiB）
+                    uint8_t w[8192];
+                    for (int i = 0; i < 8192; i++)
+                        w[i] = (uint8_t)(i & 0xFF);
+                    sm->write_path("/D/f", w, 8192, 0, con);
+
+                    // 読み戻し
+                    uint8_t r[8192];
+                    memset(r, 0, sizeof(r));
+                    sm->read_path("/D/f", r, 8192, 0, con);
+
+                    // 比較（適宜assert/ログ）
+                    bool ok = true;
+                    for (int i = 0; i < 8192; i++)
+                        if (r[i] != w[i])
+                        {
+                            ok = false;
+                            break;
+                        }
+                    con.printf("IO compare: %s\n", ok ? "OK" : "NG");
+                    sm->truncate_path("/D/f", 0, con);
+                    sm->unlink_path("/D/f", con);
                 }
                 else
                 {
