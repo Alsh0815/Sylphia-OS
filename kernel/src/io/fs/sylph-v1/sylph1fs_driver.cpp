@@ -264,6 +264,44 @@ bool register_sylph1fs_driver()
     return vfs::register_driver(&g_drv);
 }
 
+bool Sylph1Mount::check_dir_crc(uint64_t inode_id, const char *name, size_t &nlen, sylph1fs::Inode &parent, sylph1fs::DirHeader *&hdr, uint8_t *hdrblk, uint64_t &hdr_idx, Console &con)
+{
+    if (!name)
+        return false;
+    nlen = strlen(name);
+    if (nlen == 0 || nlen > 255)
+    {
+        con.println("Sylph1FS: invalid name");
+        return false;
+    }
+
+    parent = sylph1fs::Inode{};
+    if (!read_inode(inode_id, parent, con))
+        return false;
+    if (parent.dir_format != 1 || parent.dir_header_block >= m_sb.data_area_blocks)
+    {
+        con.println("Sylph1FS: parent not hashed dir");
+        return false;
+    }
+    hdr_idx = parent.dir_header_block;
+
+    if (!read_data_block(hdr_idx, hdrblk, con))
+        return false;
+    uint32_t h_stored = 0;
+    memcpy(&h_stored, hdrblk + 4096 - 4, 4);
+    if (h_stored != crc32c_reflected(hdrblk, 4096 - 4))
+    {
+        con.println("Sylph1FS: dir header CRC mismatch");
+        return false;
+    }
+
+    hdr = reinterpret_cast<sylph1fs::DirHeader *>(hdrblk);
+    if (hdr->magic != sylph1fs::kDirMagic || hdr->version != 1)
+        return false;
+
+    return true;
+}
+
 bool Sylph1Mount::map_crc_entry(uint64_t data_idx, uint64_t &crc_lba4k, size_t &crc_off, Console &con) const
 {
     // 境界チェック
@@ -690,41 +728,12 @@ bool Sylph1Mount::init_dir_block(uint32_t bucket_count, uint64_t &data_idx_out, 
 
 bool Sylph1Mount::dir_add_entry_root(const char *name, uint16_t type, uint64_t child_ino, Console &con)
 {
-    if (!name)
-        return false;
-    const size_t nlen = strlen(name);
-    if (nlen == 0 || nlen > 255)
-    {
-        con.println("Sylph1FS: invalid name");
-        return false;
-    }
-
-    // ルート inode と ヘッダブロックを読む
+    size_t nlen = 0;
+    uint64_t hdr_idx = 0;
     sylph1fs::Inode root{};
-    if (!read_inode(1, root, con))
-        return false;
-    con.printf("DEBUG: dir_add_entry_root('%s') read inode #1, dir_header_block=%u\n", name, root.dir_header_block);
-    if (root.dir_format != 1 || root.dir_header_block >= m_sb.data_area_blocks)
-    {
-        con.println("Sylph1FS: root dir is not hashed");
-        return false;
-    }
-    const uint64_t hdr_idx = root.dir_header_block;
-
     alignas(4096) uint8_t hdrblk[4096];
-    if (!read_data_block(hdr_idx, hdrblk, con))
-        return false;
-    // in-block CRC も検証
-    uint32_t stored = 0;
-    memcpy(&stored, hdrblk + 4096 - 4, 4);
-    const uint32_t calc = crc32c_reflected(hdrblk, 4096 - 4);
-    if (stored != calc)
-    {
-        con.println("Sylph1FS: dir header in-block CRC mismatch");
-        return false;
-    }
-    sylph1fs::DirHeader *hdr = reinterpret_cast<sylph1fs::DirHeader *>(hdrblk);
-    if (hdr->magic != sylph1fs::kDirMagic || hdr->version != 1)
+    sylph1fs::DirHeader *hdr;
+    if (!check_dir_crc(1, name, nlen, root, hdr, hdrblk, hdr_idx, con))
         return false;
 
     // バケットを決める
@@ -768,6 +777,13 @@ bool Sylph1Mount::dir_add_entry_root(const char *name, uint16_t type, uint64_t c
         // データbitmap確定
         if (!set_data_bitmap_range(slab_idx, 1, true, con))
             return false;
+
+        if (root.size_bytes < UINT64_MAX - 4096)
+        {
+            root.size_bytes += 4096;
+            if (!write_inode(root, con))
+                return false;
+        }
     }
     else if (slot == sylph1fs::kBucketEmbedded)
     {
@@ -824,7 +840,8 @@ bool Sylph1Mount::dir_add_entry_root(const char *name, uint16_t type, uint64_t c
     const uint32_t need = align_up_u32((uint32_t)(12 + nlen), 8);
     if (off + need > 4096 - 4)
     {
-        if (!append_entry_with_spill(slab_idx, name, type, child_ino, con))
+        bool spilled = false;
+        if (!append_entry_with_spill(slab_idx, name, type, child_ino, &spilled, con))
             return false;
         if (!read_data_block(hdr_idx, hdrblk, con))
             return false; // 最新を読み直すのが安全
@@ -834,6 +851,15 @@ bool Sylph1Mount::dir_add_entry_root(const char *name, uint16_t type, uint64_t c
         memcpy(hdrblk + 4096 - 4, &h_crc2, 4);
         if (!write_block_with_sidecar_crc(hdr_idx, hdrblk, con))
             return false;
+        if (spilled)
+        {
+            if (root.size_bytes < UINT64_MAX - 4096)
+            {
+                root.size_bytes += 4096;
+                if (!write_inode(root, con))
+                    return false;
+            }
+        }
         return true;
     }
 
@@ -1048,8 +1074,11 @@ bool Sylph1Mount::enumerate_slab(uint64_t slab_idx, Console &con, uint32_t &out_
 
 bool Sylph1Mount::append_entry_with_spill(uint64_t slab_idx,
                                           const char *name, uint16_t type, uint64_t child_ino,
+                                          bool *out_spilled,
                                           Console &con)
 {
+    if (out_spilled)
+        *out_spilled = false;
     // --- 追記サイズ計算 ---
     const uint32_t nlen = (uint32_t)strlen(name);
     const uint32_t need = align_up_u32(12u + nlen, 8u); // [hdr12 + name] を8バイト境界へ
@@ -1061,6 +1090,7 @@ bool Sylph1Mount::append_entry_with_spill(uint64_t slab_idx,
 
     // スラブ鎖の末尾まで辿って、空きのある場所に追記
     uint64_t cur = slab_idx;
+    bool allocated_new_slab = false;
     for (;;)
     {
         alignas(4096) uint8_t slab[4096];
@@ -1121,6 +1151,8 @@ bool Sylph1Mount::append_entry_with_spill(uint64_t slab_idx,
             if (!write_block_with_sidecar_crc(cur, slab, con))
                 return false;
 
+            if (out_spilled)
+                *out_spilled = allocated_new_slab;
             return true;
         }
 
@@ -1161,6 +1193,7 @@ bool Sylph1Mount::append_entry_with_spill(uint64_t slab_idx,
 
         // ループ続行：新スラブに追記
         cur = new_idx;
+        allocated_new_slab = true;
         // and loop…
     }
 }
@@ -1169,44 +1202,13 @@ bool Sylph1Mount::lookup_in_root(const char *name, uint64_t &inode_out, uint16_t
 {
     inode_out = 0;
     type_out = 0;
-    if (!name)
-        return false;
-
-    const size_t nlen = strlen(name);
-    if (nlen == 0 || nlen > 255)
-    {
-        con.println("Sylph1FS: lookup invalid name");
-        return false;
-    }
-
-    // ルート inode とヘッダブロックの検証
-    sylph1fs::Inode root{};
-    if (!read_inode(1, root, con))
-        return false;
-    if (root.dir_format != 1 || root.dir_header_block >= m_sb.data_area_blocks)
-    {
-        con.println("Sylph1FS: root dir is not hashed");
-        return false;
-    }
-
+    size_t nlen = 0;
+    uint64_t hdr_idx = 0;
+    sylph1fs::Inode parent{};
     alignas(4096) uint8_t hdrblk[4096];
-    if (!read_data_block(root.dir_header_block, hdrblk, con))
+    sylph1fs::DirHeader *hdr;
+    if (!check_dir_crc(1, name, nlen, parent, hdr, hdrblk, hdr_idx, con))
         return false;
-    uint32_t stored = 0;
-    memcpy(&stored, hdrblk + 4096 - 4, 4);
-    const uint32_t calc = crc32c_reflected(hdrblk, 4096 - 4);
-    if (stored != calc)
-    {
-        con.println("Sylph1FS: dir header in-block CRC mismatch");
-        return false;
-    }
-
-    const sylph1fs::DirHeader *hdr = reinterpret_cast<const sylph1fs::DirHeader *>(hdrblk);
-    if (hdr->magic != sylph1fs::kDirMagic || hdr->version != 1)
-    {
-        con.println("Sylph1FS: dir header invalid");
-        return false;
-    }
 
     const uint32_t bucket_count = hdr->bucket_count;
     if (bucket_count == 0)
@@ -1295,37 +1297,12 @@ bool Sylph1Mount::lookup_in_dir(uint64_t dir_inode_id, const char *name,
 {
     inode_out = 0;
     type_out = 0;
-    if (!name)
-        return false;
-    const size_t nlen = strlen(name);
-    if (nlen == 0 || nlen > 255)
-    {
-        con.println("Sylph1FS: lookup invalid name");
-        return false;
-    }
-
-    sylph1fs::Inode dir{};
-    if (!read_inode(dir_inode_id, dir, con))
-        return false;
-    if (dir.dir_format != 1 || dir.dir_header_block >= m_sb.data_area_blocks)
-    {
-        con.println("Sylph1FS: directory is not hashed");
-        return false;
-    }
-
+    size_t nlen = 0;
+    uint64_t hdr_idx = 0;
+    sylph1fs::Inode parent{};
     alignas(4096) uint8_t hdrblk[4096];
-    if (!read_data_block(dir.dir_header_block, hdrblk, con))
-        return false;
-    uint32_t stored = 0;
-    memcpy(&stored, hdrblk + 4096 - 4, 4);
-    if (stored != crc32c_reflected(hdrblk, 4096 - 4))
-    {
-        con.println("Sylph1FS: dir header CRC mismatch");
-        return false;
-    }
-
-    const sylph1fs::DirHeader *hdr = reinterpret_cast<const sylph1fs::DirHeader *>(hdrblk);
-    if (hdr->magic != sylph1fs::kDirMagic || hdr->version != 1)
+    sylph1fs::DirHeader *hdr;
+    if (!check_dir_crc(dir_inode_id, name, nlen, parent, hdr, hdrblk, hdr_idx, con))
         return false;
 
     const uint32_t bucket_count = hdr->bucket_count;
@@ -1399,38 +1376,13 @@ bool Sylph1Mount::lookup_in_dir(uint64_t dir_inode_id, const char *name,
 bool Sylph1Mount::dir_add_entry(uint64_t parent_inode_id, const char *name,
                                 uint16_t type, uint64_t child_ino, Console &con)
 {
-    if (!name)
-        return false;
-    const size_t nlen = strlen(name);
-    if (nlen == 0 || nlen > 255)
-    {
-        con.println("Sylph1FS: invalid name");
-        return false;
-    }
 
+    size_t nlen = 0;
+    uint64_t hdr_idx = 0;
     sylph1fs::Inode parent{};
-    if (!read_inode(parent_inode_id, parent, con))
-        return false;
-    if (parent.dir_format != 1 || parent.dir_header_block >= m_sb.data_area_blocks)
-    {
-        con.println("Sylph1FS: parent not hashed dir");
-        return false;
-    }
-    const uint64_t hdr_idx = parent.dir_header_block;
-
     alignas(4096) uint8_t hdrblk[4096];
-    if (!read_data_block(hdr_idx, hdrblk, con))
-        return false;
-    uint32_t stored = 0;
-    memcpy(&stored, hdrblk + 4096 - 4, 4);
-    if (stored != crc32c_reflected(hdrblk, 4096 - 4))
-    {
-        con.println("Sylph1FS: dir header CRC mismatch");
-        return false;
-    }
-
-    sylph1fs::DirHeader *hdr = reinterpret_cast<sylph1fs::DirHeader *>(hdrblk);
-    if (hdr->magic != sylph1fs::kDirMagic || hdr->version != 1)
+    sylph1fs::DirHeader *hdr;
+    if (!check_dir_crc(parent_inode_id, name, nlen, parent, hdr, hdrblk, hdr_idx, con))
         return false;
 
     // 既に存在？
@@ -1474,6 +1426,13 @@ bool Sylph1Mount::dir_add_entry(uint64_t parent_inode_id, const char *name,
 
         if (!set_data_bitmap_range(slab_idx, 1, true, con))
             return false;
+
+        if (parent.size_bytes < UINT64_MAX - 4096)
+        {
+            parent.size_bytes += 4096;
+            if (!write_inode(parent, con))
+                return false;
+        }
     }
     else if (slot == sylph1fs::kBucketEmbedded)
     {
@@ -1486,7 +1445,8 @@ bool Sylph1Mount::dir_add_entry(uint64_t parent_inode_id, const char *name,
     }
 
     // 追記（満杯なら内部でスピル）
-    if (!append_entry_with_spill(slab_idx, name, type, child_ino, con))
+    bool spilled = false;
+    if (!append_entry_with_spill(slab_idx, name, type, child_ino, &spilled, con))
         return false;
 
     // ヘッダ entry_count を+1
@@ -1498,6 +1458,15 @@ bool Sylph1Mount::dir_add_entry(uint64_t parent_inode_id, const char *name,
     memcpy(hdrblk + 4096 - 4, &h_crc2, 4);
     if (!write_block_with_sidecar_crc(hdr_idx, hdrblk, con))
         return false;
+    if (spilled)
+    {
+        if (parent.size_bytes < UINT64_MAX - 4096)
+        {
+            parent.size_bytes += 4096;
+            if (!write_inode(parent, con))
+                return false;
+        }
+    }
     return true;
 }
 
@@ -1960,39 +1929,12 @@ bool Sylph1Mount::dir_remove_entry(uint64_t parent_inode_id, const char *name,
 {
     type_out = 0;
     child_ino_out = 0;
-    if (!name)
-        return false;
-    const size_t nlen = strlen(name);
-    if (nlen == 0 || nlen > 255)
-    {
-        con.println("Sylph1FS: remove invalid name");
-        return false;
-    }
-
+    size_t nlen = 0;
+    uint64_t hdr_idx = 0;
     sylph1fs::Inode parent{};
-    if (!read_inode(parent_inode_id, parent, con))
-        return false;
-    if (parent.dir_format != 1 || parent.dir_header_block >= m_sb.data_area_blocks)
-    {
-        con.println("Sylph1FS: parent not hashed dir");
-        return false;
-    }
-    const uint64_t hdr_idx = parent.dir_header_block;
-
-    // ヘッダブロック
     alignas(4096) uint8_t hdrblk[4096];
-    if (!read_data_block(hdr_idx, hdrblk, con))
-        return false;
-    uint32_t h_stored = 0;
-    memcpy(&h_stored, hdrblk + 4096 - 4, 4);
-    if (h_stored != crc32c_reflected(hdrblk, 4096 - 4))
-    {
-        con.println("Sylph1FS: dir header CRC mismatch");
-        return false;
-    }
-
-    sylph1fs::DirHeader *hdr = reinterpret_cast<sylph1fs::DirHeader *>(hdrblk);
-    if (hdr->magic != sylph1fs::kDirMagic || hdr->version != 1)
+    sylph1fs::DirHeader *hdr;
+    if (!check_dir_crc(parent_inode_id, name, nlen, parent, hdr, hdrblk, hdr_idx, con))
         return false;
 
     // バケット選択

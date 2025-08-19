@@ -74,12 +74,13 @@ private:
     sylph1fs::Superblock m_sb;
     bool m_ro;
 
+    bool check_dir_crc(uint64_t inode_id, const char *name, size_t &nlen, sylph1fs::Inode &parent, sylph1fs::DirHeader *&hdr, uint8_t *hdrblk, uint64_t &hdr_idx, Console &con);
     bool map_crc_entry(uint64_t data_idx, uint64_t &crc_lba4k, size_t &crc_off, Console &con) const;
 
     bool write_block_with_sidecar_crc(uint64_t data_idx, const void *buf4096, Console &con);
 
     bool enumerate_slab(uint64_t slab_idx, Console &con, uint32_t &out_count);
-    bool append_entry_with_spill(uint64_t slab_idx, const char *name, uint16_t type, uint64_t child_ino, Console &con);
+    bool append_entry_with_spill(uint64_t slab_idx, const char *name, uint16_t type, uint64_t child_ino, bool *out_spilled, Console &con);
     bool alloc_data_blocks(uint32_t need, uint64_t &start_idx, Console &con); // first-fit、確保は最後に commit
     bool set_data_bitmap_range(uint64_t start_idx, uint32_t count, bool used, Console &con);
     bool alloc_inode(uint64_t &out_id, Console &con);
