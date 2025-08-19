@@ -288,18 +288,23 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
                     con.println("VFS: mount successful, trying readdir_root...");
                     auto sm = static_cast<Sylph1Mount *>(mnt);
                     sm->mkdir_path("/D", con);
-                    sm->create_path("/D/f1", con);
-                    sm->mkdir_path("/D/SUB", con);
-                    sm->create_path("/D/SUB/x", con);
+                    SylphStat st;
+
+                    if (sm->stat_path("/D", st, con))
+                    {
+                        con.printf("STAT /D: type=%u mode=%u links=%u size=%u ino=%u\n",
+                                   (unsigned)st.type, (unsigned)st.mode, (unsigned)st.links,
+                                   (unsigned long long)st.size, (unsigned long long)st.inode_id);
+                    }
+
                     sm->create_path("/D/f", con);
-                    uint8_t w[8192];
-                    for (int i = 0; i < 8192; i++)
-                        w[i] = (uint8_t)(i & 0xFF);
-                    sm->write_path("/D/f", w, 8192, 0, con);
-                    sm->unlink_path("/D/f", con);
-                    sm->mkdir_path("/D/empty", con);
-                    sm->rmdir_path("/D/empty", con);
-                    sm->readdir_path("/D", con);
+                    sm->write_path("/D/f", "HELLO", 5, 0, con); // 非整列RMW対応済みならOK
+                    if (sm->stat_path("/D/f", st, con))
+                    {
+                        con.printf("STAT /D/f: type=%u mode=%u links=%u size=%u ino=%u\n",
+                                   (unsigned)st.type, (unsigned)st.mode, (unsigned)st.links,
+                                   (unsigned long long)st.size, (unsigned long long)st.inode_id);
+                    }
                 }
                 else
                 {

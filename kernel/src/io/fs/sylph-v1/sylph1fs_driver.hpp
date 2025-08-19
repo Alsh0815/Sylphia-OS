@@ -14,6 +14,18 @@ public:
 
 bool register_sylph1fs_driver();
 
+struct SylphStat
+{
+    uint16_t type;     // sylph1fs::kDirEntTypeDir(1) or kDirEntTypeFile(2)
+    uint16_t mode;     // 上位での権限/種別（inode.modeそのまま）
+    uint32_t links;    // ハードリンク数
+    uint64_t size;     // バイト数
+    uint64_t inode_id; // inode番号
+    uint64_t ctime;    // 未実装→0
+    uint64_t mtime;    // 未実装→0
+    uint64_t atime;    // 未実装→0
+};
+
 class Sylph1Mount : public FsMount
 {
 public:
@@ -49,6 +61,8 @@ public:
     bool unlink_path(const char *abs_path, Console &con);
     bool rmdir_path(const char *abs_path, Console &con);
 
+    bool stat_path(const char *abs_path, SylphStat &st, Console &con);
+
     const sylph1fs::Superblock &superblock() const { return m_sb; }
     bool read_only() const { return m_ro; }
 
@@ -80,8 +94,8 @@ private:
 
     bool dir_remove_entry(uint64_t parent_inode_id, const char *name, uint16_t &type_out, uint64_t &child_ino_out, Console &con);
     bool is_dir_empty(uint64_t dir_inode_id, Console &con);
-    bool free_file_storage(sylph1fs::Inode& ino, Console& con);
-    bool free_dir_storage(uint64_t dir_inode_id, Console& con);
+    bool free_file_storage(sylph1fs::Inode &ino, Console &con);
+    bool free_dir_storage(uint64_t dir_inode_id, Console &con);
 
     bool file_block_to_data_idx(const sylph1fs::Inode &ino, uint64_t file_blk, uint64_t &data_idx_out);
     bool append_allocate_run(sylph1fs::Inode &ino, uint32_t need_blocks, uint64_t &out_start_idx, Console &con);

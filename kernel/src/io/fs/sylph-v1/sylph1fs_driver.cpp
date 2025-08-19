@@ -2737,3 +2737,44 @@ bool Sylph1Mount::free_dir_storage(uint64_t dir_inode_id, Console &con)
 
     return write_inode(ino, con);
 }
+
+bool Sylph1Mount::stat_path(const char *abs_path, SylphStat &st, Console &con)
+{
+    // 初期化
+    st.type = 0;
+    st.mode = 0;
+    st.links = 0;
+    st.size = 0;
+    st.inode_id = 0;
+    st.ctime = 0;
+    st.mtime = 0;
+    st.atime = 0;
+
+    if (!abs_path)
+        return false;
+
+    uint64_t ino_id = 0;
+    uint16_t ty = 0;
+    if (!resolve_path_inode(abs_path, ino_id, ty, con))
+    {
+        con.printf("Sylph1FS: stat: resolve failed for '%s'\n", abs_path ? abs_path : "(null)");
+        return false;
+    }
+
+    sylph1fs::Inode ino{};
+    if (!read_inode(ino_id, ino, con))
+    {
+        con.printf("Sylph1FS: stat: failed to read inode #%llu\n", (unsigned long long)ino_id);
+        return false;
+    }
+
+    st.type = ty; // 1=DIR, 2=FILE
+    st.mode = (uint16_t)ino.mode;
+    st.links = (uint32_t)ino.links;
+    st.size = ino.size_bytes;
+    st.inode_id = ino.inode_id;
+
+    // いまは時刻未運用：0のまま。将来、ctime/mtime/atimeをinodeに追加後にセット。
+
+    return true;
+}
