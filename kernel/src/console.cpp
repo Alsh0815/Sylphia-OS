@@ -27,7 +27,46 @@ void Console::vprintf(const char *fmt, va_list args)
             put_char(*p);
             continue;
         }
-        ++p;
+        ++p; // '%' をスキップ
+
+        // 書式指定子の解析用変数を初期化
+        bool zero_pad = false;
+        int width = 0;
+        enum
+        {
+            LEN_DEFAULT,
+            LEN_L,
+            LEN_LL
+        } length = LEN_DEFAULT;
+
+        // フラグの解析 ('0')
+        if (*p == '0')
+        {
+            zero_pad = true;
+            ++p;
+        }
+
+        // 幅(桁数)の解析
+        while (*p >= '0' && *p <= '9')
+        {
+            width = width * 10 + (*p - '0');
+            ++p;
+        }
+
+        // 長さ修飾子の解析 ('l', 'll')
+        if (*p == 'l')
+        {
+            ++p;
+            if (*p == 'l')
+            {
+                length = LEN_LL;
+                ++p;
+            }
+            else
+            {
+                length = LEN_L;
+            }
+        }
         switch (*p)
         {
         case 's':
@@ -40,26 +79,65 @@ void Console::vprintf(const char *fmt, va_list args)
         case 'd':
         case 'i':
         {
-            int val = va_arg(args, int);
+            long long val;
+            if (length == LEN_LL)
+            {
+                val = va_arg(args, long long);
+            }
+            else if (length == LEN_L)
+            {
+                val = va_arg(args, long);
+            }
+            else
+            {
+                val = va_arg(args, int);
+            }
+
             if (val < 0)
             {
                 put_char('-');
                 val = -val;
+                if (width > 0)
+                    --width; // 符号の分、幅を1減らす
             }
-            print_uint(val, 10);
+            print_uint(val, 10, zero_pad, width);
             break;
         }
         case 'u':
         {
-            unsigned int val = va_arg(args, unsigned int);
-            print_uint(val, 10);
+            unsigned long long val;
+            if (length == LEN_LL)
+            {
+                val = va_arg(args, unsigned long long);
+            }
+            else if (length == LEN_L)
+            {
+                val = va_arg(args, unsigned long);
+            }
+            else
+            {
+                val = va_arg(args, unsigned int);
+            }
+            print_uint(val, 10, zero_pad, width);
             break;
         }
         case 'x':
         case 'X':
         {
-            unsigned int val = va_arg(args, unsigned int);
-            print_uint(val, 16);
+            unsigned long long val;
+            if (length == LEN_LL)
+            {
+                val = va_arg(args, unsigned long long);
+            }
+            else if (length == LEN_L)
+            {
+                val = va_arg(args, unsigned long);
+            }
+            else
+            {
+                val = va_arg(args, unsigned int);
+            }
+            print_uint(val, 16, zero_pad, width);
             break;
         }
         case 'p':
@@ -67,7 +145,7 @@ void Console::vprintf(const char *fmt, va_list args)
             uintptr_t ptr = (uintptr_t)va_arg(args, void *);
             put_char('0');
             put_char('x');
-            print_uint(ptr, 16);
+            print_uint(ptr, 16, true, sizeof(uintptr_t) * 2);
             break;
         }
         case '%':
@@ -111,7 +189,7 @@ void Console::printf(const char *fmt, ...)
     va_end(args);
 }
 
-void Console::print_uint(uint64_t val, int base)
+void Console::print_uint(uint64_t val, int base, bool zero_pad, int width)
 {
     char buf[32];
     int idx = 0;
@@ -121,6 +199,17 @@ void Console::print_uint(uint64_t val, int base)
         buf[idx++] = (digit < 10) ? '0' + digit : 'a' + (digit - 10);
         val /= base;
     } while (val);
+
+    // ゼロ埋めを行う
+    if (zero_pad)
+    {
+        for (int i = idx; i < width; ++i)
+        {
+            put_char('0');
+        }
+    }
+
+    // 数値本体を出力
     for (int i = idx - 1; i >= 0; --i)
         put_char(buf[i]);
 }
