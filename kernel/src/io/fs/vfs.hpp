@@ -47,4 +47,10 @@ namespace vfs
             mnt->unmount(con);
     }
 
+    bool mkdir(FsMount *mnt, const char *path, Console &con);
+    bool create(FsMount *mnt, const char *path, Console &con);
+    bool write(FsMount *mnt, const char *path, const void *buf, uint64_t len, uint64_t off, Console &con);
+    bool read(FsMount *mnt, const char *path, void *buf, uint64_t len, uint64_t off, Console &con);
+    bool stat(FsMount *mnt, const char *path, VfsStat &st, Console &con);
+
 } // namespace vfs

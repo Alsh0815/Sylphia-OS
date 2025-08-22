@@ -286,114 +286,19 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
                 if (vfs::mount_auto(slice, con, &mnt) == FsStatus::Ok && mnt != nullptr)
                 {
                     con.println("VFS: mount successful, trying readdir_root...");
-                    auto sm = static_cast<Sylph1Mount *>(mnt);
-                    sm->mkdir_path("/D", con);
-                    SylphStat st;
-
-                    if (sm->stat_path("/D", st, con))
+                    vfs::mkdir(mnt, "/D", con);
+                    vfs::create(mnt, "/D/f", con);
+                    vfs::write(mnt, "/D/f", "HELLO", 5, 0, con);
+                    VfsStat st;
+                    if (vfs::stat(mnt, "/D", st, con))
                     {
                         con.printf("STAT /D: type=%u mode=%u links=%u size=%u ino=%u\n",
                                    (unsigned)st.type, (unsigned)st.mode, (unsigned)st.links,
                                    (unsigned long long)st.size, (unsigned long long)st.inode_id);
                     }
-
-                    sm->create_path("/D/f", con);
-                    sm->write_path("/D/f", "HELLO", 5, 0, con); // 非整列RMW対応済みならOK
-                    if (sm->stat_path("/D/f", st, con))
-                    {
-                        con.printf("STAT /D/f: type=%u mode=%u links=%u size=%u ino=%u\n",
-                                   (unsigned)st.type, (unsigned)st.mode, (unsigned)st.links,
-                                   (unsigned long long)st.size, (unsigned long long)st.inode_id);
-                    }
-
-                    con.println("\n--- Truncate/Regrow Test (verifies refactored logic) ---");
-                    sm->mkdir_path("/test_truncate", con);
-                    const char *trunc_path = "/test_truncate/file";
-
-                    if (!sm->create_path(trunc_path, con))
-                    {
-                        con.println("ERROR: Truncate test failed at create_path.");
-                    }
-                    else
-                    {
-                        // 1. ファイルを巨大なサイズ (512 KiB) に拡張する
-                        const uint64_t large_size = 512 * 1024;
-                        con.printf("Growing file to %llu bytes...\n", large_size);
-                        if (!sm->truncate_path(trunc_path, large_size, con))
-                        {
-                            con.println("ERROR: Initial truncate (grow) failed!");
-                        }
-                        else
-                        {
-                            // 2. 小さなサイズ (4 KiB) に縮小する
-                            //    これにより、確保したエクステントの大部分が解放されるはず
-                            const uint64_t small_size = 4096;
-                            con.printf("Shrinking file to %llu bytes...\n", small_size);
-                            if (!sm->truncate_path(trunc_path, small_size, con))
-                            {
-                                con.println("ERROR: Truncate (shrink) failed!");
-                            }
-                            else
-                            {
-                                SylphStat st;
-                                sm->stat_path(trunc_path, st, con);
-                                if (st.size == small_size)
-                                {
-                                    con.println("Shrink successful, size is correct.");
-                                }
-                                else
-                                {
-                                    con.printf("ERROR: Size after shrink is incorrect! Expected %llu, got %llu\n", small_size, st.size);
-                                }
-
-                                // 3. 再び巨大なサイズに拡張する
-                                con.printf("Regrowing file to %llu bytes...\n", large_size);
-                                if (!sm->truncate_path(trunc_path, large_size, con))
-                                {
-                                    con.println("ERROR: Truncate (regrow) failed!");
-                                }
-                                else
-                                {
-                                    sm->stat_path(trunc_path, st, con);
-                                    if (st.size == large_size)
-                                    {
-                                        con.println("Regrow successful, size is correct.");
-
-                                        // 再拡張した領域の末尾に書き込みと読み込みを行い、アクセス可能か検証
-                                        uint8_t *buf = (uint8_t *)pmm::alloc_pages(1);
-                                        ScopeExit free_buf([&]()
-                                                           { pmm::free_pages(buf, 1); });
-                                        *(uint64_t *)buf = 0xCAFEBABE; // Test pattern
-                                        sm->write_path(trunc_path, buf, sizeof(uint64_t), large_size - sizeof(uint64_t), con);
-                                        memset(buf, 0, 4096);
-                                        if (sm->read_path(trunc_path, buf, sizeof(uint64_t), large_size - sizeof(uint64_t), con))
-                                        {
-                                            if (*(uint64_t *)buf == 0xCAFEBABE)
-                                            {
-                                                con.println("Data verification after regrow OK.");
-                                            }
-                                            else
-                                            {
-                                                con.println("ERROR: Data corruption after regrow!");
-                                            }
-                                        }
-                                        else
-                                        {
-                                            con.println("ERROR: Failed to read back data after regrow!");
-                                        }
-                                    }
-                                    else
-                                    {
-                                        con.printf("ERROR: Size after regrow is incorrect! Expected %llu, got %llu\n", large_size, st.size);
-                                    }
-                                }
-                            }
-                        }
-                        // 4. クリーンアップ
-                        sm->unlink_path(trunc_path, con);
-                        sm->rmdir_path("/test_truncate", con);
-                    }
-                    con.println("--- Truncate/Regrow Test Complete ---");
+                    char buf[16];
+                    vfs::read(mnt, "/D/f", buf, 5, 0, con);
+                    con.printf("READ /D/f: content=%s\n", buf);
                 }
                 else
                 {

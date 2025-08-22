@@ -83,4 +83,40 @@ namespace vfs
         return FsStatus::ProbeFailed;
     }
 
+    bool mkdir(FsMount *mnt, const char *path, Console &con)
+    {
+        if (!mnt)
+            return false;
+        // FsMount の仮想関数を呼び出す
+        return mnt->mkdir_path(path, con);
+    }
+
+    bool create(FsMount *mnt, const char *path, Console &con)
+    {
+        if (!mnt)
+            return false;
+        return mnt->create_path(path, con);
+    }
+
+    bool write(FsMount *mnt, const char *path, const void *buf, uint64_t len, uint64_t off, Console &con)
+    {
+        if (!mnt)
+            return false;
+        return mnt->write_path(path, buf, len, off, con);
+    }
+
+    bool read(FsMount *mnt, const char *path, void *buf, uint64_t len, uint64_t off, Console &con)
+    {
+        if (!mnt)
+            return false;
+        return mnt->read_path(path, buf, len, off, con);
+    }
+
+    bool stat(FsMount *mnt, const char *path, VfsStat &st, Console &con)
+    {
+        if (!mnt)
+            return false;
+        return mnt->stat_path(path, st, con);
+    }
+
 } // namespace vfs

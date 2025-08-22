@@ -50,18 +50,18 @@ public:
 
     bool lookup_in_dir(uint64_t dir_inode_id, const char *name, uint64_t &inode_out, uint16_t &type_out, Console &con);
     bool dir_add_entry(uint64_t parent_inode_id, const char *name, uint16_t type, uint64_t child_ino, Console &con);
-    bool mkdir_path(const char *abs_path, Console &con);
-    bool create_path(const char *abs_path, Console &con);
+    bool mkdir_path(const char *abs_path, Console &con) override;
+    bool create_path(const char *abs_path, Console &con) override;
 
-    bool write_path(const char *abs_path, const void *buf, uint64_t len, uint64_t off, Console &con);
-    bool read_path(const char *abs_path, void *buf, uint64_t len, uint64_t off, Console &con);
-    bool truncate_path(const char *abs_path, uint64_t new_size, Console &con);
+    bool write_path(const char *abs_path, const void *buf, uint64_t len, uint64_t off, Console &con) override;
+    bool read_path(const char *abs_path, void *buf, uint64_t len, uint64_t off, Console &con) override;
+    bool truncate_path(const char *abs_path, uint64_t new_size, Console &con) override;
 
-    bool unlink_path(const char *abs_path, Console &con);
-    bool rmdir_path(const char *abs_path, Console &con);
+    bool unlink_path(const char *abs_path, Console &con) override;
+    bool rmdir_path(const char *abs_path, Console &con) override;
 
-    bool rename_path(const char *old_path, const char *new_path, Console &con);
-    bool stat_path(const char *abs_path, SylphStat &st, Console &con);
+    bool rename_path(const char *old_path, const char *new_path, Console &con) override;
+    bool stat_path(const char *abs_path, VfsStat &st, Console &con) override;
 
     const sylph1fs::Superblock &superblock() const { return m_sb; }
     bool read_only() const { return m_ro; }

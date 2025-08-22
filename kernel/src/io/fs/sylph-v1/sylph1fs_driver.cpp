@@ -2180,10 +2180,9 @@ bool Sylph1Mount::free_dir_storage(uint64_t dir_inode_id, Console &con)
     return write_inode(ino, con);
 }
 
-bool Sylph1Mount::stat_path(const char *abs_path, SylphStat &st, Console &con)
+bool Sylph1Mount::stat_path(const char *abs_path, VfsStat &st, Console &con)
 {
     // 初期化
-    st.type = 0;
     st.mode = 0;
     st.links = 0;
     st.size = 0;
@@ -2210,13 +2209,26 @@ bool Sylph1Mount::stat_path(const char *abs_path, SylphStat &st, Console &con)
         return false;
     }
 
-    st.type = ty; // 1=DIR, 2=FILE
+    if (ty == sylph1fs::kDirEntTypeDir)
+    {
+        st.type = VfsFileType::kDirectory;
+    }
+    else if (ty == sylph1fs::kDirEntTypeFile)
+    {
+        st.type = VfsFileType::kFile;
+    }
+    else
+    {
+        st.type = VfsFileType::kUnknown;
+    }
+
     st.mode = (uint16_t)ino.mode;
     st.links = (uint32_t)ino.links;
     st.size = ino.size_bytes;
     st.inode_id = ino.inode_id;
-
-    // いまは時刻未運用：0のまま。将来、ctime/mtime/atimeをinodeに追加後にセット。
+    st.atime = 0;
+    st.mtime = 0;
+    st.ctime = 0;
 
     return true;
 }
@@ -2516,6 +2528,34 @@ bool Sylph1Mount::pwrite_file(const uint64_t inode_id,
         {
             if (!allocate_file_blocks_and_attach(ino, add, con))
                 return false;
+
+            PmmVec<sylph1fs::Extent> new_extents;
+            if (!load_all_extents(ino, new_extents, con))
+                return false;
+
+            alignas(4096) uint8_t zero_block[4096];
+            memset(zero_block, 0, sizeof(zero_block));
+
+            uint64_t block_offset = 0;
+            for (const auto &e : new_extents)
+            {
+                // エクステント内の各ブロックを走査
+                for (uint64_t i = 0; i < e.length_blocks; ++i)
+                {
+                    // このブロックが新しく割り当てられたものか判定
+                    if (block_offset + i >= cur_blocks)
+                    {
+                        uint64_t data_idx = e.start_block_rel + i;
+                        // ゼロで埋めたブロックを書き込み（CRCも同時に更新）
+                        if (!write_block_with_sidecar_crc(data_idx, zero_block, con))
+                        {
+                            con.println("Sylph1FS: truncate failed to zero-fill new block");
+                            return false;
+                        }
+                    }
+                }
+                block_offset += e.length_blocks;
+            }
         }
     }
 
