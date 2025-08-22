@@ -78,6 +78,7 @@ private:
 
     bool check_dir_crc(uint64_t inode_id, const char *name, size_t &nlen, sylph1fs::Inode &parent, sylph1fs::DirHeader *&hdr, uint8_t *hdrblk, uint64_t &hdr_idx, Console &con);
     bool map_crc_entry(uint64_t data_idx, uint64_t &crc_lba4k, size_t &crc_off, Console &con) const;
+    bool clear_sidecar_crcs(uint64_t start_data_idx, uint32_t count, Console &con);
 
     bool write_block_with_sidecar_crc(uint64_t data_idx, const void *buf4096, Console &con);
 
@@ -99,7 +100,7 @@ private:
 
     bool dir_remove_entry(uint64_t parent_inode_id, const char *name, uint16_t &type_out, uint64_t &child_ino_out, Console &con);
     bool is_dir_empty(uint64_t dir_inode_id, Console &con);
-    bool free_file_storage(sylph1fs::Inode &ino, Console &con);
+    bool free_file_storage(sylph1fs::Inode &ino, uint64_t start_offset_to_free, Console &con);
     bool free_dir_storage(uint64_t dir_inode_id, Console &con);
 
     bool file_block_to_data_idx(const sylph1fs::Inode &ino, uint64_t file_blk, uint64_t &data_idx_out);

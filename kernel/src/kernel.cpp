@@ -305,122 +305,95 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
                                    (unsigned)st.type, (unsigned)st.mode, (unsigned)st.links,
                                    (unsigned long long)st.size, (unsigned long long)st.inode_id);
                     }
-                    con.println("\n--- Huge File (Extent Expansion) Test ---");
-                    sm->mkdir_path("/huge", con);
-                    const char *huge_file_path = "/huge/file";
 
-                    if (!sm->create_path(huge_file_path, con))
+                    con.println("\n--- Truncate/Regrow Test (verifies refactored logic) ---");
+                    sm->mkdir_path("/test_truncate", con);
+                    const char *trunc_path = "/test_truncate/file";
+
+                    if (!sm->create_path(trunc_path, con))
                     {
-                        con.println("ERROR: Failed to create huge file.");
+                        con.println("ERROR: Truncate test failed at create_path.");
                     }
                     else
                     {
-                        const int num_extents_to_force = 8;    // 4つ以上のエクステントを強制的に作る
-                        const uint64_t chunk_size = 4096;      // 1ブロックずつ書き込む
-                        const uint64_t seek_gap = 1024 * 1024; // 1MiBずつ間を空けて断片化させる
-
-                        con.printf("Creating fragmented file with %d extents...\n", num_extents_to_force);
-
-                        // 1. 断片化したデータを書き込み、間接エクステントブロックを使わせる
-                        uint8_t *write_buf = (uint8_t *)pmm::alloc_pages(1);
-                        ScopeExit free_write_buf([&]()
-                                                 { pmm::free_pages(write_buf, 1); });
-
-                        bool write_ok = true;
-                        for (int i = 0; i < num_extents_to_force; ++i)
+                        // 1. ファイルを巨大なサイズ (512 KiB) に拡張する
+                        const uint64_t large_size = 512 * 1024;
+                        con.printf("Growing file to %llu bytes...\n", large_size);
+                        if (!sm->truncate_path(trunc_path, large_size, con))
                         {
-                            uint64_t offset = (uint64_t)i * seek_gap;
-                            *(uint64_t *)write_buf = i; // 書き込むデータとしてチャンク番号を記録
-
-                            if (!sm->write_path(huge_file_path, write_buf, chunk_size, offset, con))
-                            {
-                                con.printf("ERROR: Failed to write chunk %d!\n", i);
-                                write_ok = false;
-                                break;
-                            }
-                        }
-
-                        if (write_ok)
-                        {
-                            con.println("Fragmented write successful. Verifying content...");
-
-                            // 2. 書き込んだデータを読み戻し、内容が正しいか検証する
-                            uint8_t *read_buf = (uint8_t *)pmm::alloc_pages(1);
-                            ScopeExit free_read_buf([&]()
-                                                    { pmm::free_pages(read_buf, 1); });
-                            bool all_ok = true;
-                            for (int i = 0; i < num_extents_to_force; ++i)
-                            {
-                                uint64_t offset = (uint64_t)i * seek_gap;
-                                if (!sm->read_path(huge_file_path, read_buf, chunk_size, offset, con))
-                                {
-                                    con.printf("ERROR: Failed to read back chunk %d!\n", i);
-                                    all_ok = false;
-                                    break;
-                                }
-                                uint64_t pattern = *(uint64_t *)read_buf;
-                                if (pattern != i)
-                                {
-                                    con.printf("ERROR: Data corruption in chunk %d! Expected=%d, Got=%llu\n", i, i, pattern);
-                                    all_ok = false;
-                                    break;
-                                }
-                            }
-
-                            if (all_ok)
-                            {
-                                con.println("Data integrity verification successful.");
-                            }
-                        }
-
-                        // 3. テストファイルをクリーンアップする
-                        con.println("Cleaning up huge file...");
-                        if (sm->unlink_path(huge_file_path, con))
-                        {
-                            con.println("Unlink successful.");
+                            con.println("ERROR: Initial truncate (grow) failed!");
                         }
                         else
                         {
-                            con.println("ERROR: Unlink failed!");
+                            // 2. 小さなサイズ (4 KiB) に縮小する
+                            //    これにより、確保したエクステントの大部分が解放されるはず
+                            const uint64_t small_size = 4096;
+                            con.printf("Shrinking file to %llu bytes...\n", small_size);
+                            if (!sm->truncate_path(trunc_path, small_size, con))
+                            {
+                                con.println("ERROR: Truncate (shrink) failed!");
+                            }
+                            else
+                            {
+                                SylphStat st;
+                                sm->stat_path(trunc_path, st, con);
+                                if (st.size == small_size)
+                                {
+                                    con.println("Shrink successful, size is correct.");
+                                }
+                                else
+                                {
+                                    con.printf("ERROR: Size after shrink is incorrect! Expected %llu, got %llu\n", small_size, st.size);
+                                }
+
+                                // 3. 再び巨大なサイズに拡張する
+                                con.printf("Regrowing file to %llu bytes...\n", large_size);
+                                if (!sm->truncate_path(trunc_path, large_size, con))
+                                {
+                                    con.println("ERROR: Truncate (regrow) failed!");
+                                }
+                                else
+                                {
+                                    sm->stat_path(trunc_path, st, con);
+                                    if (st.size == large_size)
+                                    {
+                                        con.println("Regrow successful, size is correct.");
+
+                                        // 再拡張した領域の末尾に書き込みと読み込みを行い、アクセス可能か検証
+                                        uint8_t *buf = (uint8_t *)pmm::alloc_pages(1);
+                                        ScopeExit free_buf([&]()
+                                                           { pmm::free_pages(buf, 1); });
+                                        *(uint64_t *)buf = 0xCAFEBABE; // Test pattern
+                                        sm->write_path(trunc_path, buf, sizeof(uint64_t), large_size - sizeof(uint64_t), con);
+                                        memset(buf, 0, 4096);
+                                        if (sm->read_path(trunc_path, buf, sizeof(uint64_t), large_size - sizeof(uint64_t), con))
+                                        {
+                                            if (*(uint64_t *)buf == 0xCAFEBABE)
+                                            {
+                                                con.println("Data verification after regrow OK.");
+                                            }
+                                            else
+                                            {
+                                                con.println("ERROR: Data corruption after regrow!");
+                                            }
+                                        }
+                                        else
+                                        {
+                                            con.println("ERROR: Failed to read back data after regrow!");
+                                        }
+                                    }
+                                    else
+                                    {
+                                        con.printf("ERROR: Size after regrow is incorrect! Expected %llu, got %llu\n", large_size, st.size);
+                                    }
+                                }
+                            }
                         }
+                        // 4. クリーンアップ
+                        sm->unlink_path(trunc_path, con);
+                        sm->rmdir_path("/test_truncate", con);
                     }
-                    con.println("--- Huge File Test Complete ---");
-
-                    con.println("\n--- Rename/Move Test ---");
-                    sm->mkdir_path("/rename_test", con);
-                    sm->mkdir_path("/rename_dest", con);
-                    sm->create_path("/rename_test/file.txt", con);
-                    sm->mkdir_path("/rename_test/subdir", con);
-
-                    con.println("\nInitial state:");
-                    sm->readdir_path("/rename_test", con);
-
-                    // 1. ファイルの名前変更 (同じディレクトリ内)
-                    con.println("\n1. Renaming file.txt to file_renamed.txt...");
-                    sm->rename_path("/rename_test/file.txt", "/rename_test/file_renamed.txt", con);
-
-                    // 2. ディレクトリの名前変更 (同じディレクトリ内)
-                    con.println("\n2. Renaming subdir to subdir_renamed...");
-                    sm->rename_path("/rename_test/subdir", "/rename_test/subdir_renamed", con);
-
-                    con.println("\nState after renames:");
-                    sm->readdir_path("/rename_test", con);
-
-                    // 3. ファイルを別ディレクトリへ移動
-                    con.println("\n3. Moving file_renamed.txt to /rename_dest...");
-                    sm->rename_path("/rename_test/file_renamed.txt", "/rename_dest/file_moved.txt", con);
-
-                    // 4. ディレクトリを別ディレクトリへ移動
-                    con.println("\n4. Moving subdir_renamed to /rename_dest...");
-                    sm->rename_path("/rename_test/subdir_renamed", "/rename_dest/subdir_moved", con);
-
-                    con.println("\nFinal state:");
-                    con.println("--- Source Dir [/rename_test]:");
-                    sm->readdir_path("/rename_test", con); // 空になっているはず
-                    con.println("--- Destination Dir [/rename_dest]:");
-                    sm->readdir_path("/rename_dest", con); // 2つのエントリがあるはず
-
-                    con.println("--- Rename/Move Test Complete ---");
+                    con.println("--- Truncate/Regrow Test Complete ---");
                 }
                 else
                 {

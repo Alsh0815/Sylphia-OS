@@ -32,6 +32,20 @@ namespace
         bool incomplete = false; // INCOMPLETEフラグ
     };
 
+    static void DebugPrintInode(const sylph1fs::Inode &ino, const char *tag, Console &con)
+    {
+        con.printf("--- Inode Debug (%s) ---\n", tag);
+        con.printf("  ino_id=%u, size_bytes=%u, links=%u, extent_count=%u\n",
+                   ino.inode_id, ino.size_bytes, ino.links, ino.extent_count);
+        for (int i = 0; i < 4; ++i)
+        {
+            con.printf("  inline[%d]: start=%u, len=%u\n", i,
+                       ino.extents_inline[i].start_block_rel, ino.extents_inline[i].length_blocks);
+        }
+        con.printf("  overflow_extents_block=%u\n", ino.overflow_extents_block);
+        con.println("-------------------------");
+    }
+
     inline uint64_t sx_div_floor(uint64_t x, uint64_t a) { return a ? (x / a) : 0; }
     inline uint64_t sx_mod(uint64_t x, uint64_t a) { return a ? (x % a) : 0; }
 
@@ -2224,7 +2238,7 @@ bool Sylph1Mount::unlink_path(const char *abs_path, Console &con)
     if (ino.links == 0)
     {
         // データ領域を解放し、inode を空に
-        if (!free_file_storage(ino, con))
+        if (!free_file_storage(ino, 0, con)) // オフセット0から全てを解放
             return false;
         if (!write_inode(ino, con))
             return false;
@@ -2395,75 +2409,7 @@ bool Sylph1Mount::write_path(const char *abs_path, const void *vbuf, uint64_t le
         con.println("Sylph1FS: write_path: not a file");
         return false;
     }
-
-    sylph1fs::Inode ino{};
-    if (!read_inode(ino_id, ino, con))
-        return false;
-
-    const uint64_t end_pos = off + len;
-    const uint64_t cur_blocks = [&]()
-    { uint64_t t=0; for (uint32_t i=0;i<ino.extent_count;++i) t+=ino.extents_inline[i].length_blocks; return t; }();
-    const uint64_t need_blocks_end = (end_pos + 4095) / 4096;
-
-    // 途中の未割当（fb < cur_blocks なのに map できない）への書込みは未サポート
-    // 末尾越えは append で拡張
-    if (need_blocks_end > cur_blocks)
-    {
-        const uint32_t add_blocks = (uint32_t)(need_blocks_end - cur_blocks);
-        uint64_t alloc_start = 0;
-        if (!append_allocate_run(ino, add_blocks, alloc_start, con))
-            return false;
-
-        // 新規確保領域は 0 で初期化（sidecar CRC 同期）
-        alignas(4096) uint8_t zero[4096];
-        memset(zero, 0, sizeof(zero));
-        for (uint32_t i = 0; i < add_blocks; ++i)
-        {
-            if (!write_block_with_sidecar_crc(alloc_start + i, zero, con))
-                return false;
-        }
-        // **最後に** bitmap を立てる（クラッシュ耐性）
-        if (!set_data_bitmap_range(alloc_start, add_blocks, true, con))
-            return false;
-    }
-
-    // ブロック範囲
-    const uint64_t first_blk = off / 4096;
-    const uint64_t last_blk = (end_pos - 1) / 4096;
-    size_t buf_off = 0;
-
-    for (uint64_t fb = first_blk; fb <= last_blk; ++fb)
-    {
-        // ブロック内の書込み範囲
-        const size_t begin_in_blk = (fb == first_blk) ? (size_t)(off % 4096) : 0;
-        const size_t end_in_blk = (fb == last_blk) ? (size_t)((off + len) % 4096 ? (off + len) % 4096 : 4096) : 4096;
-        const size_t nbytes = end_in_blk - begin_in_blk;
-
-        uint64_t data_idx = 0;
-        if (!file_block_to_data_idx(ino, fb, data_idx))
-        {
-            con.println("Sylph1FS: write_path: hole write not supported");
-            return false;
-        }
-
-        if (begin_in_blk == 0 && end_in_blk == 4096 && (reinterpret_cast<uintptr_t>(buf + buf_off) % 16 == 0))
-        {
-            // ちょうど 4KiB：本体ごと置換
-            if (!write_block_with_sidecar_crc(data_idx, buf + buf_off, con))
-                return false;
-        }
-        else
-        {
-            // 部分書き：R-M-W
-            if (!rmw_data_block(data_idx, begin_in_blk, buf + buf_off, nbytes, con))
-                return false;
-        }
-        buf_off += nbytes;
-    }
-
-    if (end_pos > ino.size_bytes)
-        ino.size_bytes = end_pos;
-    return write_inode(ino, con);
+    return pwrite_file(ino_id, vbuf, off, len, con);
 }
 
 bool Sylph1Mount::read_path(const char *abs_path, void *vbuf, uint64_t len, uint64_t off, Console &con)
@@ -2499,33 +2445,20 @@ bool Sylph1Mount::read_path(const char *abs_path, void *vbuf, uint64_t len, uint
     const uint64_t last_blk = (off + len - 1) / 4096;
     size_t buf_off = 0;
 
-    alignas(4096) uint8_t tmp[4096];
+    alignas(4096) uint8_t tmp_blk[4096];
 
     for (uint64_t fb = first_blk; fb <= last_blk; ++fb)
     {
-        const size_t begin_in_blk = (fb == first_blk) ? (size_t)(off % 4096) : 0;
-        const size_t end_in_blk = (fb == last_blk) ? (size_t)(((off + len) % 4096) ? (off + len) % 4096 : 4096) : 4096;
-        const size_t nbytes = end_in_blk - begin_in_blk;
-
-        uint64_t data_idx = 0;
-        if (!file_block_to_data_idx(ino, fb, data_idx))
+        if (!pread_file_block(ino, fb, tmp_blk, con))
         {
-            con.println("Sylph1FS: read_path: hole read not supported");
             return false;
         }
+        const size_t start_in_block = (fb == first_blk) ? (size_t)(off % 4096) : 0;
+        const size_t end_in_block = (fb == last_blk) ? (size_t)((off + len - 1) % 4096) + 1 : 4096;
+        const size_t bytes_to_copy = end_in_block - start_in_block;
 
-        if (begin_in_blk == 0 && end_in_blk == 4096)
-        {
-            if (!read_data_block(data_idx, buf + buf_off, con))
-                return false;
-        }
-        else
-        {
-            if (!read_data_block(data_idx, tmp, con))
-                return false;
-            memcpy(buf + buf_off, tmp + begin_in_blk, nbytes);
-        }
-        buf_off += nbytes;
+        memcpy(buf + buf_off, tmp_blk + start_in_block, bytes_to_copy);
+        buf_off += bytes_to_copy;
     }
     return true;
 }
@@ -2559,96 +2492,121 @@ bool Sylph1Mount::truncate_path(const char *abs_path, uint64_t new_size, Console
     if (!read_inode(ino_id, ino, con))
         return false;
 
-    const uint64_t cur_blocks = [&]()
+    const uint64_t old_size = ino.size_bytes;
+
+    if (new_size == old_size)
+        return true;
+
+    if (new_size > old_size)
     {
-        uint64_t t = 0;
-        for (uint32_t i = 0; i < ino.extent_count; ++i)
-            t += ino.extents_inline[i].length_blocks;
-        return t;
-    }();
-    const uint64_t new_blocks = sx_div_floor(new_size, 4096);
-
-    if (new_blocks > cur_blocks)
-    {
-        // === extend（ゼロ埋め） ===
-        const uint32_t add_blocks = (uint32_t)(new_blocks - cur_blocks);
-
-        // 連続ランを1本確保（MVP）
-        uint64_t alloc_start = 0;
-        if (!append_allocate_run(ino, add_blocks, alloc_start, con))
+        // === extend ===
+        const uint64_t cur_blocks = (old_size + 4095) / 4096;
+        const uint64_t new_blocks = (new_size + 4095) / 4096;
+        if (new_blocks > cur_blocks)
         {
-            con.println("Sylph1FS: extend allocate failed");
-            return false;
-        }
-
-        // 確保した範囲を 0 で初期化（sidecar CRC 同期）
-        uint8_t *zero = (uint8_t *)pmm::alloc_pages(1);
-        if (!zero)
-        {
-            con.println("Sylph1FS: truncate failed to allocate zero buffer");
-            return false;
-        }
-        ScopeExit free_zero([&]()
-                            { pmm::free_pages(zero, 1); });
-        memset(zero, 0, 4096);
-        for (uint32_t i = 0; i < add_blocks; ++i)
-        {
-            const uint64_t data_idx = alloc_start + i;
-            if (!write_block_with_sidecar_crc(data_idx, zero, con))
+            if (!allocate_file_blocks_and_attach(ino, new_blocks - cur_blocks, con))
             {
-                con.println("Sylph1FS: zero fill failed");
+                con.println("Sylph1FS: extend allocate failed");
                 return false;
             }
-        }
+            // 新しく割り当てた領域をゼロフィルし、CRCも更新する
+            PmmVec<sylph1fs::Extent> new_extents;
+            if (!load_all_extents(ino, new_extents, con))
+                return false;
 
-        // **最後に** Data bitmap を立てる（クラッシュ耐性：確保→書込み→ビットマップ確定の順）
-        if (!set_data_bitmap_range(alloc_start, add_blocks, true, con))
+            alignas(4096) uint8_t zero_block[4096];
+            memset(zero_block, 0, sizeof(zero_block));
+
+            uint64_t block_offset = 0;
+            for (const auto &e : new_extents)
+            {
+                // エクステント内の各ブロックを走査
+                for (uint64_t i = 0; i < e.length_blocks; ++i)
+                {
+                    // このブロックが新しく割り当てられたものか判定
+                    if (block_offset + i >= cur_blocks)
+                    {
+                        uint64_t data_idx = e.start_block_rel + i;
+                        // ゼロで埋めたブロックを書き込み（CRCも同時に更新）
+                        if (!write_block_with_sidecar_crc(data_idx, zero_block, con))
+                        {
+                            con.println("Sylph1FS: truncate failed to zero-fill new block");
+                            return false;
+                        }
+                    }
+                }
+                block_offset += e.length_blocks;
+            }
+        }
+    }
+    else
+    {
+        // === shrink ===
+        uint64_t ofb_to_free = 0;
+        if ((old_size + 4095) / 4096 > 4 && (new_size + 4095) / 4096 <= 4)
         {
-            con.println("Sylph1FS: bitmap commit failed");
+            ofb_to_free = ino.overflow_extents_block;
+        }
+        // 1. 不要なデータブロックとCRCを解放
+        if (!free_file_storage(ino, new_size, con))
+        {
+            con.println("Sylph1FS: shrink free_file_storage failed");
             return false;
         }
-
-        // サイズを更新して inode を書戻し
-        ino.size_bytes = new_size;
-        if (!write_inode(ino, con))
+        // 2. エクステントリストを再構築する
+        PmmVec<sylph1fs::Extent> all_extents;
+        if (!load_all_extents(ino, all_extents, con))
             return false;
-
-        con.printf("Sylph1FS: truncate extend to %u (blocks +%u)\n",
-                   (unsigned long long)new_size, (unsigned)add_blocks);
-        return true;
-    }
-    if (new_blocks == cur_blocks)
-    {
-        ino.size_bytes = new_size;
-        return write_inode(ino, con);
-    }
-
-    // 後ろから free
-    uint64_t to_free = cur_blocks - new_blocks;
-    while (to_free > 0 && ino.extent_count > 0)
-    {
-        sylph1fs::Extent &last = ino.extents_inline[ino.extent_count - 1];
-        if (last.length_blocks > to_free)
+        PmmVec<sylph1fs::Extent> new_extents;
+        uint64_t blocks_to_keep = (new_size + 4095) / 4096;
+        uint64_t blocks_kept = 0;
+        for (const auto &e : all_extents)
         {
-            // 一部縮小
-            const uint64_t free_start = last.start_block_rel + last.length_blocks - to_free;
-            if (!set_data_bitmap_range(free_start, (uint32_t)to_free, false, con))
-                return false;
-            last.length_blocks -= to_free;
-            to_free = 0;
+            if (blocks_kept >= blocks_to_keep)
+                break;
+            uint64_t keep_len = e.length_blocks;
+            if (blocks_kept + keep_len > blocks_to_keep)
+            {
+                keep_len = blocks_to_keep - blocks_kept;
+            }
+            sylph1fs::Extent new_e = {e.start_block_rel, (uint32_t)keep_len, 0};
+            new_extents.push_back(new_e);
+            blocks_kept += keep_len;
         }
-        else
+        // 新しいエクステントリストをinodeに書き戻す
+        ino.extent_count = 0;
+        memset(ino.extents_inline, 0, sizeof(ino.extents_inline));
+        ino.overflow_extents_block = 0; // まずクリア
+
+        uint64_t ofb_idx = 0;
+        if (ofb_to_free != 0 && new_extents.size() > 4)
+        { // OFBが必要なら再利用
+            ofb_idx = ofb_to_free;
+            ino.overflow_extents_block = ofb_idx;
+        }
+
+        for (size_t i = 0; i < new_extents.size(); ++i)
         {
-            // 全部解放
-            if (!set_data_bitmap_range(last.start_block_rel, (uint32_t)last.length_blocks, false, con))
-                return false;
-            to_free -= last.length_blocks;
-            ino.extent_count -= 1;
+            if (i < 4)
+            {
+                ino.extents_inline[ino.extent_count++] = new_extents[i];
+            }
+            else
+            {
+                if (ofb_idx == 0)
+                { // ensure_overflow_blockはinodeを書き込むのでここでは使わない
+                    ofb_idx = ino.overflow_extents_block;
+                }
+                uint64_t tail = 0;
+                if (!append_extent_to_overflow(ofb_idx, new_extents[i], tail, con))
+                    return false;
+            }
         }
     }
-
+    // 最後にサイズを更新して inode を書き戻す
     ino.size_bytes = new_size;
-    return write_inode(ino, con);
+    bool result = write_inode(ino, con);
+    return result;
 }
 
 bool Sylph1Mount::rmw_data_block(uint64_t data_idx, size_t off_in_block,
@@ -2669,30 +2627,49 @@ bool Sylph1Mount::rmw_data_block(uint64_t data_idx, size_t off_in_block,
     return write_block_with_sidecar_crc(data_idx, blk, con);
 }
 
-bool Sylph1Mount::free_file_storage(sylph1fs::Inode &ino, Console &con)
+bool Sylph1Mount::free_file_storage(sylph1fs::Inode &ino, uint64_t start_offset_to_free, Console &con)
 {
-    // inline extents だけを対象（v1）
-    for (uint32_t i = 0; i < ino.extent_count; ++i)
+    PmmVec<sylph1fs::Extent> extents;
+    if (!load_all_extents(ino, extents, con))
+        return false;
+
+    const uint64_t start_block_to_free = (start_offset_to_free + 4095) / 4096;
+    uint64_t block_offset = 0;
+
+    for (const auto &e : extents)
     {
-        const uint64_t start = ino.extents_inline[i].start_block_rel;
-        const uint32_t len = (uint32_t)ino.extents_inline[i].length_blocks;
-        if (len == 0)
-            continue;
-        if (!set_data_bitmap_range(start, len, /*used=*/false, con))
+        if (block_offset + e.length_blocks <= start_block_to_free)
         {
-            con.printf("Sylph1FS: free_file_storage: bitmap free failed at [%llu,+%u]\n",
-                       (unsigned long long)start, (unsigned)len);
-            return false;
+            // このエクステントは完全に保持される
+            block_offset += e.length_blocks;
+            continue;
         }
+
+        uint64_t free_start_in_extent = (block_offset > start_block_to_free) ? 0 : start_block_to_free - block_offset;
+        uint64_t free_count = e.length_blocks - free_start_in_extent;
+
+        if (free_count > 0)
+        {
+            uint64_t data_idx_start = e.start_block_rel + free_start_in_extent;
+            if (!clear_sidecar_crcs(data_idx_start, free_count, con))
+                return false;
+            if (!set_data_bitmap_range(data_idx_start, free_count, /*used=*/false, con))
+                return false;
+        }
+        block_offset += e.length_blocks;
     }
-    // メタデータを空に
-    ino.extent_count = 0;
-    for (uint32_t i = 0; i < 4; ++i)
-    { // 最大本数に合わせて調整
-        ino.extents_inline[i].start_block_rel = 0;
-        ino.extents_inline[i].length_blocks = 0;
+
+    // inodeのエクステントリスト自体も再構築する必要があるが、
+    // truncateでは後で再構築するため、ここではビットマップとCRCのクリアに専念する
+
+    // 間接エクステントブロック自体も、不要になれば解放する
+    if (start_block_to_free == 0 && ino.overflow_extents_block != 0)
+    {
+        if (!set_data_bitmap_range(ino.overflow_extents_block, 1, false, con))
+            return false;
+        ino.overflow_extents_block = 0;
     }
-    ino.size_bytes = 0;
+
     return true;
 }
 
@@ -3017,26 +2994,30 @@ bool Sylph1Mount::allocate_file_blocks_and_attach(sylph1fs::Inode &ino,
     memset(tmp.extents_inline, 0, sizeof(tmp.extents_inline));
     tmp.extent_count = 0;
 
+    // ▼▼▼ この部分を修正 ▼▼▼
+    tmp.overflow_extents_block = 0;
+
     uint64_t ofb_idx = 0;
-    for (size_t i = 0; i < cur.size(); ++i)
+    if (cur.size() > 4)
+    { // もしOFBが必要なら
+        if (!ensure_overflow_block(tmp, ofb_idx, con))
+            return false;
+    }
+
+    for (const auto &e : cur)
     {
-        const auto &e = cur[i];
         if (tmp.extent_count < 4)
         {
             tmp.extents_inline[tmp.extent_count++] = e;
         }
         else
         {
-            if (ofb_idx == 0)
-            {
-                if (!ensure_overflow_block(tmp, ofb_idx, con))
-                    return false;
-            }
             uint64_t tail = 0;
             if (!append_extent_to_overflow(ofb_idx, e, tail, con))
                 return false;
         }
     }
+    // ▲▲▲ 修正ここまで ▲▲▲
 
     // inode の size_bytes は呼び出し側で更新してから CRC・書き戻し
     ino = tmp;
@@ -3080,6 +3061,8 @@ bool Sylph1Mount::pwrite_file(const uint64_t inode_id,
     if (!read_inode(inode_id, ino, con))
         return false;
 
+    const uint64_t original_size = ino.size_bytes;
+
     // 必要ブロック数を計算し、不足分を確保
     const uint64_t end = off + len;
     const uint64_t need_bytes = (end > ino.size_bytes) ? (end - ino.size_bytes) : 0;
@@ -3099,17 +3082,26 @@ bool Sylph1Mount::pwrite_file(const uint64_t inode_id,
     uint64_t written = 0;
     while (written < len)
     {
-        const uint64_t abs = off + written;
-        const uint64_t fblk = abs >> 12;
-        const uint32_t inblk = (uint32_t)(abs & 0xFFFu);
+        const uint64_t abs_offset = off + written;
+        const uint64_t fblk = abs_offset >> 12;
+        const uint32_t inblk = (uint32_t)(abs_offset & 0xFFFu);
         const uint32_t chunk = (uint32_t)min<uint64_t>(len - written, 4096 - inblk);
 
         alignas(4096) uint8_t blk[4096];
         // 既存データを読む（部分更新）
         if (!pread_file_block(ino, fblk, blk, con))
         {
-            // まだ割り当てられたばかりの末尾ブロックならゼロ初期化でOK
+            // ▼▼▼ ここから修正 ▼▼▼
+            // 読み込みに失敗した場合のハンドリング
+            if (abs_offset < original_size)
+            {
+                // ファイルの既存領域の読み込み失敗は、データ破損を示す致命的エラー
+                con.println("Sylph1FS: pwrite RMW failed due to unrecoverable read error on existing data!");
+                return false;
+            }
+            // 新規拡張領域の読み込み失敗は許容し、バッファをゼロ埋めして続行
             memset(blk, 0, sizeof(blk));
+            // ▲▲▲ ここまで修正 ▲▲▲
         }
 
         memcpy(blk + inblk, (const uint8_t *)src + written, chunk);
@@ -3294,5 +3286,49 @@ bool Sylph1Mount::rename_path(const char *old_path, const char *new_path, Consol
     }
 
     con.printf("Sylph1FS: renamed '%s' to '%s'\n", old_path, new_path);
+    return true;
+}
+
+bool Sylph1Mount::clear_sidecar_crcs(uint64_t start_data_idx, uint32_t count, Console &con)
+{
+    if (count == 0)
+        return true;
+
+    alignas(4096) uint8_t crc_blk[4096];
+    uint64_t current_crc_lba = 0;
+
+    for (uint32_t i = 0; i < count; ++i)
+    {
+        uint64_t data_idx = start_data_idx + i;
+        uint64_t crc_lba = 0;
+        size_t crc_off = 0;
+        if (!map_crc_entry(data_idx, crc_lba, crc_off, con))
+            return false;
+
+        // CRCブロックが変わった最初のタイミングで読み込む
+        if (crc_lba != current_crc_lba)
+        {
+            if (current_crc_lba != 0)
+            { // 前のブロックに変更があれば書き戻す
+                if (!m_dev.write_blocks_4k(current_crc_lba, 1, crc_blk, 4096, true, BlockDevice::kVerifyAfterWrite, con))
+                    return false;
+            }
+            if (!m_dev.read_blocks_4k(crc_lba, 1, crc_blk, 4096, con))
+                return false;
+            current_crc_lba = crc_lba;
+        }
+
+        // メモリ上でCRCエントリをゼロにする
+        uint32_t zero = 0;
+        memcpy(crc_blk + crc_off, &zero, sizeof(zero));
+    }
+
+    // 最後に残ったブロックを書き戻す
+    if (current_crc_lba != 0)
+    {
+        if (!m_dev.write_blocks_4k(current_crc_lba, 1, crc_blk, 4096, true, BlockDevice::kVerifyAfterWrite, con))
+            return false;
+    }
+
     return true;
 }
