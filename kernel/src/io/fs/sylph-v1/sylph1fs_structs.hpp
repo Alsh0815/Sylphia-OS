@@ -103,7 +103,20 @@ namespace sylph1fs
     };
 #pragma pack(pop)
 
+#pragma pack(push, 1)
+    struct ExtentOverflowHeader
+    {
+        uint32_t magic;       // "SYLE" = 0x53494C45
+        uint32_t version;     // 1
+        uint32_t entry_count; // このブロックに入っている Extent 数
+        uint32_t reserved0;
+        uint64_t next_block_rel;                   // 次の OFB（0=終端）。data area 相対 4KiB ブロック番号
+        uint8_t reserved1[64 - 4 - 4 - 4 - 4 - 8]; // 64Bヘッダに揃える
+    };
+#pragma pack(pop)
+
     static constexpr uint32_t kDirMagic = 0x53494C44u;      // 'S''Y''L''D'
+    static constexpr uint32_t kExtOvMagic = 0x53494C45u;    // 'S''Y''L''E'
     static constexpr uint32_t kBucketEmpty = 0;             // 未使用
     static constexpr uint32_t kBucketEmbedded = 0xFFFFFFFF; // （将来用）ヘッダ内“埋め込みスラブ”
     static constexpr uint16_t kDirEntTypeDir = 1;
@@ -167,4 +180,6 @@ namespace sylph1fs
     static_assert(sizeof(DirHeader) == 64, "DirHeader struct size mismatch");
 
     static_assert(sizeof(DirSlabHeader) == 16, "DirSlabHeader struct size mismatch");
+
+    static_assert(sizeof(ExtentOverflowHeader) == 64, "ExtentOverflowHeader struct size mismatch");
 }

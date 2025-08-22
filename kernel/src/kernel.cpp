@@ -305,6 +305,122 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
                                    (unsigned)st.type, (unsigned)st.mode, (unsigned)st.links,
                                    (unsigned long long)st.size, (unsigned long long)st.inode_id);
                     }
+                    con.println("\n--- Huge File (Extent Expansion) Test ---");
+                    sm->mkdir_path("/huge", con);
+                    const char *huge_file_path = "/huge/file";
+
+                    if (!sm->create_path(huge_file_path, con))
+                    {
+                        con.println("ERROR: Failed to create huge file.");
+                    }
+                    else
+                    {
+                        const int num_extents_to_force = 8;    // 4つ以上のエクステントを強制的に作る
+                        const uint64_t chunk_size = 4096;      // 1ブロックずつ書き込む
+                        const uint64_t seek_gap = 1024 * 1024; // 1MiBずつ間を空けて断片化させる
+
+                        con.printf("Creating fragmented file with %d extents...\n", num_extents_to_force);
+
+                        // 1. 断片化したデータを書き込み、間接エクステントブロックを使わせる
+                        uint8_t *write_buf = (uint8_t *)pmm::alloc_pages(1);
+                        ScopeExit free_write_buf([&]()
+                                                 { pmm::free_pages(write_buf, 1); });
+
+                        bool write_ok = true;
+                        for (int i = 0; i < num_extents_to_force; ++i)
+                        {
+                            uint64_t offset = (uint64_t)i * seek_gap;
+                            *(uint64_t *)write_buf = i; // 書き込むデータとしてチャンク番号を記録
+
+                            if (!sm->write_path(huge_file_path, write_buf, chunk_size, offset, con))
+                            {
+                                con.printf("ERROR: Failed to write chunk %d!\n", i);
+                                write_ok = false;
+                                break;
+                            }
+                        }
+
+                        if (write_ok)
+                        {
+                            con.println("Fragmented write successful. Verifying content...");
+
+                            // 2. 書き込んだデータを読み戻し、内容が正しいか検証する
+                            uint8_t *read_buf = (uint8_t *)pmm::alloc_pages(1);
+                            ScopeExit free_read_buf([&]()
+                                                    { pmm::free_pages(read_buf, 1); });
+                            bool all_ok = true;
+                            for (int i = 0; i < num_extents_to_force; ++i)
+                            {
+                                uint64_t offset = (uint64_t)i * seek_gap;
+                                if (!sm->read_path(huge_file_path, read_buf, chunk_size, offset, con))
+                                {
+                                    con.printf("ERROR: Failed to read back chunk %d!\n", i);
+                                    all_ok = false;
+                                    break;
+                                }
+                                uint64_t pattern = *(uint64_t *)read_buf;
+                                if (pattern != i)
+                                {
+                                    con.printf("ERROR: Data corruption in chunk %d! Expected=%d, Got=%llu\n", i, i, pattern);
+                                    all_ok = false;
+                                    break;
+                                }
+                            }
+
+                            if (all_ok)
+                            {
+                                con.println("Data integrity verification successful.");
+                            }
+                        }
+
+                        // 3. テストファイルをクリーンアップする
+                        con.println("Cleaning up huge file...");
+                        if (sm->unlink_path(huge_file_path, con))
+                        {
+                            con.println("Unlink successful.");
+                        }
+                        else
+                        {
+                            con.println("ERROR: Unlink failed!");
+                        }
+                    }
+                    con.println("--- Huge File Test Complete ---");
+
+                    con.println("\n--- Rename/Move Test ---");
+                    sm->mkdir_path("/rename_test", con);
+                    sm->mkdir_path("/rename_dest", con);
+                    sm->create_path("/rename_test/file.txt", con);
+                    sm->mkdir_path("/rename_test/subdir", con);
+
+                    con.println("\nInitial state:");
+                    sm->readdir_path("/rename_test", con);
+
+                    // 1. ファイルの名前変更 (同じディレクトリ内)
+                    con.println("\n1. Renaming file.txt to file_renamed.txt...");
+                    sm->rename_path("/rename_test/file.txt", "/rename_test/file_renamed.txt", con);
+
+                    // 2. ディレクトリの名前変更 (同じディレクトリ内)
+                    con.println("\n2. Renaming subdir to subdir_renamed...");
+                    sm->rename_path("/rename_test/subdir", "/rename_test/subdir_renamed", con);
+
+                    con.println("\nState after renames:");
+                    sm->readdir_path("/rename_test", con);
+
+                    // 3. ファイルを別ディレクトリへ移動
+                    con.println("\n3. Moving file_renamed.txt to /rename_dest...");
+                    sm->rename_path("/rename_test/file_renamed.txt", "/rename_dest/file_moved.txt", con);
+
+                    // 4. ディレクトリを別ディレクトリへ移動
+                    con.println("\n4. Moving subdir_renamed to /rename_dest...");
+                    sm->rename_path("/rename_test/subdir_renamed", "/rename_dest/subdir_moved", con);
+
+                    con.println("\nFinal state:");
+                    con.println("--- Source Dir [/rename_test]:");
+                    sm->readdir_path("/rename_test", con); // 空になっているはず
+                    con.println("--- Destination Dir [/rename_dest]:");
+                    sm->readdir_path("/rename_dest", con); // 2つのエントリがあるはず
+
+                    con.println("--- Rename/Move Test Complete ---");
                 }
                 else
                 {

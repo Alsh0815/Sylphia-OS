@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../../../pmm_vector.hpp"
 #include "../vfs.hpp"           // FsDriver / FsMount / vfs::register_driver
 #include "sylph1fs.hpp"         // Sylph1FS（将来、mount後に流用予定）
 #include "sylph1fs_structs.hpp" // on-disk Superblock 定義
@@ -61,6 +62,7 @@ public:
     bool unlink_path(const char *abs_path, Console &con);
     bool rmdir_path(const char *abs_path, Console &con);
 
+    bool rename_path(const char *old_path, const char *new_path, Console &con);
     bool stat_path(const char *abs_path, SylphStat &st, Console &con);
 
     const sylph1fs::Superblock &superblock() const { return m_sb; }
@@ -78,6 +80,8 @@ private:
     bool map_crc_entry(uint64_t data_idx, uint64_t &crc_lba4k, size_t &crc_off, Console &con) const;
 
     bool write_block_with_sidecar_crc(uint64_t data_idx, const void *buf4096, Console &con);
+
+    bool update_dotdot_entry(uint64_t dir_inode_id, uint64_t new_parent_inode_id, Console &con);
 
     bool enumerate_slab(uint64_t slab_idx, Console &con, uint32_t &out_count);
     bool append_entry_with_spill(uint64_t slab_idx, const char *name, uint16_t type, uint64_t child_ino, bool *out_spilled, Console &con);
@@ -102,4 +106,12 @@ private:
     bool append_allocate_run(sylph1fs::Inode &ino, uint32_t need_blocks, uint64_t &out_start_idx, Console &con);
 
     bool rmw_data_block(uint64_t data_idx, size_t off_in_block, const uint8_t *src, size_t n, Console &con);
+
+    bool load_all_extents(const sylph1fs::Inode &ino, PmmVec<sylph1fs::Extent> &out, Console &con);
+
+    bool allocate_file_blocks_and_attach(sylph1fs::Inode &ino, uint64_t need_blocks, Console &con);
+    bool append_extent_to_overflow(uint64_t ofb_idx, const sylph1fs::Extent &e, uint64_t &tail_idx_out, Console &con);
+    bool ensure_overflow_block(sylph1fs::Inode &ino, uint64_t &ofb_idx_out, Console &con);
+    bool pwrite_file(const uint64_t inode_id, const void *src, uint64_t off, uint64_t len, Console &con);
+    bool pread_file_block(const sylph1fs::Inode &ino, uint64_t file_block_idx, void *out4096, Console &con);
 };
