@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include "../../uefi/include/efi/base.h"
 #include "../include/bootinfo.h"
 #include "../include/framebuffer.hpp"
 #include "../include/font8x8.hpp"
@@ -7,11 +8,14 @@
 #include "driver/pci/pci.hpp"
 #include "io/block/block_device.hpp"
 #include "io/block/block_registry.hpp"
+#include "io/block/block_slice.hpp"
+#include "io/fs/sylph-v1/sylph1fs_driver.hpp"
 #include "io/fs/vfs.hpp"
 #include "io/partitions/gpt.hpp"
 #include "gdt.hpp"
 #include "heap.hpp"
 #include "idt.hpp"
+#include "kernel_runtime.hpp"
 #include "painter.hpp"
 #include "paging.hpp"
 #include "pmm.hpp"
@@ -20,18 +24,10 @@
 struct EFIMemoryDescriptor
 {
     uint32_t Type;
-    uint32_t Pad;
     uint64_t PhysicalStart;
     uint64_t VirtualStart;
     uint64_t NumberOfPages;
     uint64_t Attribute;
-};
-
-enum
-{
-    EfiBootServicesCode = 3,
-    EfiBootServicesData = 4,
-    EfiConventionalMemory = 7 /* boot_services.h の列挙と合わせる */
 };
 
 static inline void bzero(void *p, size_t n)
@@ -78,26 +74,44 @@ extern "C" __attribute__((sysv_abi)) void kernel_main(BootInfo *bi)
 
     ((volatile uint32_t *)(uintptr_t)bi->fb_base)[0] = 0x00FFFF;
     uint64_t cr3 = paging::init_identity(*bi);
+    if (cr3 == 0)
+    {
+        con.setColors({255, 255, 255}, {255, 0, 0});
+        con.println("!!! PAGING INIT FAILED !!! --- SYSTEM HALTED ---");
+        for (;;)
+            __asm__ __volatile__("hlt");
+    }
     con.printf("Paging: CR3=0x%p, mapped up to %u MiB\n",
                (void *)cr3, (unsigned)((paging::mapped_limit() >> 20)));
 
-    // ここで低位スタックを確保して移行（もう新CR3なので確実にマップ済み）
-    paging::init_allocator(*bi);
-    void *new_sp = paging::alloc_low_stack(16 * 4096); // 64KiB くらい
-    if (new_sp)
+    // ▼▼▼ ここからが修正箇所 ▼▼▼
+
+    // ページングが有効になったので、すぐにPMMを初期化する
+    uint64_t managed = pmm::init(*bi);
+
+    // PMMを使って新しいスタックを確保する (64KiB)
+    const size_t stack_pages = 16;
+    void *new_stack_base = pmm::alloc_pages(stack_pages);
+    if (new_stack_base)
     {
-        uintptr_t sp = ((uintptr_t)new_sp) & ~0xFULL; // 16B アライン
+        // スタックは上（アドレスの大きい方）から使うので、確保領域の終端を渡す
+        uintptr_t sp = (uintptr_t)new_stack_base + (stack_pages * 4096);
+        sp &= ~0xFULL; // 16B アライン
+
         // RDI に bi（SysV ABIの第1引数）を積んで、新スタックで kernel_after_stack へ
         asm volatile(
             "mov %0, %%rsp\n\t"
-            "xor %%rbp, %%rbp\n\t"        // フレームポインタ無効化（お守り）
-            "call kernel_after_stack\n\t" // ← 戻らない設計
+            "xor %%rbp, %%rbp\n\t"
+            "call kernel_after_stack\n\t"
             :
             : "r"(sp), "D"(bi)
             : "memory");
-        __builtin_unreachable(); // ここには来ない想定
+        __builtin_unreachable();
     }
 
+    // ▲▲▲ ここまで修正 ▲▲▲
+
+    con.println("!!! FAILED TO ALLOCATE NEW STACK !!! --- SYSTEM HALTED ---");
     for (;;)
         __asm__ __volatile__("hlt");
 }
@@ -142,7 +156,7 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
     paint.drawTextWrap(tx, ty, "SYLPHIA OS (text-color-clip)", right);
 
     con.setColors({255, 255, 255}, {0, 0, 0});
-    con.printf("Version: v.%d.%d.%d.%d\n", 0, 1, 4, 3);
+    con.printf("Version: v.%d.%d.%d.%d\n", 0, 1, 4, 4);
 
     con.println("Switched to low stack.");
 
@@ -162,8 +176,6 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
     idt::init(bi);
     idt::install_double_fault(1);
 
-    uint64_t managed = pmm::init(*bi);
-
     if (bi->kernel_ranges_ptr && bi->kernel_ranges_cnt)
     {
         auto *kr = (const PhysRange *)(uintptr_t)bi->kernel_ranges_ptr;
@@ -173,7 +185,7 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
         }
     }
 
-    con.printf("PMM: managing up to %u MiB\n", (unsigned)(managed >> 20));
+    con.printf("PMM: managing up to %u MiB\n", (unsigned)(pmm::total_bytes() >> 20));
     con.printf("PMM: total=%u MiB free=%u MiB used=%u MiB\n",
                (unsigned)(pmm::total_bytes() >> 20),
                (unsigned)(pmm::free_bytes() >> 20),
@@ -230,8 +242,6 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
             con.println("NVMe init and create queues failed.");
         }
 
-        nvme::debug_test_write_lba0(con);
-
         block::NvmeInitParams p{.bar0_va = (void *)(uintptr_t)TEST_VA, .nsid = 1};
         BlockDevice *dev = block::open_nvme_as_block(p, con);
         if (!dev)
@@ -245,16 +255,150 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
 
         if (gpt::scan(*dev, parts, 32, &found, &meta, con))
         {
-            FsMount *mnt = nullptr;
-            FsStatus st = vfs::mount_auto_on_partitions(*dev, parts, found, con, &mnt);
-            if (st != FsStatus::Ok)
+            register_sylph1fs_driver();
+
+            if (found > 0)
             {
-                con.printf("mount_auto_on_partitions failed (%d)\n", (int)st);
-            }
-            else
-            {
-                con.println("mounted via GPT");
-                vfs::unmount(mnt, con);
+                // 2. probeしてみて、もし失敗したらmkfsを実行する
+                Sylph1FS::MkfsOptions opt{};
+                opt.version = 1;
+                opt.minor_version = 0;
+                opt.dir_bucket_count = 256;
+                // 最初のパーティションを対象にする
+                BlockDeviceSlice slice(*dev, parts[0].first_lba4k, parts[0].blocks4k);
+                Sylph1FS fs(slice, con);
+                // probeしてみて、もし失敗したらmkfsを実行する
+                Sylph1FsDriver temp_driver;
+                if (!temp_driver.probe(slice, con) || true)
+                {
+                    con.println("Sylph1FS: probe failed, attempting to format...");
+                    if (fs.mkfs(opt) == FsStatus::Ok)
+                    {
+                        con.println("Sylph1FS: mkfs successful.");
+                    }
+                    else
+                    {
+                        con.println("Sylph1FS: mkfs failed.");
+                    }
+                };
+
+                FsMount *mnt = nullptr;
+                if (vfs::mount_auto(slice, con, &mnt) == FsStatus::Ok && mnt != nullptr)
+                {
+                    con.println("VFS: mount successful, trying readdir_root...");
+                    auto sm = static_cast<Sylph1Mount *>(mnt);
+                    sm->mkdir_path("/D", con);
+                    SylphStat st;
+
+                    if (sm->stat_path("/D", st, con))
+                    {
+                        con.printf("STAT /D: type=%u mode=%u links=%u size=%u ino=%u\n",
+                                   (unsigned)st.type, (unsigned)st.mode, (unsigned)st.links,
+                                   (unsigned long long)st.size, (unsigned long long)st.inode_id);
+                    }
+
+                    sm->create_path("/D/f", con);
+                    sm->write_path("/D/f", "HELLO", 5, 0, con); // 非整列RMW対応済みならOK
+                    if (sm->stat_path("/D/f", st, con))
+                    {
+                        con.printf("STAT /D/f: type=%u mode=%u links=%u size=%u ino=%u\n",
+                                   (unsigned)st.type, (unsigned)st.mode, (unsigned)st.links,
+                                   (unsigned long long)st.size, (unsigned long long)st.inode_id);
+                    }
+
+                    con.println("\n--- Truncate/Regrow Test (verifies refactored logic) ---");
+                    sm->mkdir_path("/test_truncate", con);
+                    const char *trunc_path = "/test_truncate/file";
+
+                    if (!sm->create_path(trunc_path, con))
+                    {
+                        con.println("ERROR: Truncate test failed at create_path.");
+                    }
+                    else
+                    {
+                        // 1. ファイルを巨大なサイズ (512 KiB) に拡張する
+                        const uint64_t large_size = 512 * 1024;
+                        con.printf("Growing file to %llu bytes...\n", large_size);
+                        if (!sm->truncate_path(trunc_path, large_size, con))
+                        {
+                            con.println("ERROR: Initial truncate (grow) failed!");
+                        }
+                        else
+                        {
+                            // 2. 小さなサイズ (4 KiB) に縮小する
+                            //    これにより、確保したエクステントの大部分が解放されるはず
+                            const uint64_t small_size = 4096;
+                            con.printf("Shrinking file to %llu bytes...\n", small_size);
+                            if (!sm->truncate_path(trunc_path, small_size, con))
+                            {
+                                con.println("ERROR: Truncate (shrink) failed!");
+                            }
+                            else
+                            {
+                                SylphStat st;
+                                sm->stat_path(trunc_path, st, con);
+                                if (st.size == small_size)
+                                {
+                                    con.println("Shrink successful, size is correct.");
+                                }
+                                else
+                                {
+                                    con.printf("ERROR: Size after shrink is incorrect! Expected %llu, got %llu\n", small_size, st.size);
+                                }
+
+                                // 3. 再び巨大なサイズに拡張する
+                                con.printf("Regrowing file to %llu bytes...\n", large_size);
+                                if (!sm->truncate_path(trunc_path, large_size, con))
+                                {
+                                    con.println("ERROR: Truncate (regrow) failed!");
+                                }
+                                else
+                                {
+                                    sm->stat_path(trunc_path, st, con);
+                                    if (st.size == large_size)
+                                    {
+                                        con.println("Regrow successful, size is correct.");
+
+                                        // 再拡張した領域の末尾に書き込みと読み込みを行い、アクセス可能か検証
+                                        uint8_t *buf = (uint8_t *)pmm::alloc_pages(1);
+                                        ScopeExit free_buf([&]()
+                                                           { pmm::free_pages(buf, 1); });
+                                        *(uint64_t *)buf = 0xCAFEBABE; // Test pattern
+                                        sm->write_path(trunc_path, buf, sizeof(uint64_t), large_size - sizeof(uint64_t), con);
+                                        memset(buf, 0, 4096);
+                                        if (sm->read_path(trunc_path, buf, sizeof(uint64_t), large_size - sizeof(uint64_t), con))
+                                        {
+                                            if (*(uint64_t *)buf == 0xCAFEBABE)
+                                            {
+                                                con.println("Data verification after regrow OK.");
+                                            }
+                                            else
+                                            {
+                                                con.println("ERROR: Data corruption after regrow!");
+                                            }
+                                        }
+                                        else
+                                        {
+                                            con.println("ERROR: Failed to read back data after regrow!");
+                                        }
+                                    }
+                                    else
+                                    {
+                                        con.printf("ERROR: Size after regrow is incorrect! Expected %llu, got %llu\n", large_size, st.size);
+                                    }
+                                }
+                            }
+                        }
+                        // 4. クリーンアップ
+                        sm->unlink_path(trunc_path, con);
+                        sm->rmdir_path("/test_truncate", con);
+                    }
+                    con.println("--- Truncate/Regrow Test Complete ---");
+                }
+                else
+                {
+                    con.printf("VFS: mount failed after probe/mkfs.\n");
+                }
             }
         }
     }

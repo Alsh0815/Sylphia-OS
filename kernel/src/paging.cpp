@@ -1,10 +1,11 @@
+#include "../../uefi/include/efi/base.h"
+#include "console.hpp"
 #include "paging.hpp"
 #include "pmm.hpp"
 
 struct EFIMemoryDescriptor
 {
     uint32_t Type;
-    uint32_t Pad;
     uint64_t PhysicalStart;
     uint64_t VirtualStart;
     uint64_t NumberOfPages;
@@ -15,6 +16,8 @@ namespace
 {
     constexpr uint64_t PAGE_4K = 0x1000;
     constexpr uint64_t PAGE_2M = 0x200000;
+
+    constexpr uint64_t MMIO_BOUNDARY = 64ULL * 1024 * 1024 * 1024 * 1024;
 
     constexpr uint64_t PTE_P = 1ull << 0;  // Present
     constexpr uint64_t PTE_RW = 1ull << 1; // Writable
@@ -47,6 +50,9 @@ namespace
 
     bool bump_inited = false;
 
+    alignas(PAGE_4K) uint8_t g_pre_paging_allocator_pool[PAGE_4K * 64]; // 256KiB
+    uint8_t *g_pool_ptr = nullptr;
+
     inline uint64_t align_up(uint64_t v, uint64_t a) { return (v + a - 1) & ~(a - 1); }
 
     inline uint64_t *phys_to_virt(uint64_t phys)
@@ -67,39 +73,125 @@ namespace
         return (uint64_t)(uintptr_t)p;
     }
 
+    // paging.cpp のグローバルスコープ
+    // paging.cpp
     static uint64_t *ensure_child(uint64_t *parent, uint64_t idx)
     {
-        uint64_t e = parent[idx];
-        if (e & P_PRESENT)
+        uint64_t entry = parent[idx];
+        if (entry & P_PRESENT)
         {
-            return phys_to_virt(e & ~0xFFFULL);
+            return phys_to_virt(entry & ~0xFFFULL);
         }
-        uint64_t child_phys = alloc_zero_page_phys();
-        if (!child_phys)
+
+        void *child_page = paging::alloc_page4k();
+        if (!child_page)
+        {
             return nullptr;
-        parent[idx] = child_phys | P_PRESENT | P_RW; // ←非リーフは素直にP|RW
-        return phys_to_virt(child_phys);
+        }
+
+        uint64_t child_phys = (uint64_t)(uintptr_t)child_page;
+        const uint64_t flags = P_PRESENT | P_RW | P_US | P_PWT | P_PCD;
+        parent[idx] = child_phys | flags;
+
+        return reinterpret_cast<uint64_t *>(child_page);
+    }
+
+    static uint64_t *ensure_child_with_pmm(uint64_t *parent_virt_ptr, uint64_t idx)
+    {
+        // 親テーブルのエントリを確認
+        uint64_t entry = parent_virt_ptr[idx];
+        if (entry & P_PRESENT)
+        {
+            // 既に存在する場合、エントリ内の物理アドレスを仮想アドレスに変換して返す
+            return phys_to_virt(entry & ~0xFFFULL);
+        }
+
+        // 新しいページを物理メモリから確保
+        void *child_page_phys_ptr = pmm::alloc_pages(1);
+        if (!child_page_phys_ptr)
+        {
+            return nullptr;
+        }
+
+        // ★★★ここが重要★★★
+        // 確保した物理ページにアクセスするための「仮想アドレス」ポインタを取得
+        uint64_t *child_page_virt_ptr = phys_to_virt((uint64_t)child_page_phys_ptr);
+
+        // 仮想アドレスを使ってページをゼロクリア
+        for (int i = 0; i < 512; ++i)
+        {
+            child_page_virt_ptr[i] = 0;
+        }
+
+        // 親テーブルには「物理アドレス」を書き込む
+        const uint64_t flags = P_PRESENT | P_RW | P_US;
+        parent_virt_ptr[idx] = (uint64_t)child_page_phys_ptr | flags;
+
+        // 呼び出し元（カーネル）には「仮想アドレス」を返す
+        return child_page_virt_ptr;
     }
 
     static bool init_bump_from_memmap(const BootInfo &bi)
     {
         if (!bi.mmap_ptr || !bi.mmap_size || !bi.mmap_desc_size)
             return false;
+
+        // 1. カーネルが使用している物理メモリ範囲のリストを作成
+        constexpr int kMaxKernelRanges = 16;
+        PhysRange kernel_ranges[kMaxKernelRanges];
+        int kr_count = 0;
+        if (bi.kernel_ranges_ptr && bi.kernel_ranges_cnt > 0 && bi.kernel_ranges_cnt < kMaxKernelRanges)
+        {
+            auto *kr = (const PhysRange *)(uintptr_t)bi.kernel_ranges_ptr;
+            for (uint32_t i = 0; i < bi.kernel_ranges_cnt; ++i)
+            {
+                kernel_ranges[kr_count++] = kr[i];
+            }
+        }
+
         const uint8_t *base = (const uint8_t *)(uintptr_t)bi.mmap_ptr;
         const uint32_t entries = (uint32_t)(bi.mmap_size / bi.mmap_desc_size);
+
+        // 2. メモリマップを走査し、カーネルと重ならない十分な大きさの領域を探す
         for (uint32_t i = 0; i < entries; i++)
         {
             auto *d = (const EFIMemoryDescriptor *)(base + (uint64_t)i * bi.mmap_desc_size);
-            if (d->Type == 7 /*Conventional*/ && d->NumberOfPages >= 256)
+
+            if (d->Type != EfiConventionalMemory || d->NumberOfPages < 256)
             {
-                uint64_t phys = align_up(d->PhysicalStart, PAGE_4K);
-                uint64_t bytes = d->NumberOfPages * PAGE_4K;
+                continue; // 通常メモリで1MiB以上の領域のみを対象
+            }
+
+            uint64_t region_start = d->PhysicalStart;
+            uint64_t region_end = region_start + d->NumberOfPages * 4096;
+
+            // カーネル領域との重複チェック
+            bool overlaps = false;
+            for (int k = 0; k < kr_count; ++k)
+            {
+                uint64_t kr_start = kernel_ranges[k].base;
+                uint64_t kr_end = kr_start + kernel_ranges[k].pages * 4096;
+                // 重複条件: max(start1, start2) < min(end1, end2)
+                if ((region_start > kr_start ? region_start : kr_start) < (region_end < kr_end ? region_end : kr_end))
+                {
+                    overlaps = true;
+                    break;
+                }
+            }
+
+            if (!overlaps)
+            {
+                // 重複がなく、条件を満たす最初の領域をアロケータとして使用
+                uint64_t phys = align_up(region_start, PAGE_4K);
+                uint64_t bytes = (region_end - phys);
                 bump_base = (uint8_t *)(uintptr_t)phys;
                 bump_ptr = (uint8_t *)(uintptr_t)phys;
                 bump_end = (uint8_t *)(uintptr_t)(phys + bytes);
                 return true;
             }
         }
+
+        // 適切な領域が見つからなかった
         return false;
     }
 
@@ -178,28 +270,33 @@ namespace paging
 
     void *alloc_page4k()
     {
-        if (!bump_ptr)
+        if (!g_pool_ptr)
             return nullptr;
-        if ((uint64_t)(bump_end - bump_ptr) < PAGE_4K)
+
+        uint8_t *current_ptr = g_pool_ptr;
+        uint8_t *pool_end = g_pre_paging_allocator_pool + sizeof(g_pre_paging_allocator_pool);
+
+        if (current_ptr + PAGE_4K > pool_end)
+        {
+            // プールが枯渇した
             return nullptr;
-        void *p = bump_ptr;
-        bump_ptr += PAGE_4K;
-        // クリア（必須ではないが安心）
-        uint64_t *q = (uint64_t *)p;
+        }
+
+        g_pool_ptr += PAGE_4K;
+
+        // ページをゼロクリア
+        volatile uint64_t *q = (volatile uint64_t *)current_ptr;
         for (int i = 0; i < (PAGE_4K / 8); ++i)
             q[i] = 0;
-        return p;
+
+        return current_ptr;
     }
 
     uint64_t mapped_limit() { return g_mapped_limit; }
 
     bool init_allocator(const BootInfo &bi)
     {
-        if (bump_inited && bump_ptr)
-            return true; // ★二重初期化防止
-        if (!init_bump_from_memmap(bi))
-            return false;
-        bump_inited = true;
+        g_pool_ptr = g_pre_paging_allocator_pool;
         return true;
     }
 
@@ -226,94 +323,93 @@ namespace paging
 
     uint64_t init_identity(const BootInfo &bi)
     {
+        /*
+        Framebuffer fb(bi);
+        fb.clear({10, 12, 24});
+        Painter paint(fb);
+        Console con(fb, paint); // printfデバッグ用にConsoleを一時作成
+        con.println("paging::init_identity: Entered function.");
+        */
+
         if (!init_allocator(bi))
-            return 0;
-
-        // PML4 / PDPT / PD を確保
-        uint64_t *pml4 = (uint64_t *)alloc_page4k();
-        uint64_t *pdpt = (uint64_t *)alloc_page4k();
-        if (!pml4 || !pdpt)
-            return 0;
-
-        // PML4[0] -> PDPT
-        pml4[0] = ((uint64_t)(uintptr_t)pdpt) | PTE_P | PTE_RW;
-
-        // どこまで恒等マップするか: RAM終端とフレームバッファ終端の max を採用
-        // RAM は BootServicesData/Code & Conventional を対象に（前ブランチの方針踏襲）
-        uint64_t max_phys = 0;
-        if (bi.mmap_ptr && bi.mmap_size && bi.mmap_desc_size)
         {
-            const uint8_t *base = (const uint8_t *)(uintptr_t)bi.mmap_ptr;
-            const uint32_t entries = (uint32_t)(bi.mmap_size / bi.mmap_desc_size);
+            // con.println("paging::init_identity: ERROR - init_allocator failed.");
+            return 0;
+        }
+        // con.println("paging::init_identity: Static allocator initialized.");
+
+        uint64_t *pml4 = (uint64_t *)alloc_page4k();
+        if (!pml4)
+        {
+            // con.println("paging::init_identity: ERROR - PML4 allocation failed.");
+            return 0;
+        }
+        // con.printf("paging::init_identity: PML4 allocated within static pool.\n");
+
+        uint64_t max_phys_addr = 0;
+        if (bi.mmap_ptr && bi.mmap_size > 0 && bi.mmap_desc_size > 0)
+        {
+            auto *desc_ptr = (const uint8_t *)bi.mmap_ptr;
+            const uint32_t entries = bi.mmap_size / bi.mmap_desc_size;
             for (uint32_t i = 0; i < entries; ++i)
             {
-                auto *d = (const EFIMemoryDescriptor *)(base + (uint64_t)i * bi.mmap_desc_size);
-                // ★型で絞らず、「その領域の物理終端」で常に最大を更新
-                uint64_t end = d->PhysicalStart + d->NumberOfPages * PAGE_4K;
-                if (end > max_phys)
-                    max_phys = end;
+                auto *desc = (const EFIMemoryDescriptor *)desc_ptr;
+                //con.printf("type=%u, addr=%p\n", desc->Type, desc->PhysicalStart);
+
+                if (desc->Type == EfiConventionalMemory || desc->Type == EfiBootServicesCode || desc->Type == EfiBootServicesData)
+                {
+                    if (desc->PhysicalStart >= MMIO_BOUNDARY)
+                    {
+                        desc_ptr += bi.mmap_desc_size;
+                        continue;
+                    }
+                    uint64_t end_addr = desc->PhysicalStart + (desc->NumberOfPages * 4096);
+                    if (end_addr > max_phys_addr)
+                    {
+                        max_phys_addr = end_addr;
+                    }
+                }
+                desc_ptr += bi.mmap_desc_size;
             }
         }
-
-        // GOP の終端も反映
         uint64_t fb_end = bi.fb_base + bi.fb_size;
-        if (fb_end > max_phys)
-            max_phys = fb_end;
+        if (fb_end > max_phys_addr)
+            max_phys_addr = fb_end;
+        max_phys_addr = align_up(max_phys_addr, PAGE_2M);
+        if (max_phys_addr == 0)
+            max_phys_addr = 64 * 1024 * 1024;
+        //con.printf("paging::init_identity: Max physical address to map: 0x%p\n", (void *)max_phys_addr);
 
-        // ★現在の RSP を反映
-        uint64_t cur_rsp;
-        asm volatile("mov %%rsp, %0" : "=r"(cur_rsp));
-        if (cur_rsp > max_phys)
-            max_phys = cur_rsp + (16ull << 20); // 16MiB余裕
-
-        // ★現在の RIP も反映（“今実行中のコード”が未マップだと即落ちる）
-        uint64_t cur_rip;
-        asm volatile("lea (%%rip), %0" : "=r"(cur_rip));
-        if (cur_rip > max_phys)
-            max_phys = cur_rip + (16ull << 20);
-
-        // 最低でも 64MiB
-        if (max_phys < (64ull << 20))
-            max_phys = (64ull << 20);
-
-        // 2MiBアライン
-        max_phys = align_up(max_phys, PAGE_2M);
-
-        auto align_up = [](uint64_t v, uint64_t a)
-        { return (v + a - 1) & ~(a - 1); };
-        max_phys = align_up(max_phys, PAGE_2M);
-        uint64_t gib = (1ull << 30);
-        uint32_t num_gibs = (uint32_t)((max_phys + gib - 1) / gib);
-
-        // PD を必要数だけ確保し、PDPT[gi] に繋ぐ
-        for (uint32_t gi = 0; gi < num_gibs; ++gi)
+        // con.println("paging::init_identity: Starting page table construction loop...");
+        const uint64_t pte_flags = P_PRESENT | P_RW | P_PS | P_GLOBAL;
+        for (uint64_t paddr = 0; paddr < max_phys_addr; paddr += PAGE_2M)
         {
-            uint64_t *pd = (uint64_t *)alloc_page4k();
-            if (!pd)
-                return 0;
-            pdpt[gi] = ((uint64_t)(uintptr_t)pd) | PTE_P | PTE_RW;
-
-            // このGiBの先頭物理アドレス
-            uint64_t base = (uint64_t)gi * gib;
-
-            // 2MiBページを 512 個（=1GiB）敷く
-            for (uint32_t ei = 0; ei < 512; ++ei)
+            const uint64_t va = paddr;
+            uint64_t *pdpt = ensure_child(pml4, (va >> PML4_SHIFT) & IDX_MASK);
+            if (!pdpt)
             {
-                uint64_t addr = base + (uint64_t)ei * PAGE_2M;
-                if (addr >= max_phys)
-                    break;
-                pd[ei] = addr | PTE_P | PTE_RW | PTE_PS | PTE_G;
+                // con.println("\nERROR: ensure_child for PDPT failed.");
+                return 0;
             }
+
+            uint64_t *pd = ensure_child(pdpt, (va >> PDPT_SHIFT) & IDX_MASK);
+            if (!pd)
+            {
+                // con.println("\nERROR: ensure_child for PD failed.");
+                return 0;
+            }
+
+            pd[(va >> PD_SHIFT) & IDX_MASK] = paddr | pte_flags;
         }
+        // con.println("paging::init_identity: Page table construction loop finished.");
 
-        // デバッグ用：実際にマップした終端
-        g_mapped_limit = (uint64_t)num_gibs * gib;
-
+        g_mapped_limit = max_phys_addr;
         asm volatile("cli");
-
-        // CR3 切替
+        // con.println("paging::init_identity: About to load new CR3...");
         uint64_t new_cr3 = (uint64_t)(uintptr_t)pml4;
         asm volatile("mov %0, %%cr3" ::"r"(new_cr3) : "memory");
+        // con.println("paging::init_identity: New CR3 loaded. Function will now return.");
+
         return new_cr3;
     }
 
@@ -337,12 +433,13 @@ namespace paging
             uint64_t l3i = (cur_va >> PDPT_SHIFT) & IDX_MASK;
             uint64_t l2i = (cur_va >> PD_SHIFT) & IDX_MASK;
 
-            uint64_t *pdpt = ensure_child(pml4, l4i);
+            uint64_t *pdpt = ensure_child_with_pmm(pml4, l4i);
             if (!pdpt)
                 return false;
-            uint64_t *pd = ensure_child(pdpt, l3i);
+            uint64_t *pd = ensure_child_with_pmm(pdpt, l3i);
             if (!pd)
                 return false;
+            // ▲▲▲▲▲▲
 
             // UC(非キャッシュ) + NX の 2MiB 大ページ
             uint64_t flags = P_PRESENT | P_RW | P_PWT | P_PCD | P_PS | P_NX;

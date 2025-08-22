@@ -12,6 +12,7 @@ enum class FsStatus : int32_t
     ProbeFailed = -2,
     MountFailed = -3,
     InvalidArg = -4,
+    IoError = -5,
 };
 
 // パーティション情報（4KiB 論理ブロック単位）

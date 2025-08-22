@@ -70,6 +70,26 @@ typedef struct
     UINT8 Pad2;
 } EFI_TIME;
 
+typedef enum
+{
+    EfiReservedMemoryType,
+    EfiLoaderCode,
+    EfiLoaderData,
+    EfiBootServicesCode,
+    EfiBootServicesData,
+    EfiRuntimeServicesCode,
+    EfiRuntimeServicesData,
+    EfiConventionalMemory,
+    EfiUnusableMemory,
+    EfiACPIReclaimMemory,
+    EfiACPIMemoryNVS,
+    EfiMemoryMappedIO,
+    EfiMemoryMappedIOPortSpace,
+    EfiPalCode,
+    EfiPersistentMemory,
+    EfiMaxMemoryType
+} EFI_MEMORY_TYPE;
+
 /* 小ユーティリティ */
 static inline UINTN StrLen16(const CHAR16 *s)
 {

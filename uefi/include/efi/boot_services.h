@@ -1,27 +1,6 @@
 #pragma once
 #include "base.h"
 
-/* メモリ */
-typedef enum
-{
-    EfiReservedMemoryType,
-    EfiLoaderCode,
-    EfiLoaderData,
-    EfiBootServicesCode,
-    EfiBootServicesData,
-    EfiRuntimeServicesCode,
-    EfiRuntimeServicesData,
-    EfiConventionalMemory,
-    EfiUnusableMemory,
-    EfiACPIReclaimMemory,
-    EfiACPIMemoryNVS,
-    EfiMemoryMappedIO,
-    EfiMemoryMappedIOPortSpace,
-    EfiPalCode,
-    EfiPersistentMemory,
-    EfiMaxMemoryType
-} EFI_MEMORY_TYPE;
-
 typedef enum
 {
     AllocateAnyPages = 0,
@@ -32,7 +11,6 @@ typedef enum
 typedef struct
 {
     UINT32 Type;
-    UINT32 Pad;
     UINT64 PhysicalStart;
     UINT64 VirtualStart;
     UINT64 NumberOfPages;

@@ -1,5 +1,7 @@
 #pragma once
 #include <cstdint>
+#include "../../console.hpp"
+#include "../../kernel_runtime.hpp"
 #include "block_device.hpp"
 
 // BlockDevice の 4KiB 論理空間をスライス（オフセット/長さを与えてパーティション view にする）
