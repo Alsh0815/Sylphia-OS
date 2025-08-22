@@ -67,7 +67,7 @@ public:
         newline();
     }
 
-    void print_uint(uint64_t val, int base);
+    void print_uint(uint64_t val, int base, bool zero_pad, int width);
 
     void newline()
     {
