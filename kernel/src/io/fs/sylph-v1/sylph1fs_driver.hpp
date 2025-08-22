@@ -45,10 +45,8 @@ public:
     bool read_data_block(uint64_t data_idx, void *buf4096, Console &con) const;
     bool verify_data_block_crc(uint64_t data_idx, const void *buf4096, Console &con) const;
     bool read_inode(uint64_t inode_id, sylph1fs::Inode &out, Console &con) const;
-    bool readdir_root(Console &con);
     bool readdir_dir(uint64_t dir_inode_id, Console &con);
     bool readdir_path(const char *abs_path, Console &con);
-    bool lookup_in_root(const char *name, uint64_t &inode_out, uint16_t &type_out, Console &con);
 
     bool lookup_in_dir(uint64_t dir_inode_id, const char *name, uint64_t &inode_out, uint16_t &type_out, Console &con);
     bool dir_add_entry(uint64_t parent_inode_id, const char *name, uint16_t type, uint64_t child_ino, Console &con);
@@ -67,9 +65,6 @@ public:
 
     const sylph1fs::Superblock &superblock() const { return m_sb; }
     bool read_only() const { return m_ro; }
-
-    bool test_create(const char *name, Console &con);
-    bool test_mkdir(const char *name, Console &con);
 
 private:
     BlockDevice &m_dev;
@@ -93,7 +88,6 @@ private:
     bool set_inode_bitmap(uint64_t inode_id, bool used, Console &con);
 
     bool init_dir_block(uint32_t bucket_count, uint64_t &data_idx_out, Console &con);
-    bool dir_add_entry_root(const char *name, uint16_t type, uint64_t child_ino, Console &con);
 
     bool split_parent_basename(const char *abs_path, uint64_t &parent_ino, char *base_out, size_t &base_len, Console &con);
     bool resolve_path_inode(const char *abs_path, uint64_t &inode_out, uint16_t &type_out, Console &con);
@@ -102,11 +96,6 @@ private:
     bool is_dir_empty(uint64_t dir_inode_id, Console &con);
     bool free_file_storage(sylph1fs::Inode &ino, uint64_t start_offset_to_free, Console &con);
     bool free_dir_storage(uint64_t dir_inode_id, Console &con);
-
-    bool file_block_to_data_idx(const sylph1fs::Inode &ino, uint64_t file_blk, uint64_t &data_idx_out);
-    bool append_allocate_run(sylph1fs::Inode &ino, uint32_t need_blocks, uint64_t &out_start_idx, Console &con);
-
-    bool rmw_data_block(uint64_t data_idx, size_t off_in_block, const uint8_t *src, size_t n, Console &con);
 
     bool load_all_extents(const sylph1fs::Inode &ino, PmmVec<sylph1fs::Extent> &out, Console &con);
 
