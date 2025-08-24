@@ -12,3 +12,16 @@ static inline uint32_t inl(uint16_t port)
     asm volatile("inl %1, %0" : "=a"(v) : "Nd"(port));
     return v;
 }
+
+// 8bit I/O read/write (PS/2, etc.)
+static inline void outb(uint16_t port, uint8_t val)
+{
+    asm volatile("outb %0, %1" ::"a"(val), "Nd"(port));
+}
+
+static inline uint8_t inb(uint16_t port)
+{
+    uint8_t v;
+    asm volatile("inb %1, %0" : "=a"(v) : "Nd"(port));
+    return v;
+}

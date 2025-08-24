@@ -1,11 +1,19 @@
-#include "idt.hpp"
 #include "../include/framebuffer.hpp"
-#include "painter.hpp"
+#include "graphic/window/window_manager.hpp"
 #include "console.hpp"
+#include "idt.hpp"
+#include "io.hpp"
+#include "painter.hpp"
+#include "pic.hpp"
+
+extern graphic::Window *g_mouse_cursor;
 
 namespace
 {
     static uint16_t g_cs_selector = 0;
+
+    uint8_t g_mouse_packet[3];
+    int g_mouse_packet_phase = 0;
 
     // ===== IDT エントリ/ポインタ =====
     struct __attribute__((packed)) IdtEntry
@@ -28,7 +36,6 @@ namespace
     static IdtEntry g_idt[256];
     static IdtPtr g_idtr;
 
-    // 例外ハンドラのフレーム
     struct __attribute__((packed)) InterruptFrame
     {
         uint64_t rip;
@@ -187,6 +194,105 @@ namespace
             asm volatile("hlt");
     }
 
+    // EOI(End of Interrupt)をPICに送信する
+    void notify_eoi(uint8_t irq)
+    {
+        if (irq >= 8)
+        {
+            outb(PIC1_OCW2, 0x60 | (irq & 0x07)); // スレーブには具体的なIRQ
+            outb(PIC0_OCW2, 0x62);                // マスターにはIRQ2の完了を通知
+        }
+        else
+        {
+            outb(PIC0_OCW2, 0x60 | irq); // マスターのみ
+        }
+    }
+
+    // C++側のキーボードハンドラ本体
+    void KeyboardHandler(InterruptFrame *frame)
+    {
+        uint8_t scancode = inb(0x60);
+        if (scancode < 0x80)
+        {
+            char key = SCANCODE_TO_ASCII[scancode];
+            if (key != 0x00)
+            {
+                // (ここで、文字'key'をコンソールやアクティブなウィンドウに渡す処理を呼び出す)
+                // 例: console.put_char(key);
+            }
+        }
+        notify_eoi(1);
+    }
+
+    // C++側のマウスハンドラ本体
+    void MouseHandler(InterruptFrame *frame)
+    {
+        uint8_t mouse_data = inb(0x60);
+        if (g_mouse_packet_phase == 0)
+        {
+            // 1バイト目は、3ビット目が必ず1になる
+            if ((mouse_data & 0x08) == 0)
+            {
+                // 同期がずれているのでリセット
+                notify_eoi(12);
+                return;
+            }
+            g_mouse_packet[0] = mouse_data;
+            g_mouse_packet_phase = 1;
+        }
+        else if (g_mouse_packet_phase == 1)
+        {
+            g_mouse_packet[1] = mouse_data;
+            g_mouse_packet_phase = 2;
+        }
+        else if (g_mouse_packet_phase == 2)
+        {
+            g_mouse_packet[2] = mouse_data;
+            g_mouse_packet_phase = 0; // 次のパケットに備える
+
+            // ===== 3バイト揃ったので、ここで解析処理を行う =====
+            bool left_button = (g_mouse_packet[0] & 0x01) != 0;
+            bool right_button = (g_mouse_packet[0] & 0x02) != 0;
+            int32_t delta_x = g_mouse_packet[1];
+            int32_t delta_y = g_mouse_packet[2];
+
+            // 9ビット目(符号ビット)が立っている場合は負の値として拡張
+            if ((g_mouse_packet[0] & 0x10) != 0)
+            {
+                delta_x |= 0xFFFFFF00;
+            }
+            if ((g_mouse_packet[0] & 0x20) != 0)
+            {
+                delta_y |= 0xFFFFFF00;
+            }
+
+            // Y軸の移動量は上下が逆なので符号を反転させるのが一般的
+            delta_y = -delta_y;
+
+            if (g_mouse_cursor)
+            {
+                auto &wm = graphic::WindowManager::GetInstance();
+                auto clip = g_mouse_cursor->GetWindowClip();
+                int new_x = clip.x + delta_x;
+                int new_y = clip.y + delta_y;
+                wm.MoveWindow(g_mouse_cursor, new_x, new_y);
+            }
+        }
+        notify_eoi(12);
+    }
+
+    // キーボード割り込みハンドラ (IRQ 1)
+    __attribute__((interrupt)) void isr_ps2_keyboard(InterruptFrame *frame)
+    {
+        KeyboardHandler(frame);
+    }
+
+    // マウス割り込みハンドラ (IRQ 12)
+    __attribute__((interrupt)) void isr_ps2_mouse(InterruptFrame *frame)
+    {
+        MouseHandler(frame);
+    }
+
 } // anon
 
 namespace idt
@@ -216,6 +322,9 @@ namespace idt
         g_idtr.limit = sizeof(g_idt) - 1;
         g_idtr.base = (uint64_t)&g_idt[0];
         asm volatile("lidt %0" ::"m"(g_idtr) : "memory");
+
+        set_gate(IRQ_MASTER_BASE + IRQ_KEYBOARD, (void (*)())isr_ps2_keyboard);
+        set_gate(IRQ_MASTER_BASE + IRQ_MOUSE, (void (*)())isr_ps2_mouse);
     }
 
     void enable_breakpoint(bool on)
