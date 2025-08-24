@@ -6,6 +6,7 @@
 #include "driver/pci/nvme/nvme.hpp"
 #include "driver/pci/nvme/nvme_regs.hpp"
 #include "driver/pci/pci.hpp"
+#include "driver/ps2/ps2.hpp"
 #include "graphic/window/window_manager.hpp"
 #include "graphic/window/window.hpp"
 #include "io/block/block_device.hpp"
@@ -20,10 +21,29 @@
 #include "kernel_runtime.hpp"
 #include "painter.hpp"
 #include "paging.hpp"
+#include "pic.hpp"
 #include "pmm.hpp"
 #include "console.hpp"
 
 graphic::WindowManager *WINDOW_MANAGER;
+graphic::Window *g_mouse_cursor = nullptr;
+
+int g_mouse_cursor_bitmap[15] = {
+    0b10000000,
+    0b11000000,
+    0b11100000,
+    0b11110000,
+    0b11111000,
+    0b11111100,
+    0b11111110,
+    0b11111111,
+    0b11111111,
+    0b00011000,
+    0b00011000,
+    0b00011000,
+    0b00001100,
+    0b00001100,
+    0b00001100};
 
 struct EFIMemoryDescriptor
 {
@@ -146,9 +166,9 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
     enable_nxe();
 
     // ここは「新しいスタック」上。ローカルを作り直してOK
-    Framebuffer fb(*bi);
-    Painter paint(fb);
-    Console con(fb, paint);
+    static Framebuffer fb(*bi);
+    static Painter paint(fb);
+    static Console con(fb, paint);
 
     con.clear_fullscreen();
 
@@ -215,25 +235,42 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
     WINDOW_MANAGER = &graphic::WindowManager::GetInstance();
     WINDOW_MANAGER->Init(fb, paint);
 
-    Clip window_clip = {100, 100, 300, 200};
-    graphic::Window *my_window = WINDOW_MANAGER->CreateWindow(window_clip, "Content Test");
+    // ===== マウスカーソルウィンドウの作成 =====
+    const uint32_t transparent_color = 0xFFFF00FF; // Magenta
+    Clip cursor_clip = {200, 200, 10, 15};
+    g_mouse_cursor = WINDOW_MANAGER->CreateWindow(
+        cursor_clip, "cursor",
+        graphic::WindowAttribute::NoTitleBar | graphic::WindowAttribute::Transparent,
+        graphic::FLAG_ALWAYS_ON_TOP);
 
-    if (my_window == nullptr)
+    if (g_mouse_cursor)
     {
-        con.println("ERROR: Failed to create a window.");
+        uint32_t *buf = g_mouse_cursor->GetBackBuffer();
+        auto client_rect = g_mouse_cursor->GetClientRect();
+        // バッファを透明色で塗りつぶす
+        for (uint32_t i = 0; i < client_rect.w * client_rect.h; ++i)
+        {
+            buf[i] = transparent_color;
+        }
+        // カーソルの形状（簡単な矢印）を描画
+        for (int y = 0; y < 15; ++y)
+        {
+            int bits = g_mouse_cursor_bitmap[y];
+            for (int x = 0; x < y + 1 && x < 8; ++x)
+            {
+                if (bits & (0b10000000 >> x))
+                {
+                    buf[y * client_rect.w + x] = 0xFFFFFF;
+                }
+            }
+        }
     }
-    else
-    {
-        uint32_t *back_buffer = my_window->GetBackBuffer();
-        Clip client_rect = my_window->GetClientRect();
-        Framebuffer win_fb(back_buffer, client_rect.w, client_rect.h, client_rect.w);
-        Painter win_paint(win_fb);
-        win_paint.setColors({0, 80, 255}, {200, 200, 200});
-        win_paint.drawText(10, 10, "Hello, Window!");
-        win_paint.drawText(10, 30, "This is drawn into the back buffer.");
-        win_fb.fillRect(20, 50, 100, 50, {255, 0, 0});
-        WINDOW_MANAGER->Render();
-    }
+
+    initialize_pic();
+    ps2::init();
+    asm volatile("sti");
+
+    graphic::Window *sylph_window = WINDOW_MANAGER->CreateWindow({100, 100, 200, 150}, "Hello Sylphia! v1");
 
     /*
     pci::Device nvme{};
@@ -331,6 +368,11 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
     */
 
     con.println("Fin.");
-    for (;;)
-        __asm__ __volatile__("hlt");
+    while (1)
+    {
+        asm volatile("cli");
+        WINDOW_MANAGER->Render();
+        asm volatile("sti");
+        asm volatile("hlt");
+    }
 }

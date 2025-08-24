@@ -18,10 +18,12 @@ SRCS := src/kernel.cpp \
 		src/kernel_runtime.cpp \
 		src/new_delete.cpp \
 		src/paging.cpp \
+		src/pic.cpp \
 		src/pmm.cpp \
 		src/test.cpp \
 		src/driver/pci/pci.cpp \
 		src/driver/pci/nvme/nvme.cpp \
+		src/driver/ps2/ps2.cpp \
 		src/graphic/window/window_manager.cpp \
 		src/graphic/window/window.cpp \
 		src/io/block/block_registry.cpp \

@@ -28,7 +28,12 @@ namespace graphic
             return instance;
         }
         void Init(Framebuffer &fb, Painter &painter);
-        Window* CreateWindow(Clip clip, const char *title, uint8_t flags = 0b00000000);
+        Window *CreateWindow(
+            Clip clip, const char *title,
+            graphic::WindowAttribute attributes = graphic::WindowAttribute::None,
+            uint8_t flags = 0b00000000);
+        Clip GetScreenClip();
+        void MoveWindow(Window *win, int x, int y);
         void Render();
 
         WindowManager(const WindowManager &) = delete;
@@ -39,6 +44,8 @@ namespace graphic
     private:
         WindowManager() {}
         ~WindowManager() = default;
+
+        void draw_window(Window *win);
 
         Framebuffer *_framebuffer = nullptr;
         Painter *_painter = nullptr;
