@@ -22,6 +22,8 @@ SRCS := src/kernel.cpp \
 		src/test.cpp \
 		src/driver/pci/pci.cpp \
 		src/driver/pci/nvme/nvme.cpp \
+		src/graphic/window/window_manager.cpp \
+		src/graphic/window/window.cpp \
 		src/io/block/block_registry.cpp \
 		src/io/block/nvme_block_device.cpp \
 		src/io/fs/vfs.cpp \

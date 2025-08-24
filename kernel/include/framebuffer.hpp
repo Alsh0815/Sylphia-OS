@@ -18,6 +18,11 @@ public:
     Framebuffer(const BootInfo &bi)
         : base_(reinterpret_cast<volatile uint32_t *>((uintptr_t)bi.fb_base)),
           w_(bi.width), h_(bi.height), pitch_(bi.pitch), bgr_(bi.pixel_format != 0) {}
+    Framebuffer(volatile uint32_t *base, uint32_t w, uint32_t h, uint32_t pitch)
+        : base_(base), w_(w), h_(h), pitch_(pitch), bgr_(false)
+    {
+        resetClip();
+    }
 
     uint32_t width() const { return w_; }
     uint32_t height() const { return h_; }
@@ -48,6 +53,13 @@ public:
         if (!insideClip(x, y))
             return;
         base_[y * pitch_ + x] = pack(c);
+    }
+
+    void putPixel(uint32_t x, uint32_t y, uint32_t packed_color)
+    {
+        if (!insideClip(x, y))
+            return;
+        base_[y * pitch_ + x] = packed_color;
     }
 
     // 1行分を上にスクロール（dest_y ← src_y）
