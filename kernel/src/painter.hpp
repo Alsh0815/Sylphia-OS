@@ -52,7 +52,16 @@ public:
         }
     }
 
-    // Painter に追加
+    void drawText(uint32_t x, uint32_t y, const char *s)
+    {
+        while (*s)
+        {
+            drawCharRaw(x, y, *s);
+            x += kAdv;
+            s++;
+        }
+    }
+
     void drawTextWithBg(uint32_t x, uint32_t y, const char *s, Color fg, Color bg)
     {
         // 幅を先に数える（改行なし想定の簡易版）

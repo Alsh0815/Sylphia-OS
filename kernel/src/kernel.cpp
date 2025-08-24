@@ -6,6 +6,8 @@
 #include "driver/pci/nvme/nvme.hpp"
 #include "driver/pci/nvme/nvme_regs.hpp"
 #include "driver/pci/pci.hpp"
+#include "graphic/window/window_manager.hpp"
+#include "graphic/window/window.hpp"
 #include "io/block/block_device.hpp"
 #include "io/block/block_registry.hpp"
 #include "io/block/block_slice.hpp"
@@ -20,6 +22,8 @@
 #include "paging.hpp"
 #include "pmm.hpp"
 #include "console.hpp"
+
+graphic::WindowManager *WINDOW_MANAGER;
 
 struct EFIMemoryDescriptor
 {
@@ -208,6 +212,30 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
         con.println("Heap init failed.");
     }
 
+    WINDOW_MANAGER = &graphic::WindowManager::GetInstance();
+    WINDOW_MANAGER->Init(fb, paint);
+
+    Clip window_clip = {100, 100, 300, 200};
+    graphic::Window *my_window = WINDOW_MANAGER->CreateWindow(window_clip, "Content Test");
+
+    if (my_window == nullptr)
+    {
+        con.println("ERROR: Failed to create a window.");
+    }
+    else
+    {
+        uint32_t *back_buffer = my_window->GetBackBuffer();
+        Clip client_rect = my_window->GetClientRect();
+        Framebuffer win_fb(back_buffer, client_rect.w, client_rect.h, client_rect.w);
+        Painter win_paint(win_fb);
+        win_paint.setColors({0, 80, 255}, {200, 200, 200});
+        win_paint.drawText(10, 10, "Hello, Window!");
+        win_paint.drawText(10, 30, "This is drawn into the back buffer.");
+        win_fb.fillRect(20, 50, 100, 50, {255, 0, 0});
+        WINDOW_MANAGER->Render();
+    }
+
+    /*
     pci::Device nvme{};
     if (pci::scan_nvme(con, nvme))
     {
@@ -225,17 +253,6 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
         uint32_t vs = r->VS;
         con.printf("NVMe CAP@lowVA=%x VS=%x\n",
                    (unsigned long long)cap, vs);
-
-        /*
-        if (!nvme::init((void *)(uintptr_t)TEST_VA, con))
-        {
-            con.println("NVMe init failed.");
-        }
-        if (!nvme::create_io_queues(con, 64))
-        {
-            con.println("Create NVMe I/O queues failed.");
-        }
-        */
 
         if (!nvme::init_and_create_queues((void *)(uintptr_t)TEST_VA, con, 64))
         {
@@ -311,6 +328,7 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
     {
         con.println("NVMe not present.");
     }
+    */
 
     con.println("Fin.");
     for (;;)

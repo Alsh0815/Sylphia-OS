@@ -1,5 +1,6 @@
 #pragma once
 
+#include "kernel_runtime.hpp"
 #include "pmm.hpp"
 
 // ---- PMM ベースの最小限 vector 風コンテナ（例外なし・再配置あり） ----
