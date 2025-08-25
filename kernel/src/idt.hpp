@@ -152,6 +152,9 @@ namespace idt
     const uint8_t IRQ_KEYBOARD = 1;
     const uint8_t IRQ_MOUSE = 12;
 
+    const uint8_t VEC_APIC = 0x40;
+    const uint8_t VEC_MOUSE = 0x2C;
+
     void init(const BootInfo *bi); // IDT構築 & lidt
 
     void enable_breakpoint(bool on); // 必要なら int3 を使うときだけ

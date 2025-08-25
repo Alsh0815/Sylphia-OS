@@ -15,6 +15,8 @@
 #include "io/fs/sylph-v1/sylph1fs_driver.hpp"
 #include "io/fs/vfs.hpp"
 #include "io/partitions/gpt.hpp"
+#include "task/scheduler.hpp"
+#include "apic.hpp"
 #include "gdt.hpp"
 #include "heap.hpp"
 #include "idt.hpp"
@@ -64,6 +66,30 @@ static inline void bzero(void *p, size_t n)
 extern bool nvme_selftest_write(Console &con, uint32_t nsid, uint64_t base_slba);
 extern bool nvme_test_flush_quirk(Console &con, uint32_t nsid, uint64_t base_slba);
 extern bool nvme_test_read_then_flush(Console &con, uint32_t nsid, uint64_t base_slba);
+
+Console *g_console;
+
+// タスクA: 画面に 'A' を表示し続ける
+void TaskA()
+{
+    while (true)
+    {
+        g_console->print("A");
+        for (volatile int i = 0; i < 10000000; ++i)
+            ; // 適当なウェイト
+    }
+}
+
+// タスクB: 画面に 'B' を表示し続ける
+void TaskB()
+{
+    while (true)
+    {
+        g_console->print("B");
+        for (volatile int i = 0; i < 10000000; ++i)
+            ; // 適当なウェイト
+    }
+}
 
 extern "C" __attribute__((sysv_abi)) void kernel_main(BootInfo *bi)
 {
@@ -266,9 +292,22 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
         }
     }
 
+    g_console = &con;
+
+    auto &scheduler = Scheduler::GetInstance();
+
     initialize_pic();
+    initialize_apic();
+    initialize_ioapic();
     ps2::init();
     asm volatile("sti");
+
+    Task *task_a = new Task(1, reinterpret_cast<uint64_t>(TaskA));
+    scheduler.AddTask(task_a);
+    Task *task_b = new Task(2, reinterpret_cast<uint64_t>(TaskB));
+    scheduler.AddTask(task_b);
+
+    scheduler.Start();
 
     graphic::Window *sylph_window = WINDOW_MANAGER->CreateWindow({100, 100, 200, 150}, "Hello Sylphia! v1");
 
@@ -370,9 +409,6 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
     con.println("Fin.");
     while (1)
     {
-        asm volatile("cli");
-        WINDOW_MANAGER->Render();
-        asm volatile("sti");
         asm volatile("hlt");
     }
 }

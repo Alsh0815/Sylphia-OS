@@ -11,6 +11,7 @@ LDFLAGS  := -nostdlib -T linker.ld
 
 SRCS := src/kernel.cpp \
 		src/__cxa.cpp \
+		src/apic.cpp \
 		src/console.cpp \
 		src/gdt.cpp \
 		src/heap.cpp \
@@ -31,7 +32,9 @@ SRCS := src/kernel.cpp \
 		src/io/fs/vfs.cpp \
 		src/io/fs/sylph-v1/sylph1fs_driver.cpp \
 		src/io/fs/sylph-v1/sylph1fs.cpp \
-		src/io/partitions/gpt.cpp
+		src/io/partitions/gpt.cpp \
+		src/task/scheduler.cpp \
+		src/task/task.cpp
 OBJS := $(SRCS:.cpp=.o)
 
 all: $(OUTBIN)
