@@ -35,12 +35,34 @@ public:
         return true;
     }
 
+    T *erase(T *pos)
+    {
+        if (pos < begin() || pos >= end())
+        {
+            return pos;
+        }
+
+        T *next_elem = pos + 1;
+        if (next_elem < end())
+        {
+            size_t num_to_move = end() - next_elem;
+            memmove(pos, next_elem, num_to_move * sizeof(T));
+        }
+
+        _size--;
+        return pos;
+    }
+
     void clear() { _size = 0; }
     size_t size() const { return _size; }
     bool empty() const { return _size == 0; }
 
     T &operator[](size_t i) { return _ptr[i]; }
     const T &operator[](size_t i) const { return _ptr[i]; }
+
+    T &front() { return _ptr[0]; }
+    const T &front() const { return _ptr[0]; }
+
     T &back() { return _ptr[_size - 1]; }
     const T &back() const { return _ptr[_size - 1]; }
 

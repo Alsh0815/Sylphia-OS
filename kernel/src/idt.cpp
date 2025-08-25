@@ -1,5 +1,7 @@
 #include "../include/framebuffer.hpp"
 #include "graphic/window/window_manager.hpp"
+#include "task/scheduler.hpp"
+#include "apic.hpp"
 #include "console.hpp"
 #include "idt.hpp"
 #include "io.hpp"
@@ -234,7 +236,7 @@ namespace
             if ((mouse_data & 0x08) == 0)
             {
                 // 同期がずれているのでリセット
-                notify_eoi(12);
+                apic_eoi();
                 return;
             }
             g_mouse_packet[0] = mouse_data;
@@ -278,7 +280,7 @@ namespace
                 wm.MoveWindow(g_mouse_cursor, new_x, new_y);
             }
         }
-        notify_eoi(12);
+        apic_eoi();
     }
 
     // キーボード割り込みハンドラ (IRQ 1)
@@ -291,6 +293,33 @@ namespace
     __attribute__((interrupt)) void isr_ps2_mouse(InterruptFrame *frame)
     {
         MouseHandler(frame);
+    }
+
+    __attribute__((interrupt)) void apic_timer_handler(InterruptFrame *frame)
+    {
+        apic_eoi();
+        Scheduler &scheduler = Scheduler::GetInstance();
+
+        // 1. 現在実行中のタスクの、本来のコンテキスト保存領域を取得
+        Task *current_task = scheduler.GetRunningTask();
+        Context *current_ctx = current_task->GetContext();
+
+        // 2. ハードウェアが保存したレジスタを、コンテキスト領域に手動で保存する
+        //    (これにより、rip, rflags, rspが失われない)
+        current_ctx->rip = frame->rip;
+        current_ctx->rflags = frame->rflags;
+        current_ctx->rsp = frame->rsp;
+
+        // 3. 次に実行するタスクを選択させる (running_task_が内部で切り替わる)
+        scheduler.Schedule();
+
+        // 4. 新しく実行するタスクのコンテキストを取得
+        Task *next_task = scheduler.GetRunningTask();
+        Context *next_ctx = next_task->GetContext();
+
+        // 5. コンテキストスイッチを実行
+        //    (汎用レジスタは、この関数の中で保存・復元される)
+        switch_context(next_ctx, current_ctx);
     }
 
 } // anon
@@ -323,8 +352,10 @@ namespace idt
         g_idtr.base = (uint64_t)&g_idt[0];
         asm volatile("lidt %0" ::"m"(g_idtr) : "memory");
 
-        set_gate(IRQ_MASTER_BASE + IRQ_KEYBOARD, (void (*)())isr_ps2_keyboard);
-        set_gate(IRQ_MASTER_BASE + IRQ_MOUSE, (void (*)())isr_ps2_mouse);
+        set_gate(0x21, (void (*)())isr_ps2_keyboard); // PS/2キーボード (IRQ 1)
+        set_gate(0x2C, (void (*)())isr_ps2_mouse);
+
+        set_gate(VEC_APIC, (void (*)())apic_timer_handler);
     }
 
     void enable_breakpoint(bool on)

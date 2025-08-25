@@ -28,3 +28,10 @@ void initialize_pic()
     outb(PIC0_IMR, 0b11111001); // IRQ1(キーボード)とIRQ2(スレーブ接続用)を有効化
     outb(PIC1_IMR, 0b11101111); // IRQ12(マウス)を有効化
 }
+
+void disable_pic()
+{
+    // IMR (Interrupt Mask Register) に全て1を書き込むと全割り込みがマスクされる
+    outb(PIC0_IMR, 0xff);
+    outb(PIC1_IMR, 0xff);
+}
