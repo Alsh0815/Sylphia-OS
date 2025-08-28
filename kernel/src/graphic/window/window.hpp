@@ -36,7 +36,7 @@ namespace graphic
     private:
         void update_client_rect();
 
-        Clip _window_clip;
+        alignas(16) Clip _window_clip;
         Clip _client_rect;
         uint32_t *_back_buffer;
 

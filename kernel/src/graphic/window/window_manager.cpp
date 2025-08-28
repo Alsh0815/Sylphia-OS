@@ -11,6 +11,11 @@ graphic::Window *graphic::WindowManager::CreateWindow(Clip clip, const char *tit
 {
     Window *win = new Window(clip, title, attributes);
 
+    if (win == nullptr)
+    {
+        return nullptr;
+    }
+
     if (win->GetBackBuffer() == nullptr)
     {
         delete win;
@@ -109,7 +114,6 @@ void graphic::WindowManager::Render()
 {
     if (!_framebuffer || !_painter)
         return;
-
     _framebuffer->clear({50, 60, 80});
 
     // 通常のウィンドウを描画

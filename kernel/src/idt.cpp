@@ -308,6 +308,8 @@ namespace
         //    (これにより、rip, rflags, rspが失われない)
         current_ctx->rip = frame->rip;
         current_ctx->rflags = frame->rflags;
+        current_ctx->cs = frame->cs;
+        current_ctx->ss = frame->ss;
         current_ctx->rsp = frame->rsp;
 
         // 3. 次に実行するタスクを選択させる (running_task_が内部で切り替わる)
@@ -315,6 +317,7 @@ namespace
 
         // 4. 新しく実行するタスクのコンテキストを取得
         Task *next_task = scheduler.GetRunningTask();
+        bool is_first = next_task->GetFirstFlag();
         Context *next_ctx = next_task->GetContext();
 
         // 5. コンテキストスイッチを実行

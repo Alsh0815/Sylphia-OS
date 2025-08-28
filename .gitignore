@@ -15,6 +15,7 @@ vfat/EFI/BOOT/BOOTX64.EFI
 vfat/test.txt
 *.bin
 *.code-workspace
+*.dump
 *.elf
 *.o
 *.obj

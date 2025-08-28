@@ -12,22 +12,28 @@ enum class TaskState
 
 using TaskId = uint64_t;
 
-class Task
+class alignas(16) Task
 {
 public:
+    void *operator new(size_t size);
+    void operator delete(void *ptr);
+
     Task(TaskId id, uint64_t entry_point);
     ~Task();
 
     TaskId GetId() const { return id_; }
     TaskState GetState() const { return state_; }
-    Context *GetContext() { return context_; }
+    Context *GetContext() { return &context_; }
+    bool GetFirstFlag() { return first_; }
 
+    void SetFirstFlagFalse() { first_ = false; }
     void SetState(TaskState state) { state_ = state; }
 
 private:
     TaskId id_;
     TaskState state_;
-
-    uint64_t *kernel_stack_; // このタスク用のカーネルスタック
-    Context *context_;       // スタックの最上部に配置されるコンテキスト
+    bool first_ = true;
+    
+    uint8_t *raw_stack_buffer_;
+    Context context_;
 };

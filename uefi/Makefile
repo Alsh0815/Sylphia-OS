@@ -14,7 +14,7 @@ CC := clang
 LD := lld-link
 
 CFLAGS := -target x86_64-pc-win32-coff -ffreestanding -fno-stack-protector \
-          -fshort-wchar -mno-red-zone -Wall -Wextra \
+          -fshort-wchar -mno-red-zone -mstackrealign -Wall -Wextra \
           -Iinclude -fno-builtin
 LDFLAGS := /subsystem:efi_application /nodefaultlib /entry:EfiMain /machine:x64
 

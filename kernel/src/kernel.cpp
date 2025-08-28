@@ -63,9 +63,29 @@ static inline void bzero(void *p, size_t n)
         q[i] = 0;
 }
 
-extern bool nvme_selftest_write(Console &con, uint32_t nsid, uint64_t base_slba);
-extern bool nvme_test_flush_quirk(Console &con, uint32_t nsid, uint64_t base_slba);
-extern bool nvme_test_read_then_flush(Console &con, uint32_t nsid, uint64_t base_slba);
+class Spinlock
+{
+public:
+    void lock()
+    {
+        // __atomic_test_and_setは、アトミックにフラグを立て、以前の値を返す
+        // lockedがfalse(0)の場合、true(1)をセットしてループを抜ける
+        // lockedがtrue(1)の場合、true(1)を返し続け、ループで待機する
+        while (__atomic_test_and_set(&_locked, __ATOMIC_ACQUIRE))
+            ;
+    }
+
+    void unlock()
+    {
+        // アトミックにフラグをクリアする
+        __atomic_clear(&_locked, __ATOMIC_RELEASE);
+    }
+
+private:
+    volatile bool _locked = false;
+};
+
+Spinlock g_graphics_lock;
 
 Console *g_console;
 
@@ -74,7 +94,11 @@ void TaskA()
 {
     while (true)
     {
+        // ▼▼▼ 描画処理をロックで保護 ▼▼▼
+        g_graphics_lock.lock();
         g_console->print("A");
+        g_graphics_lock.unlock();
+        // ▲▲▲ ここまで修正 ▲▲▲
         for (volatile int i = 0; i < 10000000; ++i)
             ; // 適当なウェイト
     }
@@ -85,9 +109,49 @@ void TaskB()
 {
     while (true)
     {
+        // ▼▼▼ 描画処理をロックで保護 ▼▼▼
+        g_graphics_lock.lock();
         g_console->print("B");
+        g_graphics_lock.unlock();
+        // ▲▲▲ ここまで修正 ▲▲▲
         for (volatile int i = 0; i < 10000000; ++i)
             ; // 適当なウェイト
+    }
+}
+
+void TaskRender()
+{
+    while (true)
+    {
+        asm volatile("cli");
+        g_graphics_lock.lock();
+        WINDOW_MANAGER->Render();
+        g_graphics_lock.unlock();
+        asm volatile("sti");
+    }
+}
+
+void TaskHlt()
+{
+    while (true)
+    {
+        asm volatile("hlt");
+    }
+}
+
+graphic::Window *EVENT_WINDOW;
+
+void TaskEventWindow()
+{
+    uint64_t i = 0;
+    while (true)
+    {
+        asm volatile("cli");
+        g_graphics_lock.lock();
+        WINDOW_MANAGER->MoveWindow(EVENT_WINDOW, i % 312, i % 256);
+        g_graphics_lock.unlock();
+        asm volatile("sti");
+        i++;
     }
 }
 
@@ -190,6 +254,18 @@ static inline void enable_nxe()
 extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
 {
     enable_nxe();
+
+    // CPUにOSがSSE命令セットの保存・復元をサポートすることを通知する
+    uint64_t cr4;
+    asm volatile("mov %%cr4, %0" : "=r"(cr4));
+    cr4 |= (1ULL << 9); // OSFXSRビットをセット
+    asm volatile("mov %0, %%cr4" ::"r"(cr4));
+
+    // FPU/SSE命令が例外を発生させないように設定
+    uint64_t cr0;
+    asm volatile("mov %%cr0, %0" : "=r"(cr0));
+    cr0 &= ~(1ULL << 3); // TS (Task Switched) ビットをクリア
+    asm volatile("mov %0, %%cr0" ::"r"(cr0));
 
     // ここは「新しいスタック」上。ローカルを作り直してOK
     static Framebuffer fb(*bi);
@@ -302,14 +378,15 @@ extern "C" __attribute__((sysv_abi)) void kernel_after_stack(BootInfo *bi)
     ps2::init();
     asm volatile("sti");
 
-    Task *task_a = new Task(1, reinterpret_cast<uint64_t>(TaskA));
-    scheduler.AddTask(task_a);
-    Task *task_b = new Task(2, reinterpret_cast<uint64_t>(TaskB));
-    scheduler.AddTask(task_b);
+    graphic::Window *test_window = WINDOW_MANAGER->CreateWindow({200, 300, 200, 120}, "Test 0");
+    EVENT_WINDOW = WINDOW_MANAGER->CreateWindow({100, 100, 200, 150}, "Event Window");
+
+    Task *render_task = new Task(1, reinterpret_cast<uint64_t>(TaskRender));
+    scheduler.AddTask(render_task);
+    Task *event_window_task = new Task(2, reinterpret_cast<uint64_t>(TaskEventWindow));
+    scheduler.AddTask(event_window_task);
 
     scheduler.Start();
-
-    graphic::Window *sylph_window = WINDOW_MANAGER->CreateWindow({100, 100, 200, 150}, "Hello Sylphia! v1");
 
     /*
     pci::Device nvme{};

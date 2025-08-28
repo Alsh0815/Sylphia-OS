@@ -5,6 +5,7 @@ qemu-system-x86_64 \
   -cpu max \
   -m 2G \
   -monitor stdio \
+  -d int -no-reboot \
   -drive if=pflash,format=raw,readonly=on,file=./../devenv/OVMF_CODE.fd \
   -drive if=pflash,format=raw,file=./../devenv/OVMF_VARS.fd \
   -drive format=raw,file=fat:rw:../vfat \

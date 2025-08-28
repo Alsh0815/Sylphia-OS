@@ -4,14 +4,9 @@
 // x86-64アーキテクチャのレジスタセット
 struct alignas(16) Context
 {
-    uint64_t cr3; // ページテーブルベース (将来のRing3対応のため)
-    uint64_t r15;
-    uint64_t r14;
-    uint64_t r13;
-    uint64_t r12;
-    uint64_t rbp;
-    uint64_t rbx;
-    uint64_t rip;    // 命令ポインタ (スイッチ時にスタックに積まれる)
-    uint64_t rflags; // フラグレジスタ
-    uint64_t rsp;    // スタックポインタ (将来のユーザーモード用に)
+    uint64_t cr3, rip, rflags, reserved1;            // offset 0
+    uint64_t cs, ss, fs, gs;                         // offset 32
+    uint64_t rax, rbx, rcx, rdx, rdi, rsi, rsp, rbp; // offset 64
+    uint64_t r8, r9, r10, r11, r12, r13, r14, r15;   // offset 128
+    char fxsave_area[512];                           // offset 192
 };
