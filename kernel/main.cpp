@@ -1,5 +1,7 @@
 #include <stdint.h>
 
+#include "driver/nvme/nvme_driver.hpp"
+#include "driver/nvme/nvme_reg.hpp"
 #include "memory/memory_manager.hpp"
 #include "memory/memory.hpp"
 #include "pci/pci.hpp"
@@ -65,43 +67,101 @@ __attribute__((interrupt)) void KeyboardHandler(InterruptFrame *frame)
 extern "C" __attribute__((ms_abi)) void KernelMain(const FrameBufferConfig &config, const MemoryMap &memmap)
 {
     __asm__ volatile("cli");
-    const uint32_t kDesktopBG = 0xFF454545;
+    const uint32_t kDesktopBG = 0xFF282828;
     FillRectangle(config, 0, 0, config.HorizontalResolution, config.VerticalResolution, kDesktopBG);
 
     static Console console(config, 0xFFFFFFFF, kDesktopBG);
     g_console = &console;
 
-    kprintf("Sylphia-OS Kernel v0.5\n");
+    kprintf("Sylphia-OS Kernel v0.5.2\n");
     kprintf("----------------------\n");
 
     SetupSegments();
     SetupInterrupts();
     DisablePIC();
 
-    // ■ メモリマップの確認 ■
-    kprintf("Checking Memory Map...\n");
-    kprintf("Map Base: %x, Size: %d bytes, DescSize: %d\n",
-            memmap.buffer, memmap.map_size, memmap.descriptor_size);
-    uintptr_t iter = reinterpret_cast<uintptr_t>(memmap.buffer);
-    for (unsigned int i = 0; i < memmap.map_size / memmap.descriptor_size; ++i)
-    {
-        auto *desc = reinterpret_cast<const MemoryDescriptor *>(iter);
-        if (static_cast<MemoryType>(desc->type) == MemoryType::kEfiConventionalMemory)
-        {
-            if (desc->number_of_pages > 256)
-            {
-                kprintf("FREE: Addr=%x, Pages=%d\n", desc->physical_start, desc->number_of_pages);
-            }
-        }
-
-        iter += memmap.descriptor_size;
-    }
-
     MemoryManager::Initialize(memmap);
     kprintf("Memory Manager Initialized.\n");
 
-    PCI::ScanAllBus();
-    
+    kprintf("Searching for NVMe Controller...\n");
+
+    // PCIバスを探索してNVMeを探す (簡易実装)
+    PCI::Device *nvme_dev = nullptr;
+    PCI::Device found_dev; // コピー用
+
+    for (int bus = 0; bus < 256; ++bus)
+    {
+        for (int dev = 0; dev < 32; ++dev)
+        {
+            for (int func = 0; func < 8; ++func)
+            {
+                PCI::Device d = {static_cast<uint8_t>(bus), static_cast<uint8_t>(dev), static_cast<uint8_t>(func)};
+                uint16_t vendor = PCI::ReadConfReg(d, 0x00) & 0xFFFF;
+
+                if (vendor == 0xFFFF)
+                    continue;
+
+                // クラスコード取得
+                uint32_t reg8 = PCI::ReadConfReg(d, 0x08);
+                uint8_t base = (reg8 >> 24) & 0xFF;
+                uint8_t sub = (reg8 >> 16) & 0xFF;
+
+                // Base=0x01 (Mass Storage), Sub=0x08 (Non-Volatile)
+                if (base == 0x01 && sub == 0x08)
+                {
+                    kprintf("Found NVMe at %d:%d.%d\n", bus, dev, func);
+                    found_dev = d;
+                    nvme_dev = &found_dev;
+                    goto nvme_found; // 見つかったらループを抜ける
+                }
+            }
+        }
+    }
+
+nvme_found:
+    if (nvme_dev)
+    {
+        uintptr_t bar0 = PCI::ReadBar0(*nvme_dev);
+        kprintf("NVMe BAR0 Address: %lx\n", bar0);
+        static NVMe::Driver driver(bar0);
+        driver.Initialize();
+        driver.IdentifyController();
+        driver.CreateIOQueues();
+
+        char *write_buf = new char[512];
+        char *read_buf = new char[512];
+
+        // 書き込みデータ作成
+        const char *msg = "Hello, NVMe World! This is written by Sylphia-OS.";
+        // strcpy的な処理
+        for (int i = 0; i < 512; ++i)
+            write_buf[i] = 0;
+        for (int i = 0; msg[i]; ++i)
+            write_buf[i] = msg[i];
+
+        // 1. 書き込み (LBA 0)
+        kprintf("[NVMe] Writing to LBA 0...\n");
+        driver.Write(0, write_buf, 1);
+
+        // 2. 読み込み (LBA 0)
+        kprintf("[NVMe] Reading from LBA 0...\n");
+        driver.Read(0, read_buf, 1);
+
+        // 3. 検証
+        kprintf("[NVMe] Data: %s\n", read_buf);
+
+        // 念のためダンプ
+        for (int i = 0; i < 16; ++i)
+            kprintf("%x ", (unsigned char)read_buf[i]);
+        kprintf("\n");
+        delete[] write_buf;
+        delete[] read_buf;
+    }
+    else
+    {
+        kprintf("NVMe Controller not found.\n");
+    }
+
     static Shell shell;
     g_shell = &shell;
 

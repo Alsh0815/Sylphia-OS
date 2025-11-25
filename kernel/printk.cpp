@@ -67,30 +67,59 @@ extern "C" int kprintf(const char *format, ...)
 
         if (*format == '%')
         {
-            format++; // '%' の次の文字へ
+            format++;
+
+            // サイズ修飾子の解析 (l, ll)
+            int long_mode = 0; // 0:int, 1:long, 2:long long
+            if (*format == 'l')
+            {
+                long_mode = 1;
+                format++;
+                if (*format == 'l')
+                {
+                    long_mode = 2;
+                    format++;
+                }
+            }
+
             switch (*format)
             {
-            case 'd': // 整数 (int)
+            case 'd':
             {
-                int val = va_arg(args, int);
+                // 64bit対応
+                long long val;
+                if (long_mode > 0)
+                    val = va_arg(args, long long);
+                else
+                    val = va_arg(args, int);
+
                 itoa(val, num_buf, 10);
                 for (char *p = num_buf; *p; p++)
                     buffer[buf_idx++] = *p;
                 break;
             }
-            case 'x': // 16進数 (int)
-            {
-                int val = va_arg(args, int); // unsigned intとして扱うべきだが簡易的に
-                // 0x を付ける
+            case 'x':
+            case 'p':
+            { // %p も 16進数扱いで処理
                 buffer[buf_idx++] = '0';
                 buffer[buf_idx++] = 'x';
-                // 符号なしとして扱うためキャスト
-                itoa((unsigned int)val, num_buf, 16);
+
+                unsigned long long val;
+                if (long_mode > 0 || *format == 'p')
+                {
+                    val = va_arg(args, unsigned long long); // ポインタは64bit
+                }
+                else
+                {
+                    val = va_arg(args, unsigned int);
+                }
+
+                itoa(val, num_buf, 16);
                 for (char *p = num_buf; *p; p++)
                     buffer[buf_idx++] = *p;
                 break;
             }
-            case 's': // 文字列
+            case 's':
             {
                 const char *s = va_arg(args, const char *);
                 if (!s)
@@ -99,17 +128,17 @@ extern "C" int kprintf(const char *format, ...)
                     buffer[buf_idx++] = *s++;
                 break;
             }
-            case 'c': // 文字
+            case 'c':
             {
-                // varargsではcharはintに昇格される
                 char c = (char)va_arg(args, int);
                 buffer[buf_idx++] = c;
                 break;
             }
-            case '%': // %% -> %
+            case '%':
                 buffer[buf_idx++] = '%';
                 break;
-            default: // 非対応のフォーマットはそのまま出す
+            default:
+                // 非対応フォーマット
                 buffer[buf_idx++] = '%';
                 buffer[buf_idx++] = *format;
                 break;
@@ -117,7 +146,6 @@ extern "C" int kprintf(const char *format, ...)
         }
         else
         {
-            // 普通の文字
             buffer[buf_idx++] = *format;
         }
         format++;

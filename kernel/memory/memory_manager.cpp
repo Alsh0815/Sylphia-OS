@@ -36,15 +36,13 @@ void MemoryManager::Initialize(const MemoryMap &memmap)
     current_pos_ = heap_start_;
 }
 
-void *MemoryManager::Allocate(size_t size)
+void *MemoryManager::Allocate(size_t size, size_t alignment)
 {
-    // 16バイト境界にアライメントする (CPUの最適化のため)
-    const int alignment = 16;
     current_pos_ = (current_pos_ + alignment - 1) & ~(alignment - 1);
 
     if (current_pos_ + size > heap_end_)
     {
-        return nullptr; // Out of Memory
+        return nullptr; // Out of memory
     }
 
     void *ptr = reinterpret_cast<void *>(current_pos_);

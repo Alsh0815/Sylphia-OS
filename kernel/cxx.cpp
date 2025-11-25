@@ -1,19 +1,16 @@
+#include <stddef.h>
 #include <stdint.h>
 
 extern "C"
 {
-    // 1. 純粋仮想関数エラー (virtual function call error)
-    // 実装がない仮想関数を呼び出した時にコンパイラがここを呼ぶ
+    // 純粋仮想関数エラー (virtual function call error)
     void __cxa_pure_virtual()
     {
         while (1)
             __asm__ volatile("hlt");
     }
 
-    // 2. static変数の初期化ガード (今回のエラーの原因)
-    // static変数が「1回だけ」初期化されることを保証する仕組み。
-    // 本来はマルチスレッド排他制御が必要だが、シングルスレッドOSならフラグ管理だけでOK。
-
+    // static変数の初期化ガード (今回のエラーの原因)
     int __cxa_guard_acquire(long long *guard)
     {
         // guardの指す値が0なら「まだ初期化されていない」ので1を返す(初期化権限を取得)
@@ -33,12 +30,28 @@ extern "C"
         // 初期化中に例外が出た場合など (今回は何もしない)
     }
 
-    // 3. グローバル/staticオブジェクトのデストラクタ登録
-    // OS終了時に呼ばれるものだが、OSは終了しないので何もしないでOK
+    // グローバル/staticオブジェクトのデストラクタ登録
     void *__dso_handle = 0;
 
     int __cxa_atexit(void (*destructor)(void *), void *arg, void *dso)
     {
         return 0; // 成功したふりをする
+    }
+
+    void *memcpy(void *dest, const void *src, size_t n)
+    {
+        char *d = (char *)dest;
+        const char *s = (const char *)src;
+        while (n--)
+            *d++ = *s++;
+        return dest;
+    }
+
+    void *memset(void *s, int c, size_t n)
+    {
+        unsigned char *p = (unsigned char *)s;
+        while (n--)
+            *p++ = (unsigned char)c;
+        return s;
     }
 }

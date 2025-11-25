@@ -10,7 +10,7 @@ public:
     static void Initialize(const MemoryMap &memmap);
 
     // 指定バイト数を確保してポインタを返す
-    static void *Allocate(size_t size);
+    static void *Allocate(size_t size, size_t alignment = 16);
 
     // メモリを解放する (今回は簡易実装のため何もしない)
     static void Free(void *ptr);
