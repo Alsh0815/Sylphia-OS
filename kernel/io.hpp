@@ -14,3 +14,16 @@ static inline void IoOut8(uint16_t port, uint8_t data)
 {
     __asm__ volatile("outb %0, %1" : : "a"(data), "d"(port));
 }
+
+// 32bit
+static inline uint32_t IoIn32(uint16_t port)
+{
+    uint32_t data;
+    __asm__ volatile("inl %1, %0" : "=a"(data) : "d"(port));
+    return data;
+}
+
+static inline void IoOut32(uint16_t port, uint32_t data)
+{
+    __asm__ volatile("outl %0, %1" : : "a"(data), "d"(port));
+}

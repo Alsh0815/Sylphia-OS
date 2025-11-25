@@ -13,6 +13,9 @@ set OVMF_CODE=OVMF_CODE.fd
 set OVMF_VARS_ORIG=OVMF_VARS.fd
 set OVMF_VARS_TMP=OVMF_VARS.copy.fd
 
+rem NVMeイメージファイルのパス (追加)
+set NVME_IMG=..\nvme.img
+
 rem ビルド成果物ディレクトリ (buildフォルダ)
 set BUILD_DIR=..\build
 
@@ -43,6 +46,8 @@ rem readonly=on - コード領域は書き込み不可にする
 -drive if=pflash,format=raw,readonly=on,file=%OVMF_CODE% ^
 -drive if=pflash,format=raw,file=%OVMF_VARS_TMP% ^
 -drive file=fat:rw:%BUILD_DIR%,format=raw,media=disk ^
+-drive file=%NVME_IMG%,if=none,id=nvm ^
+-device nvme,serial=deadbeef,drive=nvm ^
 -net none ^
 -monitor stdio
 

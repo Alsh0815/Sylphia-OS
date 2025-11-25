@@ -2,6 +2,7 @@
 
 #include "memory/memory_manager.hpp"
 #include "memory/memory.hpp"
+#include "pci/pci.hpp"
 #include "shell/shell.hpp"
 #include "apic.hpp"
 #include "console.hpp"
@@ -99,21 +100,8 @@ extern "C" __attribute__((ms_abi)) void KernelMain(const FrameBufferConfig &conf
     MemoryManager::Initialize(memmap);
     kprintf("Memory Manager Initialized.\n");
 
-    // new のテスト
-    int *p = new int;
-    *p = 123;
-    kprintf("Dynamic Allocation Test: int* p = 0x%x, *p = %d\n", p, *p);
-
-    // 配列 new のテスト
-    char *str = new char[20];
-    str[0] = 'H';
-    str[1] = 'e';
-    str[2] = 'a';
-    str[3] = 'p';
-    str[4] = '!';
-    str[5] = '\0';
-    kprintf("String Allocation Test: %s\n", str);
-
+    PCI::ScanAllBus();
+    
     static Shell shell;
     g_shell = &shell;
 
