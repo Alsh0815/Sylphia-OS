@@ -257,9 +257,20 @@ EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
             SystemTable->BootServices->ExitBootServices(ImageHandle, MapKey);
         }
 
-        typedef void (*KernelEntryPoint)(FrameBufferConfig *);
+        // メモリマップ情報を構造体にまとめる
+        struct MemoryMap memmap_arg;
+        memmap_arg.buffer_size = MemoryMapSize;
+        memmap_arg.buffer = MemoryMap;
+        memmap_arg.map_size = MemoryMapSize;
+        memmap_arg.map_key = MapKey;
+        memmap_arg.descriptor_size = DescriptorSize;
+        memmap_arg.descriptor_version = DescriptorVersion;
+
+        // 第1引数: FrameBufferConfig*, 第2引数: MemoryMap*
+        typedef void (*KernelEntryPoint)(FrameBufferConfig *, struct MemoryMap *);
         KernelEntryPoint KernelMainStart = (KernelEntryPoint)Ehdr->e_entry;
-        KernelMainStart(&Config);
+
+        KernelMainStart(&Config, &memmap_arg);
         while (1)
             ;
     }

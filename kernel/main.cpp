@@ -1,5 +1,7 @@
 #include <stdint.h>
 
+#include "memory/memory_manager.hpp"
+#include "memory/memory.hpp"
 #include "shell/shell.hpp"
 #include "apic.hpp"
 #include "console.hpp"
@@ -59,44 +61,68 @@ __attribute__((interrupt)) void KeyboardHandler(InterruptFrame *frame)
     g_lapic->EndOfInterrupt();
 }
 
-extern "C" __attribute__((ms_abi)) void KernelMain(const FrameBufferConfig &config)
+extern "C" __attribute__((ms_abi)) void KernelMain(const FrameBufferConfig &config, const MemoryMap &memmap)
 {
     __asm__ volatile("cli");
     const uint32_t kDesktopBG = 0xFF454545;
     FillRectangle(config, 0, 0, config.HorizontalResolution, config.VerticalResolution, kDesktopBG);
 
-    // コンソール初期化 & グローバル変数へセット
-    // ※static変数にすることでスタック領域ではなくデータ領域に配置し、
-    // KernelMainのループ中も生存期間を保証する（今回は無限ループ内なのでローカルでも動くが、作法として）
     static Console console(config, 0xFFFFFFFF, kDesktopBG);
     g_console = &console;
 
-    kprintf("Sylphia-OS Kernel v0.4.2\n");
+    kprintf("Sylphia-OS Kernel v0.5\n");
     kprintf("----------------------\n");
 
     SetupSegments();
     SetupInterrupts();
     DisablePIC();
 
+    // ■ メモリマップの確認 ■
+    kprintf("Checking Memory Map...\n");
+    kprintf("Map Base: %x, Size: %d bytes, DescSize: %d\n",
+            memmap.buffer, memmap.map_size, memmap.descriptor_size);
+    uintptr_t iter = reinterpret_cast<uintptr_t>(memmap.buffer);
+    for (unsigned int i = 0; i < memmap.map_size / memmap.descriptor_size; ++i)
+    {
+        auto *desc = reinterpret_cast<const MemoryDescriptor *>(iter);
+        if (static_cast<MemoryType>(desc->type) == MemoryType::kEfiConventionalMemory)
+        {
+            if (desc->number_of_pages > 256)
+            {
+                kprintf("FREE: Addr=%x, Pages=%d\n", desc->physical_start, desc->number_of_pages);
+            }
+        }
+
+        iter += memmap.descriptor_size;
+    }
+
+    MemoryManager::Initialize(memmap);
+    kprintf("Memory Manager Initialized.\n");
+
+    // new のテスト
+    int *p = new int;
+    *p = 123;
+    kprintf("Dynamic Allocation Test: int* p = 0x%x, *p = %d\n", p, *p);
+
+    // 配列 new のテスト
+    char *str = new char[20];
+    str[0] = 'H';
+    str[1] = 'e';
+    str[2] = 'a';
+    str[3] = 'p';
+    str[4] = '!';
+    str[5] = '\0';
+    kprintf("String Allocation Test: %s\n", str);
+
     static Shell shell;
     g_shell = &shell;
 
-    // Local APICの準備
     static LocalAPIC lapic;
     g_lapic = &lapic;
     g_lapic->Enable();
 
-    // CPU IDを表示して、APICレジスタが読めているか確認
-    kprintf("Local APIC: Enabled (Core ID: %d)\n", g_lapic->GetID());
-
-    // 1. キーボードハンドラをIDTに登録
-    // ベクタ番号は 0x40 (64) にします
-    // カーネルコードセグメントは 0x08
-    // ゲートタイプ 0xE (Interrupt Gate)
     SetIDTEntry(0x40, (uint64_t)KeyboardHandler, 0x08, 0xE);
 
-    // I/O APICの設定
-    // キーボード(IRQ 1) を ベクタ 0x40 に割り当て、Core 0 (g_lapic->GetID()) に送る
     IOAPIC::Enable(1, 0x40, g_lapic->GetID());
     kprintf("I/O APIC: Keyboard (IRQ1) -> Vector 0x40\n");
 

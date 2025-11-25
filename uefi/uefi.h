@@ -323,6 +323,16 @@ typedef struct
     UINT32 PixelsPerScanLine;
 } FrameBufferConfig;
 
+struct MemoryMap
+{
+    UINTN buffer_size;
+    VOID *buffer;
+    UINTN map_size;
+    UINTN map_key;
+    UINTN descriptor_size;
+    UINT32 descriptor_version;
+};
+
 // メモリ操作関数 (標準ライブラリを使わないため自作)
 // static inline にすることでヘッダーだけで完結させます
 static inline VOID CopyMem(VOID *Dest, VOID *Src, UINTN Size)
