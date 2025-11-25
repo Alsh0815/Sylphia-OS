@@ -9,17 +9,30 @@ New-Item -ItemType Directory -Force -Path "..\build" | Out-Null
 
 Write-Host "Compiling Kernel (C++)..." -ForegroundColor Cyan
 
+$SOURCES = @("..\kernel\main.cpp", "..\kernel\cxx.cpp", "..\kernel\shell\shell.cpp", "..\kernel\apic.cpp", "..\kernel\console.cpp", "..\kernel\font.cpp", "..\kernel\graphics.cpp", "..\kernel\interrupt.cpp", "..\kernel\ioapic.cpp", "..\kernel\keyboard.cpp", "..\kernel\pic.cpp", "..\kernel\printk.cpp", "..\kernel\segmentation.cpp")
+
+# オブジェクトファイルのリスト格納用
+$OBJECTS = @()
+
 # 1. コンパイル (C++ -> OBJ)
 # -target x86_64-elf : ELF形式を指定
 # -ffreestanding : 標準ライブラリなし
 # -fno-rtti -fno-exceptions : C++の動的機能を無効化 (OSカーネルには不要/邪魔)
-& $CLANG -target x86_64-elf `
-    -ffreestanding `
-    -fno-rtti -fno-exceptions `
-    -mno-red-zone `
-    -c ..\kernel\main.cpp `
-    -o ..\build\kernel.obj
+foreach ($src in $SOURCES) {
+    # 出力ファイル名を作成 (例: main.obj)
+    $objName = [System.IO.Path]::GetFileNameWithoutExtension($src) + ".obj"
+    $objPath = "..\build\$objName"
+    $OBJECTS += $objPath
 
+    & $CLANG -target x86_64-elf `
+        -ffreestanding `
+        -fno-rtti -fno-exceptions `
+        -mno-red-zone `
+        -mgeneral-regs-only `
+        -I..\kernel `
+        -c $src `
+        -o $objPath
+}
 Write-Host "Linking Kernel (OBJ -> ELF)..." -ForegroundColor Cyan
 
 # 2. リンク (OBJ -> ELF)
@@ -32,6 +45,6 @@ Write-Host "Linking Kernel (OBJ -> ELF)..." -ForegroundColor Cyan
     --image-base 0x100000 `
     --static `
     -o ..\build\kernel.elf `
-    ..\build\kernel.obj
+    $OBJECTS
 
 Write-Host "Kernel Build Success! Output: build\kernel.elf" -ForegroundColor Green
