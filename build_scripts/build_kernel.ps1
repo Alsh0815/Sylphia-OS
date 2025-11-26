@@ -1,25 +1,43 @@
 $ErrorActionPreference = "Stop"
 
-# ツールチェーン設定
 $CLANG = "clang++"
-$LD = "ld.lld" # LLVMに含まれるELF用リンカ
+$LD = "ld.lld"
+$NASM = "nasm"
 
-# ディレクトリ作成
 New-Item -ItemType Directory -Force -Path "..\build" | Out-Null
 
 Write-Host "Compiling Kernel (C++)..." -ForegroundColor Cyan
 
-$SOURCES = @("..\kernel\main.cpp", "..\kernel\cxx.cpp", "..\kernel\new.cpp", "..\kernel\driver\nvme\nvme_driver.cpp", "..\kernel\fs\fat32\fat32_driver.cpp", "..\kernel\fs\fat32\fat32.cpp", "..\kernel\fs\gpt.cpp", "..\kernel\fs\installer.cpp", "..\kernel\memory\memory_manager.cpp", "..\kernel\pci\pci.cpp", "..\kernel\shell\shell.cpp", "..\kernel\apic.cpp", "..\kernel\console.cpp", "..\kernel\font.cpp", "..\kernel\graphics.cpp", "..\kernel\interrupt.cpp", "..\kernel\ioapic.cpp", "..\kernel\keyboard.cpp", "..\kernel\pic.cpp", "..\kernel\printk.cpp", "..\kernel\segmentation.cpp")
+$ASM_SOURCES = @("..\kernel\asmfunc.asm")
+$SOURCES = @(
+    "..\kernel\main.cpp", "..\kernel\cxx.cpp", "..\kernel\new.cpp",
+    "..\kernel\driver\nvme\nvme_driver.cpp",
+    "..\kernel\fs\fat32\fat32_driver.cpp", "..\kernel\fs\fat32\fat32.cpp", "..\kernel\fs\gpt.cpp", "..\kernel\fs\installer.cpp",
+    "..\kernel\memory\memory_manager.cpp",
+    "..\kernel\pci\pci.cpp",
+    "..\kernel\shell\shell.cpp",
+    "..\kernel\apic.cpp", "..\kernel\console.cpp", "..\kernel\font.cpp", "..\kernel\graphics.cpp",
+    "..\kernel\interrupt.cpp", "..\kernel\ioapic.cpp", "..\kernel\keyboard.cpp", "..\kernel\paging.cpp",
+    "..\kernel\pic.cpp", "..\kernel\printk.cpp", "..\kernel\segmentation.cpp"
+)
 
-# オブジェクトファイルのリスト格納用
 $OBJECTS = @()
 
-# 1. コンパイル (C++ -> OBJ)
-# -target x86_64-elf : ELF形式を指定
-# -ffreestanding : 標準ライブラリなし
-# -fno-rtti -fno-exceptions : C++の動的機能を無効化 (OSカーネルには不要/邪魔)
+Write-Host "Compiling Assembly (NASM)..." -ForegroundColor Cyan
+
+foreach ($src in $ASM_SOURCES) {
+    if (Test-Path $src) {
+        $objName = [System.IO.Path]::GetFileNameWithoutExtension($src) + ".obj"
+        $objPath = "..\build\$objName"
+        $OBJECTS += $objPath
+        & $NASM -f elf64 $src -o $objPath
+    }
+    else {
+        Write-Warning "Assembly file not found: $src (Skipping...)"
+    }
+}
+
 foreach ($src in $SOURCES) {
-    # 出力ファイル名を作成 (例: main.obj)
     $objName = [System.IO.Path]::GetFileNameWithoutExtension($src) + ".obj"
     $objPath = "..\build\$objName"
     $OBJECTS += $objPath
@@ -35,11 +53,6 @@ foreach ($src in $SOURCES) {
 }
 Write-Host "Linking Kernel (OBJ -> ELF)..." -ForegroundColor Cyan
 
-# 2. リンク (OBJ -> ELF)
-# -entry KernelMain : エントリーポイントを指定
-# -z norelro : リロケーション情報を簡素化
-# --image-base 0x100000 : カーネルをメモリの 1MB地点 に配置する前提
-# -static : 静的リンク
 & $LD -entry KernelMain `
     -z norelro `
     --image-base 0x100000 `

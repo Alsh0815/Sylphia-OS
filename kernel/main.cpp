@@ -18,6 +18,7 @@
 #include "io.hpp"
 #include "ioapic.hpp"
 #include "keyboard.hpp"
+#include "paging.hpp"
 #include "pic.hpp"
 #include "printk.hpp"
 #include "segmentation.hpp"
@@ -90,6 +91,7 @@ extern "C" __attribute__((ms_abi)) void KernelMain(
 
     MemoryManager::Initialize(memmap);
     kprintf("Memory Manager Initialized.\n");
+    PageManager::Initialize();
 
     kprintf("Searching for NVMe Controller...\n");
 
