@@ -152,6 +152,8 @@ namespace NVMe
         kprintf("[NVMe] Model : %s\n", model);
         kprintf("[NVMe] Serial: %s\n", serial);
 
+        MemoryManager::Free(identify_data, sizeof(IdentifyControllerData));
+
         auto *ns_data = static_cast<IdentifyNamespaceData *>(
             MemoryManager::Allocate(sizeof(IdentifyNamespaceData), 4096));
 
@@ -172,6 +174,8 @@ namespace NVMe
 
         lba_size_ = 1 << ds;
         kprintf("[NVMe] LBA Size: %d bytes (Total Blocks: %lld)\n", lba_size_, ns_data->nsze);
+
+        MemoryManager::Free(ns_data, sizeof(IdentifyNamespaceData));
     }
 
     void Driver::CreateIOQueues()
@@ -300,13 +304,14 @@ namespace NVMe
         cmd.cdw12 = (count - 1) & 0xFFFF;
 
         uint32_t size = count * lba_size_;
-        SetupPRPs(cmd, buffer, size);
-        /*
-        cmd.data_ptr[0] = reinterpret_cast<uint64_t>(buffer);
-        cmd.data_ptr[1] = 0;
-        */
+        uint64_t *prp_list = SetupPRPs(cmd, buffer, size);
 
         SendIOCommand(cmd);
+
+        if (prp_list != nullptr)
+        {
+            MemoryManager::Free(prp_list, 4096);
+        }
     }
 
     void Driver::Write(uint64_t lba, const void *buffer, uint16_t count)
@@ -330,13 +335,14 @@ namespace NVMe
         cmd.cdw12 = (count - 1) & 0xFFFF;
 
         uint32_t size = count * lba_size_;
-        SetupPRPs(cmd, buffer, size);
-        /*
-        cmd.data_ptr[0] = reinterpret_cast<uint64_t>(buffer);
-        cmd.data_ptr[1] = 0;
-        */
+        uint64_t *prp_list = SetupPRPs(cmd, buffer, size);
 
         SendIOCommand(cmd);
+
+        if (prp_list != nullptr)
+        {
+            MemoryManager::Free(prp_list, 4096);
+        }
     }
 
     void Driver::DisableController()

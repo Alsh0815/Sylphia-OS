@@ -151,6 +151,6 @@ namespace FileSystem
         kprintf("[Format] Root Directory Initialized.\n");
         kprintf("[Installer] FAT32 Format Complete!\n");
 
-        delete[] buf;
+        MemoryManager::Free(buf, 512);
     }
 }

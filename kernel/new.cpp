@@ -1,37 +1,67 @@
 #include <stddef.h>
 #include "memory/memory_manager.hpp"
 
+#pragma GCC diagnostic ignored "-Wnew-returns-null"
+#pragma GCC diagnostic ignored "-Wnonnull"
+
+const size_t kHeaderSize = 16;
+
 // 通常の new
 void *operator new(size_t size)
 {
-    return MemoryManager::Allocate(size);
+    // 実際に確保するサイズ = 要求サイズ + ヘッダサイズ
+    size_t total_size = size + kHeaderSize;
+
+    // メモリ確保
+    void *ptr = MemoryManager::Allocate(total_size);
+    if (!ptr)
+    {
+        return nullptr;
+    }
+
+    // 先頭にサイズを記録する
+    // ptr は void* なので、uint64_t* にキャストして書き込む
+    *reinterpret_cast<uint64_t *>(ptr) = total_size;
+
+    // 呼び出し元には、ヘッダの分だけ進めたアドレスを返す
+    // char* でポインタ演算してから void* に戻すのが安全
+    return static_cast<void *>(static_cast<char *>(ptr) + kHeaderSize);
 }
 
 // 配列用 new[]
 void *operator new[](size_t size)
 {
-    return MemoryManager::Allocate(size);
+    return operator new(size);
 }
 
-// 通常の delete (サイズ指定なし)
 void operator delete(void *ptr) noexcept
 {
-    MemoryManager::Free(ptr);
+    if (!ptr)
+        return;
+
+    // 渡されたポインタは「データ本体」の先頭なので、
+    // ヘッダサイズ分だけ「戻って」本来の先頭アドレスを得る
+    void *real_ptr = static_cast<void *>(static_cast<char *>(ptr) - kHeaderSize);
+
+    // 記録しておいたサイズを読み取る
+    size_t total_size = *reinterpret_cast<uint64_t *>(real_ptr);
+
+    // メモリマネージャーに返却
+    MemoryManager::Free(real_ptr, total_size);
 }
 
-// サイズ指定付き delete (C++14以降で必要になることがある)
 void operator delete(void *ptr, size_t size) noexcept
 {
-    MemoryManager::Free(ptr);
+    // C++14以降のサイズ付きdelete
+    operator delete(ptr);
 }
 
-// 配列用 delete[]
 void operator delete[](void *ptr) noexcept
 {
-    MemoryManager::Free(ptr);
+    operator delete(ptr);
 }
 
 void operator delete[](void *ptr, size_t size) noexcept
 {
-    MemoryManager::Free(ptr);
+    operator delete(ptr);
 }

@@ -131,7 +131,7 @@ namespace FileSystem
 
         kprintf("[Installer] GPT Format Complete!\n");
 
-        // MemoryManagerにはFreeがないので確保しっぱなしですが、
-        // インストーラーは一度しか走らないので許容します。
+        MemoryManager::Free(sector_buf, 512);
+        MemoryManager::Free(entry_buf, entry_array_size);
     }
 }

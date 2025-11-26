@@ -36,7 +36,7 @@ namespace FileSystem
         data_start_lba_ = fat_start_lba_ + (num_fats_ * fat_sz32_);
 
         kprintf("[FAT32] Driver Initialized. ClusterSize=%d sectors\n", sec_per_clus_);
-        delete[] buf;
+        MemoryManager::Free(buf, 512);
     }
 
     uint64_t FAT32Driver::ClusterToLBA(uint32_t cluster)
@@ -67,12 +67,12 @@ namespace FileSystem
                 // FAT2(バックアップ)も更新
                 NVMe::g_nvme->Write(fat_start_lba_ + fat_sz32_, buf, 1);
 
-                delete[] buf;
+                MemoryManager::Free(buf, 512);
                 return i;
             }
         }
 
-        delete[] buf;
+        MemoryManager::Free(buf, 512);
         kprintf("[FAT32] No free clusters found in first FAT sector!\n");
         return 0; // Error
     }
@@ -99,7 +99,7 @@ namespace FileSystem
         // バックアップFAT(FAT2)も更新
         NVMe::g_nvme->Write(target_lba + fat_sz32_, buf, 1);
 
-        delete[] buf;
+        MemoryManager::Free(buf, 512);
     }
 
     void FAT32Driver::AddDirectoryEntry(const char *name, uint32_t start_cluster, uint32_t size, uint8_t attr, uint32_t parent_cluster)
@@ -129,12 +129,12 @@ namespace FileSystem
                     dir[i].file_size = size;
 
                     NVMe::g_nvme->Write(lba + s, buf, 1);
-                    delete[] buf;
+                    MemoryManager::Free(buf, 512);
                     return;
                 }
             }
         }
-        delete[] buf;
+        MemoryManager::Free(buf, 512);
         kprintf("[FAT32] Directory full!\n");
     }
 
@@ -172,7 +172,7 @@ namespace FileSystem
         dot_entries[1].fst_clus_lo = parent_ref & 0xFFFF;
 
         NVMe::g_nvme->Write(target_lba, buf, sec_per_clus_);
-        // bufはリークするが許容
+        MemoryManager::Free(buf, cluster_bytes);
 
         // 3. FATチェーン終端
         LinkCluster(new_cluster, 0x0FFFFFFF);
@@ -239,9 +239,7 @@ namespace FileSystem
 
             // 1クラスタ分書き込み
             NVMe::g_nvme->Write(target_lba, sector_buf, sec_per_clus_);
-
-            // ※ MemoryManagerにFreeがないので sector_buf はリークするが、
-            // インストール時の一過性の処理として許容する。
+            MemoryManager::Free(sector_buf, cluster_size_bytes);
 
             // 3. 変数更新
             prev_cluster = current_cluster;
