@@ -4,6 +4,7 @@
 
 namespace NVMe
 {
+    Driver *g_nvme = nullptr;
 
     Driver::Driver(uintptr_t mmio_base)
         : regs_(reinterpret_cast<volatile Registers *>(mmio_base)),

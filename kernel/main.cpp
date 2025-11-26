@@ -2,6 +2,9 @@
 
 #include "driver/nvme/nvme_driver.hpp"
 #include "driver/nvme/nvme_reg.hpp"
+#include "fs/fat32/fat32_driver.hpp"
+#include "fs/fat32/fat32.hpp"
+#include "fs/installer.hpp"
 #include "memory/memory_manager.hpp"
 #include "memory/memory.hpp"
 #include "pci/pci.hpp"
@@ -67,13 +70,13 @@ __attribute__((interrupt)) void KeyboardHandler(InterruptFrame *frame)
 extern "C" __attribute__((ms_abi)) void KernelMain(const FrameBufferConfig &config, const MemoryMap &memmap)
 {
     __asm__ volatile("cli");
-    const uint32_t kDesktopBG = 0xFF282828;
+    const uint32_t kDesktopBG = 0xFF181818;
     FillRectangle(config, 0, 0, config.HorizontalResolution, config.VerticalResolution, kDesktopBG);
 
     static Console console(config, 0xFFFFFFFF, kDesktopBG);
     g_console = &console;
 
-    kprintf("Sylphia-OS Kernel v0.5.2\n");
+    kprintf("Sylphia-OS Kernel v0.5.3\n");
     kprintf("----------------------\n");
 
     SetupSegments();
@@ -123,39 +126,23 @@ nvme_found:
     {
         uintptr_t bar0 = PCI::ReadBar0(*nvme_dev);
         kprintf("NVMe BAR0 Address: %lx\n", bar0);
-        static NVMe::Driver driver(bar0);
-        driver.Initialize();
-        driver.IdentifyController();
-        driver.CreateIOQueues();
+        NVMe::g_nvme = new NVMe::Driver(bar0);
+        NVMe::g_nvme->Initialize();
+        NVMe::g_nvme->IdentifyController();
+        NVMe::g_nvme->CreateIOQueues();
 
-        char *write_buf = new char[512];
-        char *read_buf = new char[512];
+        uint64_t total_blocks = 2097152; // 仮の値 (Identify Namespaceで取得したnszeを使うべき)
+        FileSystem::FormatDiskGPT(total_blocks);
+        uint64_t part_size = total_blocks - 2048 - 34;
+        FileSystem::FormatPartitionFAT32(part_size);
 
-        // 書き込みデータ作成
-        const char *msg = "Hello, NVMe World! This is written by Sylphia-OS.";
-        // strcpy的な処理
-        for (int i = 0; i < 512; ++i)
-            write_buf[i] = 0;
-        for (int i = 0; msg[i]; ++i)
-            write_buf[i] = msg[i];
-
-        // 1. 書き込み (LBA 0)
-        kprintf("[NVMe] Writing to LBA 0...\n");
-        driver.Write(0, write_buf, 1);
-
-        // 2. 読み込み (LBA 0)
-        kprintf("[NVMe] Reading from LBA 0...\n");
-        driver.Read(0, read_buf, 1);
-
-        // 3. 検証
-        kprintf("[NVMe] Data: %s\n", read_buf);
-
-        // 念のためダンプ
-        for (int i = 0; i < 16; ++i)
-            kprintf("%x ", (unsigned char)read_buf[i]);
-        kprintf("\n");
-        delete[] write_buf;
-        delete[] read_buf;
+        FileSystem::FAT32Driver fat_driver(2048);
+        fat_driver.Initialize();
+        // 書き込むデータ
+        const char *file_content = "Hello from Sylphia-OS! This file is on FAT32.";
+        // ファイル名 (8.3形式: 11文字固定)
+        // "TEST    TXT" -> TEST.TXT
+        fat_driver.WriteFile("TEST    TXT", file_content, 45);
     }
     else
     {

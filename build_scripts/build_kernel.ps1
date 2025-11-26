@@ -9,7 +9,7 @@ New-Item -ItemType Directory -Force -Path "..\build" | Out-Null
 
 Write-Host "Compiling Kernel (C++)..." -ForegroundColor Cyan
 
-$SOURCES = @("..\kernel\main.cpp", "..\kernel\cxx.cpp", "..\kernel\new.cpp", "..\kernel\driver\nvme\nvme_driver.cpp", "..\kernel\memory\memory_manager.cpp", "..\kernel\pci\pci.cpp", "..\kernel\shell\shell.cpp", "..\kernel\apic.cpp", "..\kernel\console.cpp", "..\kernel\font.cpp", "..\kernel\graphics.cpp", "..\kernel\interrupt.cpp", "..\kernel\ioapic.cpp", "..\kernel\keyboard.cpp", "..\kernel\pic.cpp", "..\kernel\printk.cpp", "..\kernel\segmentation.cpp")
+$SOURCES = @("..\kernel\main.cpp", "..\kernel\cxx.cpp", "..\kernel\new.cpp", "..\kernel\driver\nvme\nvme_driver.cpp", "..\kernel\fs\fat32\fat32_driver.cpp", "..\kernel\fs\fat32\fat32.cpp", "..\kernel\fs\gpt.cpp", "..\kernel\fs\installer.cpp", "..\kernel\memory\memory_manager.cpp", "..\kernel\pci\pci.cpp", "..\kernel\shell\shell.cpp", "..\kernel\apic.cpp", "..\kernel\console.cpp", "..\kernel\font.cpp", "..\kernel\graphics.cpp", "..\kernel\interrupt.cpp", "..\kernel\ioapic.cpp", "..\kernel\keyboard.cpp", "..\kernel\pic.cpp", "..\kernel\printk.cpp", "..\kernel\segmentation.cpp")
 
 # オブジェクトファイルのリスト格納用
 $OBJECTS = @()

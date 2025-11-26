@@ -1,6 +1,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "cxx.hpp"
+
 extern "C"
 {
     // 純粋仮想関数エラー (virtual function call error)

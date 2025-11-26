@@ -52,4 +52,6 @@ namespace NVMe
         void SendIOCommand(SubmissionQueueEntry &cmd);
     };
 
+    extern Driver *g_nvme;
+
 }
