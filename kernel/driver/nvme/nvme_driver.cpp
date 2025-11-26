@@ -232,32 +232,81 @@ namespace NVMe
         kprintf("[NVMe] I/O Queues Created (ID=1).\n");
     }
 
+    uint64_t *SetupPRPs(SubmissionQueueEntry &cmd, const void *buffer, uint32_t size)
+    {
+        uint64_t addr = reinterpret_cast<uint64_t>(buffer);
+        cmd.data_ptr[0] = addr; // PRP1
+
+        const uint32_t page_size = 4096;
+        uint32_t offset = addr & (page_size - 1);
+        uint32_t page_capacity = page_size - offset;
+
+        if (size <= page_capacity)
+        {
+            cmd.data_ptr[1] = 0;
+            return nullptr;
+        }
+
+        // --- 修正ポイント ---
+
+        uint32_t remaining = size - page_capacity;
+
+        // 次のページ（2ページ目）の物理アドレス
+        uint64_t next_page_addr = (addr & ~(uint64_t)(page_size - 1)) + page_size;
+
+        // 残りが1ページ以内に収まる場合 (つまり全体で2ページ)
+        // PRP2 は「PRP Listへのポインタ」ではなく「データの続き」を直接指す
+        if (remaining <= page_size)
+        {
+            cmd.data_ptr[1] = next_page_addr;
+            return nullptr;
+        }
+
+        // --- 3ページ以上必要な場合のみ PRP List を作成 ---
+
+        uint32_t num_pages = (remaining + page_size - 1) / page_size;
+        uint64_t *prp_list = static_cast<uint64_t *>(MemoryManager::Allocate(page_size, page_size));
+
+        cmd.data_ptr[1] = reinterpret_cast<uint64_t>(prp_list);
+
+        uint64_t current_page = next_page_addr;
+        for (uint32_t i = 0; i < num_pages; ++i)
+        {
+            prp_list[i] = current_page;
+            current_page += page_size;
+        }
+
+        return prp_list;
+    }
+
     void Driver::Read(uint64_t lba, void *buffer, uint16_t count)
     {
-        // Opcode 0x02 = NVM Read
         SubmissionQueueEntry cmd;
         uint8_t *p = reinterpret_cast<uint8_t *>(&cmd);
         for (size_t i = 0; i < sizeof(cmd); ++i)
             p[i] = 0;
 
-        cmd.opcode = 0x02;
+        cmd.opcode = 0x02; // Read
         cmd.nsid = namespace_id_;
-        cmd.data_ptr[0] = reinterpret_cast<uint64_t>(buffer);
 
-        // CDW10, 11: Starting LBA (64bit)
         cmd.cdw10 = lba & 0xFFFFFFFF;
         cmd.cdw11 = (lba >> 32) & 0xFFFFFFFF;
-
-        // CDW12: Number of Logical Blocks (0-based)
-        // 1ブロック読むなら 0 を指定する
         cmd.cdw12 = (count - 1) & 0xFFFF;
+
+        // 転送バイト数
+        uint32_t size = count * lba_size_;
+
+        // PRP設定
+        // ※注意: MemoryManagerにFreeがないため、prp_listはリークしますが、
+        // 現段階では「OS起動中の動的確保は永続的」と割り切るか、
+        // 将来Freeを実装したときに解放するようにします。
+        SetupPRPs(cmd, buffer, size);
 
         SendIOCommand(cmd);
     }
 
     void Driver::Write(uint64_t lba, const void *buffer, uint16_t count)
     {
-        // Opcode 0x01 = NVM Write
         SubmissionQueueEntry cmd;
         uint8_t *p = reinterpret_cast<uint8_t *>(&cmd);
         for (size_t i = 0; i < sizeof(cmd); ++i)
@@ -265,11 +314,13 @@ namespace NVMe
 
         cmd.opcode = 0x01; // Write
         cmd.nsid = namespace_id_;
-        cmd.data_ptr[0] = reinterpret_cast<uint64_t>(buffer); // const外しが必要ならキャストで対応
 
         cmd.cdw10 = lba & 0xFFFFFFFF;
         cmd.cdw11 = (lba >> 32) & 0xFFFFFFFF;
         cmd.cdw12 = (count - 1) & 0xFFFF;
+
+        uint32_t size = count * lba_size_;
+        SetupPRPs(cmd, buffer, size);
 
         SendIOCommand(cmd);
     }
