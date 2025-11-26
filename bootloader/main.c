@@ -182,105 +182,142 @@ EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     UINTN ReadSize = FileInfo->FileSize;
     Status = KernelFile->Read(KernelFile, &ReadSize, KernelBuffer);
 
-    if (Status == EFI_SUCCESS)
+    if (Status != EFI_SUCCESS)
     {
-        SystemTable->ConOut->OutputString(SystemTable->ConOut, (CHAR16 *)L"Kernel Read Success. Parsing ELF Header...\r\n");
+        SystemTable->ConOut->OutputString(SystemTable->ConOut, (CHAR16 *)L"Error: Read failed\r\n");
+        KernelFile->Close(KernelFile);
+    }
 
-        // バッファをELFヘッダーとして解釈
-        Elf64_Ehdr *Ehdr = (Elf64_Ehdr *)KernelBuffer;
+    SystemTable->ConOut->OutputString(SystemTable->ConOut, (CHAR16 *)L"Kernel Read Success. Parsing ELF Header...\r\n");
 
-        // 1. マジックナンバーのチェック ( \x7F E L F )
-        if (Ehdr->e_ident[0] != 0x7F ||
-            Ehdr->e_ident[1] != 'E' ||
-            Ehdr->e_ident[2] != 'L' ||
-            Ehdr->e_ident[3] != 'F')
+    // バッファをELFヘッダーとして解釈
+    Elf64_Ehdr *Ehdr = (Elf64_Ehdr *)KernelBuffer;
+
+    // 1. マジックナンバーのチェック ( \x7F E L F )
+    if (Ehdr->e_ident[0] != 0x7F ||
+        Ehdr->e_ident[1] != 'E' ||
+        Ehdr->e_ident[2] != 'L' ||
+        Ehdr->e_ident[3] != 'F')
+    {
+
+        SystemTable->ConOut->OutputString(SystemTable->ConOut, (CHAR16 *)L"Error: Not a valid ELF file!\r\n");
+        while (1)
+            __asm__ volatile("hlt");
+    }
+
+    // 2. エントリーポイントの表示
+    if (Ehdr->e_entry != 0)
+    {
+        SystemTable->ConOut->OutputString(SystemTable->ConOut, (CHAR16 *)L"ELF Header OK! Found Entry Point.\r\n");
+    }
+
+    // プログラムヘッダーテーブルの先頭アドレス
+    Elf64_Phdr *Phdr = (Elf64_Phdr *)((UINT64)Ehdr + Ehdr->e_phoff);
+
+    for (int i = 0; i < Ehdr->e_phnum; i++)
+    {
+        if (Phdr[i].p_type == PT_LOAD)
         {
+            // メモリへのコピー (FileOffset -> VirtualAddress)
+            CopyMem((VOID *)Phdr[i].p_vaddr,
+                    (VOID *)((UINT64)Ehdr + Phdr[i].p_offset),
+                    Phdr[i].p_filesz);
 
-            SystemTable->ConOut->OutputString(SystemTable->ConOut, (CHAR16 *)L"Error: Not a valid ELF file!\r\n");
-            while (1)
-                __asm__ volatile("hlt");
-        }
-
-        // 2. エントリーポイントの表示 (ここが正しく出れば成功！)
-        // 簡易的な数値表示ルーチンがないので、判定ロジックだけ入れます
-        if (Ehdr->e_entry != 0)
-        {
-            SystemTable->ConOut->OutputString(SystemTable->ConOut, (CHAR16 *)L"ELF Header OK! Found Entry Point.\r\n");
-        }
-
-        // プログラムヘッダーテーブルの先頭アドレス
-        Elf64_Phdr *Phdr = (Elf64_Phdr *)((UINT64)Ehdr + Ehdr->e_phoff);
-
-        for (int i = 0; i < Ehdr->e_phnum; i++)
-        {
-            if (Phdr[i].p_type == PT_LOAD)
+            // BSS領域 (ファイルサイズよりメモリサイズが大きい部分) を0で埋める
+            UINTN RemainBytes = Phdr[i].p_memsz - Phdr[i].p_filesz;
+            if (RemainBytes > 0)
             {
-                // メモリへのコピー (FileOffset -> VirtualAddress)
-                CopyMem((VOID *)Phdr[i].p_vaddr,
-                        (VOID *)((UINT64)Ehdr + Phdr[i].p_offset),
-                        Phdr[i].p_filesz);
-
-                // BSS領域 (ファイルサイズよりメモリサイズが大きい部分) を0で埋める
-                UINTN RemainBytes = Phdr[i].p_memsz - Phdr[i].p_filesz;
-                if (RemainBytes > 0)
-                {
-                    SetMem((VOID *)(Phdr[i].p_vaddr + Phdr[i].p_filesz), RemainBytes, 0);
-                }
+                SetMem((VOID *)(Phdr[i].p_vaddr + Phdr[i].p_filesz), RemainBytes, 0);
             }
         }
+    }
 
-        SystemTable->ConOut->OutputString(SystemTable->ConOut, (CHAR16 *)L"Segments Loaded. Exiting Boot Services...\r\n");
+    SystemTable->ConOut->OutputString(SystemTable->ConOut, (CHAR16 *)L"Loading BOOTX64.EFI for installation...\r\n");
 
-        FrameBufferConfig Config;
-        Config.FrameBufferBase = Gop->Mode->FrameBufferBase;
-        Config.FrameBufferSize = Gop->Mode->FrameBufferSize;
-        Config.HorizontalResolution = Gop->Mode->Info->HorizontalResolution;
-        Config.VerticalResolution = Gop->Mode->Info->VerticalResolution;
-        Config.PixelsPerScanLine = Gop->Mode->Info->PixelsPerScanLine;
+    EFI_FILE_PROTOCOL *LoaderFile;
+    // パスは \EFI\BOOT\BOOTX64.EFI 固定と仮定 (本来は LoadedImage->FilePath から取得すべきだが簡易実装)
+    Status = Root->Open(
+        Root,
+        &LoaderFile,
+        (CHAR16 *)L"\\EFI\\BOOT\\BOOTX64.EFI",
+        EFI_FILE_MODE_READ,
+        0);
 
+    VOID *LoaderBuffer = (void *)0;
+    UINTN LoaderSize = 0;
+
+    if (Status == EFI_SUCCESS)
+    {
+        // サイズ取得
+        UINTN InfoSize = sizeof(EFI_FILE_INFO) + sizeof(CHAR16) * 128;
+        UINT8 InfoBuf[256];
+        EFI_FILE_INFO *Info = (EFI_FILE_INFO *)InfoBuf;
+        LoaderFile->GetInfo(LoaderFile, &gEfiFileInfoGuid, &InfoSize, Info);
+        LoaderSize = Info->FileSize;
+
+        // メモリ確保
+        SystemTable->BootServices->AllocatePool(EfiLoaderData, LoaderSize, &LoaderBuffer);
+
+        // 読み込み
+        LoaderFile->Read(LoaderFile, &LoaderSize, LoaderBuffer);
+        LoaderFile->Close(LoaderFile);
+    }
+    else
+    {
+        SystemTable->ConOut->OutputString(SystemTable->ConOut, (CHAR16 *)L"Warning: BOOTX64.EFI not found. Installation might be incomplete.\r\n");
+    }
+
+    struct BootVolumeConfig boot_volume;
+    boot_volume.kernel_file.buffer = KernelBuffer;
+    boot_volume.kernel_file.size = ReadSize;
+    boot_volume.bootloader_file.buffer = LoaderBuffer;
+    boot_volume.bootloader_file.size = LoaderSize;
+
+    SystemTable->ConOut->OutputString(SystemTable->ConOut, (CHAR16 *)L"Segments Loaded. Exiting Boot Services...\r\n");
+
+    FrameBufferConfig Config;
+    Config.FrameBufferBase = Gop->Mode->FrameBufferBase;
+    Config.FrameBufferSize = Gop->Mode->FrameBufferSize;
+    Config.HorizontalResolution = Gop->Mode->Info->HorizontalResolution;
+    Config.VerticalResolution = Gop->Mode->Info->VerticalResolution;
+    Config.PixelsPerScanLine = Gop->Mode->Info->PixelsPerScanLine;
+
+    Status = SystemTable->BootServices->GetMemoryMap(
+        &MemoryMapSize,
+        MemoryMap,
+        &MapKey,
+        &DescriptorSize,
+        &DescriptorVersion);
+
+    Status = SystemTable->BootServices->ExitBootServices(ImageHandle, MapKey);
+    if (Status != EFI_SUCCESS)
+    {
         Status = SystemTable->BootServices->GetMemoryMap(
             &MemoryMapSize,
             MemoryMap,
             &MapKey,
             &DescriptorSize,
             &DescriptorVersion);
-
-        Status = SystemTable->BootServices->ExitBootServices(ImageHandle, MapKey);
-        if (Status != EFI_SUCCESS)
-        {
-            Status = SystemTable->BootServices->GetMemoryMap(
-                &MemoryMapSize,
-                MemoryMap,
-                &MapKey,
-                &DescriptorSize,
-                &DescriptorVersion);
-            SystemTable->BootServices->ExitBootServices(ImageHandle, MapKey);
-        }
-
-        // メモリマップ情報を構造体にまとめる
-        struct MemoryMap memmap_arg;
-        memmap_arg.buffer_size = MemoryMapSize;
-        memmap_arg.buffer = MemoryMap;
-        memmap_arg.map_size = MemoryMapSize;
-        memmap_arg.map_key = MapKey;
-        memmap_arg.descriptor_size = DescriptorSize;
-        memmap_arg.descriptor_version = DescriptorVersion;
-
-        // 第1引数: FrameBufferConfig*, 第2引数: MemoryMap*
-        typedef void (*KernelEntryPoint)(FrameBufferConfig *, struct MemoryMap *);
-        KernelEntryPoint KernelMainStart = (KernelEntryPoint)Ehdr->e_entry;
-
-        KernelMainStart(&Config, &memmap_arg);
-        while (1)
-            ;
-    }
-    else
-    {
-        SystemTable->ConOut->OutputString(SystemTable->ConOut, (CHAR16 *)L"Error: Read failed\r\n");
+        SystemTable->BootServices->ExitBootServices(ImageHandle, MapKey);
     }
 
-    // ファイルハンドルを閉じる
-    KernelFile->Close(KernelFile);
+    // メモリマップ情報を構造体にまとめる
+    struct MemoryMap memmap_arg;
+    memmap_arg.buffer_size = MemoryMapSize;
+    memmap_arg.buffer = MemoryMap;
+    memmap_arg.map_size = MemoryMapSize;
+    memmap_arg.map_key = MapKey;
+    memmap_arg.descriptor_size = DescriptorSize;
+    memmap_arg.descriptor_version = DescriptorVersion;
+
+    // 第1引数: FrameBufferConfig*, 第2引数: MemoryMap*, 第3引数: BootVolumeConfig*
+    typedef void (*KernelEntryPoint)(FrameBufferConfig *, struct MemoryMap *, struct BootVolumeConfig *);
+    KernelEntryPoint KernelMainStart = (KernelEntryPoint)Ehdr->e_entry;
+
+    KernelMainStart(&Config, &memmap_arg, &boot_volume);
+    while (1)
+        ;
+
     Root->Close(Root);
 
     while (1)

@@ -281,6 +281,12 @@ namespace NVMe
 
     void Driver::Read(uint64_t lba, void *buffer, uint16_t count)
     {
+        if (count == 0)
+        {
+            kprintf("[NVMe] Warning: Read called with count 0. Ignored.\n");
+            return;
+        }
+        // kprintf("[NVMe DEBUG] Read LBA: %lx, Buf: %lx, Cnt: %d\n", lba, (uint64_t)buffer, count);
         SubmissionQueueEntry cmd;
         uint8_t *p = reinterpret_cast<uint8_t *>(&cmd);
         for (size_t i = 0; i < sizeof(cmd); ++i)
@@ -293,20 +299,24 @@ namespace NVMe
         cmd.cdw11 = (lba >> 32) & 0xFFFFFFFF;
         cmd.cdw12 = (count - 1) & 0xFFFF;
 
-        // 転送バイト数
         uint32_t size = count * lba_size_;
-
-        // PRP設定
-        // ※注意: MemoryManagerにFreeがないため、prp_listはリークしますが、
-        // 現段階では「OS起動中の動的確保は永続的」と割り切るか、
-        // 将来Freeを実装したときに解放するようにします。
         SetupPRPs(cmd, buffer, size);
+        /*
+        cmd.data_ptr[0] = reinterpret_cast<uint64_t>(buffer);
+        cmd.data_ptr[1] = 0;
+        */
 
         SendIOCommand(cmd);
     }
 
     void Driver::Write(uint64_t lba, const void *buffer, uint16_t count)
     {
+        if (count == 0)
+        {
+            kprintf("[NVMe] Warning: Write called with count 0. Ignored.\n");
+            return;
+        }
+        // kprintf("[NVMe DEBUG] Write LBA: %lx, Buf: %lx, Cnt: %d\n", lba, (uint64_t)buffer, count);
         SubmissionQueueEntry cmd;
         uint8_t *p = reinterpret_cast<uint8_t *>(&cmd);
         for (size_t i = 0; i < sizeof(cmd); ++i)
@@ -321,6 +331,10 @@ namespace NVMe
 
         uint32_t size = count * lba_size_;
         SetupPRPs(cmd, buffer, size);
+        /*
+        cmd.data_ptr[0] = reinterpret_cast<uint64_t>(buffer);
+        cmd.data_ptr[1] = 0;
+        */
 
         SendIOCommand(cmd);
     }
@@ -382,6 +396,7 @@ namespace NVMe
 
     void Driver::SendAdminCommand(SubmissionQueueEntry &cmd)
     {
+        __asm__ volatile("wbinvd");
         // SQにコマンド配置
         admin_sq_[sq_tail_] = cmd;
 
@@ -419,6 +434,9 @@ namespace NVMe
 
     void Driver::SendIOCommand(SubmissionQueueEntry &cmd)
     {
+        // kprintf("[NVMe CMD] Op:%x NSID:%d PRP1:%lx CDW10:%x CDW12:%x\n", cmd.opcode, cmd.nsid, cmd.data_ptr[0], cmd.cdw10, cmd.cdw12);
+        __asm__ volatile("wbinvd");
+
         // I/O SQに配置
         io_sq_[io_sq_tail_] = cmd;
 

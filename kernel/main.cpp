@@ -10,7 +10,9 @@
 #include "pci/pci.hpp"
 #include "shell/shell.hpp"
 #include "apic.hpp"
+#include "boot_info.hpp"
 #include "console.hpp"
+#include "cxx.hpp"
 #include "graphics.hpp"
 #include "interrupt.hpp"
 #include "io.hpp"
@@ -67,7 +69,10 @@ __attribute__((interrupt)) void KeyboardHandler(InterruptFrame *frame)
     g_lapic->EndOfInterrupt();
 }
 
-extern "C" __attribute__((ms_abi)) void KernelMain(const FrameBufferConfig &config, const MemoryMap &memmap)
+extern "C" __attribute__((ms_abi)) void KernelMain(
+    const FrameBufferConfig &config,
+    const MemoryMap &memmap,
+    const BootVolumeConfig &boot_volume)
 {
     __asm__ volatile("cli");
     const uint32_t kDesktopBG = 0xFF181818;
@@ -131,18 +136,81 @@ nvme_found:
         NVMe::g_nvme->IdentifyController();
         NVMe::g_nvme->CreateIOQueues();
 
-        uint64_t total_blocks = 2097152; // 仮の値 (Identify Namespaceで取得したnszeを使うべき)
-        FileSystem::FormatDiskGPT(total_blocks);
-        uint64_t part_size = total_blocks - 2048 - 34;
-        FileSystem::FormatPartitionFAT32(part_size);
+        uint8_t *check_buf = static_cast<uint8_t *>(MemoryManager::Allocate(512, 4096));
+        NVMe::g_nvme->Read(2048, check_buf, 1);
+        FileSystem::FAT32_BPB *check_bpb = reinterpret_cast<FileSystem::FAT32_BPB *>(check_buf);
+
+        // シグネチャが 0xAA55 でなければ未フォーマットとみなす
+        if (check_bpb->signature != 0xAA55)
+        {
+            kprintf("[Installer] Disk is empty. Starting formatting...\n");
+
+            // ディスク容量を取得するゲッターがNVMeドライバに必要ですが、
+            // 今は仮に固定値、または Identify で表示されていた値を使用します。
+            // ※本来は NVMe::g_nvme->GetTotalBlocks() などを実装すべきです
+            uint64_t disk_size = 1048576; // 例: 512MB分のセクタ数 (環境に合わせて調整してください)
+
+            // 1. GPTパーティション作成
+            FileSystem::FormatDiskGPT(disk_size);
+
+            // 2. FAT32フォーマット (パーティション1)
+            // LBA 2048 から最後まで
+            FileSystem::FormatPartitionFAT32(disk_size - 2048);
+
+            kprintf("[Installer] Format complete. Reboot is recommended but continuing...\n");
+        }
+        else
+        {
+            kprintf("[Installer] Valid file system detected.\n");
+        }
 
         FileSystem::FAT32Driver fat_driver(2048);
         fat_driver.Initialize();
-        // 書き込むデータ
-        const char *file_content = "Hello from Sylphia-OS! This file is on FAT32.";
-        // ファイル名 (8.3形式: 11文字固定)
-        // "TEST    TXT" -> TEST.TXT
-        fat_driver.WriteFile("TEST    TXT", file_content, 45);
+
+        kprintf("[Installer] Copying system files to NVMe...\n");
+
+        if (boot_volume.bootloader_file.buffer)
+        {
+            // フォルダ作成: Root -> EFI
+            uint32_t efi_cluster = fat_driver.CreateDirectory("EFI        ");
+            if (efi_cluster != 0)
+            {
+                // フォルダ作成: EFI -> BOOT
+                uint32_t boot_cluster = fat_driver.CreateDirectory("BOOT       ", efi_cluster);
+                if (boot_cluster != 0)
+                {
+                    // ファイル書き込み: \EFI\BOOT\BOOTX64.EFI
+                    fat_driver.WriteFile(
+                        "BOOTX64 EFI",
+                        boot_volume.bootloader_file.buffer,
+                        (uint32_t)boot_volume.bootloader_file.size,
+                        boot_cluster);
+                    kprintf("[Installer] Bootloader installed to \\EFI\\BOOT\\BOOTX64.EFI\n");
+
+                    // カーネルも同じ場所に置くのが一般的
+                    if (boot_volume.kernel_file.buffer)
+                    {
+                        fat_driver.WriteFile(
+                            "KERNEL  ELF",
+                            boot_volume.kernel_file.buffer,
+                            (uint32_t)boot_volume.kernel_file.size,
+                            0);
+                        kprintf("[Installer] Kernel installed to KERNEL.ELF\n");
+                    }
+                }
+            }
+        }
+
+        const char *startup_script = "\\EFI\\BOOT\\BOOTX64.EFI";
+        fat_driver.WriteFile(
+            "STARTUP NSH", // 8.3形式
+            startup_script,
+            21, // 文字列の長さ
+            0);
+
+        kprintf("[Installer] startup.nsh created.\n");
+
+        kprintf("[Installer] Installation Complete!\n");
     }
     else
     {

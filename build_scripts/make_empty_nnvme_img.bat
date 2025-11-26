@@ -1,0 +1,1 @@
+fsutil file createnew ..\nvme.img 1073741824

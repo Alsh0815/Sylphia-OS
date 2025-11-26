@@ -1,5 +1,6 @@
 #include "driver/nvme/nvme_driver.hpp"
 #include "fs/fat32/fat32_defs.hpp"
+#include "memory/memory_manager.hpp"
 #include "cxx.hpp"
 #include "printk.hpp"
 
@@ -14,7 +15,7 @@ namespace FileSystem
         kprintf("[Installer] Formatting Partition 1 as FAT32...\n");
 
         // バッファ確保
-        uint8_t *buf = new uint8_t[512];
+        uint8_t *buf = static_cast<uint8_t *>(MemoryManager::Allocate(512, 4096));
         memset(buf, 0, 512);
 
         // -----------------------------------------
@@ -116,11 +117,19 @@ namespace FileSystem
         uint64_t fat2_start = fat1_start + fat_sz_sec;
         NVMe::g_nvme->Write(fat2_start, buf, 1);
 
-        // 本来は全セクタ0書き込みすべきだが、
-        // 残りのFAT領域を0クリアするのは時間がかかるため、
-        // 新品イメージ前提なら省略可能 (今回は省略)。
+        memset(buf, 0, 512);
+        // FAT1の残り (セクタ1から127まで)
+        for (uint32_t i = 1; i < 128; ++i)
+        {
+            NVMe::g_nvme->Write(fat1_start + i, buf, 1);
+        }
+        // FAT2の残り
+        for (uint32_t i = 1; i < 128; ++i)
+        {
+            NVMe::g_nvme->Write(fat2_start + i, buf, 1);
+        }
 
-        kprintf("[Format] FAT Tables Initialized.\n");
+        kprintf("[Format] FAT Tables Initialized (Partial Clear).\n");
 
         // -----------------------------------------
         // 4. Root Directory 初期化 (Cluster 2)

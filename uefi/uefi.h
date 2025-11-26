@@ -38,6 +38,17 @@ typedef int32_t Elf64_Sword;
 typedef uint64_t Elf64_Xword;
 typedef int64_t Elf64_Sxword;
 
+struct FileBuffer
+{
+    VOID *buffer;
+    UINT64 size;
+};
+struct BootVolumeConfig
+{
+    struct FileBuffer kernel_file;
+    struct FileBuffer bootloader_file;
+};
+
 // ELFヘッダー (ファイルの先頭にある管理情報)
 typedef struct
 {
