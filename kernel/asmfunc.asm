@@ -7,6 +7,12 @@ LoadCR3:
     mov cr3, rdi
     ret
 
+; uint64_t GetCR2();
+global GetCR2
+GetCR2:
+    mov rax, cr2
+    ret
+
 ; uint64_t GetCR3();
 global GetCR3
 GetCR3:

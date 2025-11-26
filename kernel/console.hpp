@@ -13,6 +13,8 @@ public:
     // 指定した色に変更する（エラーログなどで赤くしたい時用）
     void SetColor(uint32_t fg_color, uint32_t bg_color);
 
+    void Panic(uint32_t fg_color, uint32_t bg_color);
+
 private:
     FrameBufferConfig config_;
     uint32_t fg_color_, bg_color_;

@@ -30,46 +30,6 @@ const uint32_t kColorGreen = 0xFF00FF00;
 // Sylphia-OSっぽい背景色 (例: 少し青みがかったダークグレー)
 const uint32_t kColorDesktopBG = 0xFF454545;
 
-// Shiftキーの状態管理フラグ
-bool g_shift_pressed = false;
-
-// 使用するキーボード配列設定 (ここで切り替え可能！)
-// KeyboardLayout kCurrentLayout = KeyboardLayout::US_Standard;
-const KeyboardLayout kCurrentLayout = KeyboardLayout::JP_Standard; // 日本語配列の場合
-
-// 割り込みフレーム構造体 (CPUがスタックに積む情報)
-struct InterruptFrame
-{
-    uint64_t rip;
-    uint64_t cs;
-    uint64_t rflags;
-    uint64_t rsp;
-    uint64_t ss;
-};
-
-// ■ キーボード割り込みハンドラ
-__attribute__((interrupt)) void KeyboardHandler(InterruptFrame *frame)
-{
-    uint8_t scancode = IoIn8(0x60);
-    bool is_break = (scancode & 0x80) != 0;
-    uint8_t keycode = scancode & 0x7F;
-
-    if (keycode == 0x2A || keycode == 0x36)
-    {
-        g_shift_pressed = !is_break;
-    }
-    else if (!is_break)
-    {
-        char ascii = ConvertScanCodeToAscii(keycode, g_shift_pressed, kCurrentLayout);
-        if (ascii != 0 && g_shell)
-        {
-            g_shell->OnKey(ascii);
-        }
-    }
-
-    g_lapic->EndOfInterrupt();
-}
-
 extern "C" __attribute__((ms_abi)) void KernelMain(
     const FrameBufferConfig &config,
     const MemoryMap &memmap,
@@ -92,6 +52,13 @@ extern "C" __attribute__((ms_abi)) void KernelMain(
     MemoryManager::Initialize(memmap);
     kprintf("Memory Manager Initialized.\n");
     PageManager::Initialize();
+
+    kprintf("Testing Divide Error Exception...\n");
+
+    // コンパイラの最適化で消されないように volatile を使う
+    volatile int a = 100;
+    volatile int b = 0;
+    volatile int c = a / b; // ここで #DE が発生するはず
 
     kprintf("Searching for NVMe Controller...\n");
 
@@ -225,8 +192,6 @@ nvme_found:
     static LocalAPIC lapic;
     g_lapic = &lapic;
     g_lapic->Enable();
-
-    SetIDTEntry(0x40, (uint64_t)KeyboardHandler, 0x08, 0xE);
 
     IOAPIC::Enable(1, 0x40, g_lapic->GetID());
     kprintf("I/O APIC: Keyboard (IRQ1) -> Vector 0x40\n");

@@ -49,6 +49,17 @@ void Console::SetColor(uint32_t fg_color, uint32_t bg_color)
     bg_color_ = bg_color;
 }
 
+void Console::Panic(uint32_t fg_color, uint32_t bg_color)
+{
+    fg_color_ = fg_color;
+    bg_color_ = bg_color;
+
+    FillRectangle(config_, 0, 0, config_.HorizontalResolution, config_.VerticalResolution, bg_color_);
+
+    cursor_row_ = 0;
+    cursor_column_ = 0;
+}
+
 void Console::NewLine()
 {
     cursor_column_ = 0;

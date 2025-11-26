@@ -5,6 +5,16 @@
 #define IDT_TYPE_INTERRUPT_GATE 0xE // 割り込みゲート (割り込み中、他の割り込みを禁止する)
 #define IDT_TYPE_TRAP_GATE 0xF      // トラップゲート (他の割り込みを許可する)
 
+// 割り込みフレーム構造体 (CPUがスタックに積む情報)
+struct InterruptFrame
+{
+    uint64_t rip;
+    uint64_t cs;
+    uint64_t rflags;
+    uint64_t rsp;
+    uint64_t ss;
+};
+
 // IDTの1エントリ (16バイト)
 struct InterruptDescriptor
 {
