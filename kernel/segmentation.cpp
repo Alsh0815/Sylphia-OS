@@ -1,79 +1,105 @@
+#include "cxx.hpp"
 #include "segmentation.hpp"
 #include "x86_descriptor.hpp"
 
-// GDT本体 (配列として確保)
-// 0: Null, 1: Kernel Code, 2: Kernel Data
-SegmentDescriptor gdt[3];
+extern "C" void LoadGDT(uint16_t limit, uint64_t offset);
+extern "C" void SetDSAll(uint16_t value);
+extern "C" void LoadTR(uint16_t sel);
 
-// GDTレジスタ (lgdt命令に渡す構造体)
-struct GDTRegister
-{
-    uint16_t limit;
-    uint64_t base;
-} __attribute__((packed));
+uint64_t gdt[8];
+TSS64 tss;
 
-// セグメント記述子をセットするヘルパー
-void SetCodeSegment(SegmentDescriptor &desc, uint64_t type, uint64_t dpl)
+// GDTエントリを作るヘルパー
+uint64_t MakeSegmentDescriptor(uint32_t type, uint32_t descriptor_privilege_level)
 {
-    desc.data = 0;
-    desc.bits.type = type;
-    desc.bits.system_segment = 1; // 1: Code/Data Segment
-    desc.bits.descriptor_privilege_level = dpl;
-    desc.bits.present = 1;
-    desc.bits.long_mode = 1;              // 64bit
-    desc.bits.default_operation_size = 0; // 64bit code segmentでは0にする決まり
-    desc.bits.granularity = 1;
+    uint64_t desc = 0;
+    // Code/Data Segment Descriptor (System=1)
+    desc |= static_cast<uint64_t>(type) << 40;
+    desc |= static_cast<uint64_t>(descriptor_privilege_level) << 45;
+    desc |= static_cast<uint64_t>(1) << 47; // Present
+    desc |= static_cast<uint64_t>(1) << 44; // System Segment (1 for Code/Data)
+    desc |= static_cast<uint64_t>(1) << 53; // Long Mode (L)
+    // D/B bit is 0 for 64-bit code
+    return desc;
 }
 
-void SetDataSegment(SegmentDescriptor &desc, uint64_t type, uint64_t dpl)
+// データセグメント用 (Execute Disable等)
+uint64_t MakeDataSegmentDescriptor(uint32_t descriptor_privilege_level)
 {
-    SetCodeSegment(desc, type, dpl);
-    desc.bits.long_mode = 0;
-    desc.bits.default_operation_size = 1; // 32bit protected modeなど
+    uint64_t desc = 0;
+    // Type=2 (Read/Write)
+    desc |= static_cast<uint64_t>(2) << 40;
+    desc |= static_cast<uint64_t>(descriptor_privilege_level) << 45;
+    desc |= static_cast<uint64_t>(1) << 47; // Present
+    desc |= static_cast<uint64_t>(1) << 44; // System Segment
+    // Long Mode bit はデータセグメントでは無視されることが多いが0にしておく
+    return desc;
 }
 
-// アセンブリ命令のラッパー
-// GDTをロードし、セグメントレジスタ(CS, DS, SS...)をリロードする
-void LoadGDT(uint16_t limit, uint64_t base)
+void SetTSSDescriptor(int index, uint64_t base, uint32_t limit)
 {
-    GDTRegister gdtr;
-    gdtr.limit = limit;
-    gdtr.base = base;
+    // TSS Descriptor は System Segment (S=0) なので構造が特殊
+    // かつ 16バイト (2エントリ分) を使う
 
-    // lgdt命令: ここは %0 (変数参照) なので % は1つでOK
-    __asm__ volatile("lgdt %0" ::"m"(gdtr));
+    // Low 8 bytes
+    uint64_t low = 0;
+    low |= (limit & 0xFFFF);
+    low |= (base & 0xFFFF) << 16;
+    low |= ((base >> 16) & 0xFF) << 32;
+    low |= (uint64_t)0b1001 << 40; // Type=9 (Available 64-bit TSS)
+    low |= (uint64_t)0 << 44;      // System Segment (0)
+    low |= (uint64_t)0 << 45;      // DPL=0 (TSS自体はカーネルだけが触る)
+    low |= (uint64_t)1 << 47;      // Present
+    low |= (uint64_t)((limit >> 16) & 0xF) << 48;
+    low |= ((base >> 24) & 0xFF) << 56;
 
-    // セグメントレジスタの更新
-    // ここは拡張アセンブラ構文なので、レジスタの % は %% にエスケープ必須
-    __asm__ volatile(
-        "movw $0x10, %%ax\n" // %ax -> %%ax
-        "movw %%ax, %%ds\n"  // %ds -> %%ds
-        "movw %%ax, %%es\n"
-        "movw %%ax, %%fs\n"
-        "movw %%ax, %%gs\n"
-        "movw %%ax, %%ss\n"
+    // High 8 bytes
+    uint64_t high = 0;
+    high |= (base >> 32);
 
-        "pushq $0x08\n"
-        "leaq .next_label(%%rip), %%rax\n" // %rip -> %%rip, %rax -> %%rax
-        "pushq %%rax\n"
-        "lretq\n"
-        ".next_label:\n"
-        : : : "rax");
+    gdt[index] = low;
+    gdt[index + 1] = high;
 }
 
 void SetupSegments()
 {
-    // 0: Null Descriptor (必須)
-    gdt[0].data = 0;
+    // 0: Null
+    gdt[0] = 0;
 
-    // 1: Kernel Code Segment
-    // Type=10 (Execute/Read), DPL=0 (Ring0/Kernel)
-    SetCodeSegment(gdt[1], 10, 0);
+    // 1: Kernel CS (Type=10: Execute/Read, DPL=0)
+    gdt[1] = MakeSegmentDescriptor(10, 0);
 
-    // 2: Kernel Data Segment
-    // Type=2 (Read/Write), DPL=0 (Ring0/Kernel)
-    SetDataSegment(gdt[2], 2, 0);
+    // 2: Kernel DS (Type=2: Read/Write, DPL=0)
+    gdt[2] = MakeDataSegmentDescriptor(0);
 
-    // CPUにロード (サイズ-1 を渡すのが仕様)
-    LoadGDT(sizeof(gdt) - 1, (uint64_t)&gdt[0]);
+    // 3: User DS (32bit dummy) - NULLにしておくのが一般的
+    gdt[3] = 0;
+
+    // 4: User DS (64bit) (Type=2: Read/Write, DPL=3)
+    gdt[4] = MakeDataSegmentDescriptor(3);
+
+    // 5: User CS (64bit) (Type=10: Execute/Read, DPL=3)
+    gdt[5] = MakeSegmentDescriptor(10, 3);
+
+    // TSSの初期化
+    memset(&tss, 0, sizeof(tss));
+    // IO Map BaseをTSSサイズの以上に設定してIO許可ビットマップを無効化
+    tss.iomap_base = sizeof(tss);
+
+    // 6 & 7: TSS Descriptor
+    SetTSSDescriptor(6, reinterpret_cast<uint64_t>(&tss), sizeof(tss) - 1);
+
+    // GDTロード
+    LoadGDT(sizeof(gdt) - 1, reinterpret_cast<uint64_t>(&gdt[0]));
+
+    // セグメントレジスタ更新
+    SetDSAll(0); // Null Selector (x64ではDS/ES/FS/GSは0で良い)
+
+    // Task Register ロード
+    LoadTR(kTSS);
+}
+
+void SetKernelStack(uint64_t stack_addr)
+{
+    tss.rsp0 = stack_addr;
 }
