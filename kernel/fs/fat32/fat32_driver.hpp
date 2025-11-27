@@ -20,6 +20,11 @@ namespace FileSystem
         // ディレクトリ内のファイルを表示する
         // cluster: 表示したいディレクトリのクラスタ (0=ルート)
         void ListDirectory(uint32_t cluster = 0);
+        // ファイルを削除する
+        // name: ファイル名
+        // parent_cluster: 親ディレクトリ (0=ルート)
+        // return: 成功したらtrue
+        bool DeleteFile(const char *name, uint32_t parent_cluster = 0);
         // ファイルを読み込む
         // name: ファイル名 (8.3形式, 例: "KERNEL  ELF")
         // buffer: 読み込み先のバッファ
@@ -47,10 +52,12 @@ namespace FileSystem
 
         // ヘルパー関数
         uint64_t ClusterToLBA(uint32_t cluster);
-        uint32_t AllocateCluster();                        // 空きクラスタを1つ確保して返す
-        void LinkCluster(uint32_t current, uint32_t next); // FATテーブルを更新
+        uint32_t AllocateCluster(); // 空きクラスタを1つ確保して返す
         // 指定したクラスタの次のクラスタ番号をFATから読み取る
         uint32_t GetNextCluster(uint32_t current_cluster);
+        void LinkCluster(uint32_t current, uint32_t next); // FATテーブルを更新
+        // 指定したクラスタから始まるFATチェーンを全て解放(0)にする ■■■
+        void FreeChain(uint32_t start_cluster);
         // 8.3形式のファイル名比較ヘルパー
         // entry_name: ディレクトリエントリ内の名前 (スペース埋めあり)
         // target_name: 比較したい名前 (ドットあり)

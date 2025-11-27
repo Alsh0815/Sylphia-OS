@@ -146,6 +146,25 @@ void Shell::ExecuteCommand()
             kprintf("Error: File System not initialized.\n");
         }
     }
+    else if (strncmp(buffer_, "rm ", 3) == 0)
+    {
+        char *filename = &buffer_[3];
+        if (FileSystem::g_fat32_driver)
+        {
+            if (FileSystem::g_fat32_driver->DeleteFile(filename))
+            {
+                kprintf("Deleted %s\n", filename);
+            }
+            else
+            {
+                kprintf("Could not delete %s\n", filename);
+            }
+        }
+        else
+        {
+            kprintf("File System not initialized.\n");
+        }
+    }
     else if (strcmp(buffer_, "whoami") == 0)
     {
         kprintf("root\n");

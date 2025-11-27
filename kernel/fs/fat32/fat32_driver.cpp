@@ -120,6 +120,24 @@ namespace FileSystem
         return next;
     }
 
+    void FAT32Driver::FreeChain(uint32_t start_cluster)
+    {
+        // クラスタ番号が有効範囲にある限りループ
+        uint32_t current = start_cluster;
+        while (current >= 2 && current < 0x0FFFFFF8)
+        {
+            // 次のクラスタを覚えておく
+            uint32_t next = GetNextCluster(current);
+
+            // 現在のクラスタを「空き(0)」にする
+            // LinkCluster(current, 0) は「currentの位置に0を書く」ので解放と同じ意味
+            LinkCluster(current, 0);
+
+            // 次へ進む
+            current = next;
+        }
+    }
+
     bool FAT32Driver::IsNameEqual(const char *entry_name, const char *target_name)
     {
         // entry_name: "KERNEL  ELF" (11文字固定, スペース埋め)
@@ -367,6 +385,82 @@ namespace FileSystem
             current_cluster = GetNextCluster(current_cluster);
         }
         MemoryManager::Free(buf, cluster_bytes);
+    }
+
+    bool FAT32Driver::DeleteFile(const char *name, uint32_t parent_cluster)
+    {
+        kprintf("[FAT32] Deleting file: %s...\n", name);
+
+        uint32_t current_cluster = (parent_cluster == 0) ? root_clus_ : parent_cluster;
+        uint8_t *buf = static_cast<uint8_t *>(MemoryManager::Allocate(sec_per_clus_ * 512, 4096));
+
+        // ディレクトリ内を検索
+        while (current_cluster < 0x0FFFFFF8)
+        {
+            uint64_t lba = ClusterToLBA(current_cluster);
+
+            // 1クラスタ分読み込み
+            NVMe::g_nvme->Read(lba, buf, sec_per_clus_);
+
+            DirectoryEntry *entries = reinterpret_cast<DirectoryEntry *>(buf);
+            int num_entries = (sec_per_clus_ * 512) / 32;
+            bool found = false;
+            int found_index = -1;
+
+            for (int i = 0; i < num_entries; ++i)
+            {
+                if (entries[i].name[0] == 0x00)
+                    break; // これ以上なし
+                if ((unsigned char)entries[i].name[0] == 0xE5)
+                    continue; // 既に削除済み
+                if (entries[i].attr == 0x0F)
+                    continue; // LFN
+
+                if (IsNameEqual(entries[i].name, name))
+                {
+                    found = true;
+                    found_index = i;
+                    break;
+                }
+            }
+
+            if (found)
+            {
+                // 1. ファイルの実体(クラスタ)を解放する
+                uint32_t fst_clus = (entries[found_index].fst_clus_hi << 16) | entries[found_index].fst_clus_lo;
+                if (fst_clus != 0)
+                {
+                    FreeChain(fst_clus);
+                }
+
+                // 2. ディレクトリエントリを「削除済み(0xE5)」にマークする
+                entries[found_index].name[0] = 0xE5;
+
+                // 3. ディスクに書き戻す
+
+                // found_index はバッファ全体の何番目か。
+                // 1セクタ=16エントリ(512/32)。
+                // 該当するセクタのオフセットを計算。
+                uint32_t sector_offset = found_index / 16;
+
+                // バッファ内の該当セクタの先頭ポインタ
+                uint8_t *sector_ptr = buf + (sector_offset * 512);
+
+                // 書き込み (LBA + セクタオフセット)
+                NVMe::g_nvme->Write(lba + sector_offset, sector_ptr, 1);
+
+                kprintf("[FAT32] File deleted.\n");
+                MemoryManager::Free(buf, sec_per_clus_ * 512);
+                return true;
+            }
+
+            // 次のクラスタへ
+            current_cluster = GetNextCluster(current_cluster);
+        }
+
+        MemoryManager::Free(buf, sec_per_clus_ * 512);
+        kprintf("[FAT32] File not found.\n");
+        return false;
     }
 
     uint32_t FAT32Driver::ReadFile(const char *name, void *buffer, uint32_t buffer_size)
