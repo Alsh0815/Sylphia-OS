@@ -145,6 +145,7 @@ SyscallEntry:
     ; ※ RCXはRIP退避用に使われているので上書き注意
     ; ※ R10はユーザー側の第4引数だが、syscall命令でRCXが破壊されるため
     ;    ユーザー側は第4引数をR10に入れて渡す規約が一般的 (Linuxなど)
+    mov r8, rcx ; 戻り先RIPをR8に保存
     mov rcx, rdx ; Arg3
     mov rdx, rsi ; Arg2
     mov rsi, rdi ; Arg1
@@ -166,4 +167,4 @@ SyscallEntry:
     ; 7. GSをユーザー用に戻す
     swapgs
     ; 8. ユーザーモードへ復帰
-    sysretq
+    db 0x48, 0x0f, 0x07 ; sysretq 命令のバイナリコード

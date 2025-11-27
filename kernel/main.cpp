@@ -31,58 +31,37 @@ const uint32_t kColorGreen = 0xFF00FF00;
 // Sylphia-OSっぽい背景色 (例: 少し青みがかったダークグレー)
 const uint32_t kColorDesktopBG = 0xFF454545;
 
-// ■ ユーザーモードで実行させたいコード
-void UserModeEntry()
-{
-    kprintf("[UserMode] Entered User Mode! Calling Syscall...\n");
+// ユーザーモード用のコードバイナリ（ただの無限ループとsyscall）
+// mov rax, 1; syscall; jmp -2 (自分自身へ無限ループ)
+const uint8_t kUserCode[] = {
+    0x48, 0xc7, 0xc0, 0x01, 0x00, 0x00, 0x00, // mov rax, 1
+    0x0f, 0x05,                               // syscall
+    0xeb, 0xfe                                // jmp $ (無限ループ)
+};
 
-    // システムコール呼び出し (インラインアセンブラ)
-    // RAX: システムコール番号 (例: 1)
-    // RDI: 第1引数 (例: 42)
-    // RSI: 第2引数 (例: 100)
-    // RDX: 第3引数 (例: 200)
-    // RCX, R11: syscall命令で破壊されるのでclobberリストに入れる
-    __asm__ volatile(
-        "mov $1, %%rax \n"
-        "mov $42, %%rdi \n"
-        "mov $100, %%rsi \n"
-        "mov $200, %%rdx \n"
-        "syscall"
-        :
-        :
-        : "rax", "rdi", "rsi", "rdx", "rcx", "r11");
-
-    kprintf("[UserMode] Syscall returned!\n");
-
-    while (1)
-        __asm__ volatile("hlt");
-}
-
-// ■ カーネルモードからユーザーモードへ強制遷移する関数
 void JumpToUserMode()
 {
     kprintf("[Kernel] Switching to Ring 3...\n");
 
-    // ユーザー用のスタックを確保
+    // 1. ユーザー用のスタック確保
     const size_t kUserStackSize = 4096;
     void *user_stack = MemoryManager::Allocate(kUserStackSize);
     uint64_t user_rsp = reinterpret_cast<uint64_t>(user_stack) + kUserStackSize;
 
-    // IRETQ を使って Ring 3 へ遷移するためのフレームをスタックに作る
-    // Stack Layout: SS, RSP, RFLAGS, CS, RIP
+    // 2. ユーザー用のコード領域確保（ここが重要）
+    // MemoryManager::Allocate で確保した領域は U/S=1 になっている前提
+    void *user_code_mem = MemoryManager::Allocate(4096);
+    memcpy(user_code_mem, kUserCode, sizeof(kUserCode));
 
-    // セグメントセレクタ (segmentation.hppの定義を使用)
-    // 下位2ビットを 11 (Ring 3) にセットする必要がある
-    uint16_t ss = kUserDS; // 0x23 (0x20 | 3)
-    uint16_t cs = kUserCS; // 0x2B (0x28 | 3)
+    // コード領域のアドレス
+    uint64_t rip = reinterpret_cast<uint64_t>(user_code_mem);
 
-    // RFLAGS (割り込み許可 IF=1 をセット)
-    uint64_t rflags = 0x202;
+    // セグメントセレクタ
+    uint16_t ss = kUserDS;   // 0x23
+    uint16_t cs = kUserCS;   // 0x2B
+    uint64_t rflags = 0x202; // IF=1 (割り込み許可)
 
-    uint64_t rip = reinterpret_cast<uint64_t>(UserModeEntry);
-
-    // インラインアセンブラでスタックに積んで iretq
-    // ※ データセグメントレジスタ(DS, ES, FS, GS)もユーザー用に切り替える
+    // Ring 3 へ遷移
     __asm__ volatile(
         "mov %0, %%ds \n"
         "mov %0, %%es \n"

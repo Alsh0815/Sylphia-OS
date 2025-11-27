@@ -125,9 +125,10 @@ __attribute__((interrupt)) void DoubleFaultHandler(InterruptFrame *frame, uint64
 
 __attribute__((interrupt)) void GPFaultHandler(InterruptFrame *frame, uint64_t error_code)
 {
+    /*
     if (g_console)
         g_console->Panic(kWhiteColor, kBsodBgColor);
-
+    */
     if (g_console)
         g_console->SetColor(kRedColor, kBsodBgColor);
     kprintf("\n========================================\n");
@@ -137,9 +138,12 @@ __attribute__((interrupt)) void GPFaultHandler(InterruptFrame *frame, uint64_t e
     if (g_console)
         g_console->SetColor(kWhiteColor, kBsodBgColor);
     kprintf("A fatal exception has occurred at:\n");
-    kprintf("RIP: %lx  CS: %lx\n", frame->rip, frame->cs);
+    kprintf("RIP   : %lx\n", frame->rip);
+    kprintf("CS    :  %lx\n", frame->cs);
     kprintf("RFLAGS: %lx\n", frame->rflags);
-    kprintf("Error Code: %lx\n\n", error_code);
+    kprintf("RSP   : %lx\n", frame->rsp);
+    kprintf("SS    :  %lx\n", frame->ss);
+    kprintf("Error Code: %lx\n", error_code);
 
     kprintf("System Halted. Please reset the machine.\n");
 

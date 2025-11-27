@@ -27,12 +27,14 @@ uint64_t MakeSegmentDescriptor(uint32_t type, uint32_t descriptor_privilege_leve
 uint64_t MakeDataSegmentDescriptor(uint32_t descriptor_privilege_level)
 {
     uint64_t desc = 0;
-    // Type=2 (Read/Write)
+    desc |= 0xFFFF;
     desc |= static_cast<uint64_t>(2) << 40;
     desc |= static_cast<uint64_t>(descriptor_privilege_level) << 45;
     desc |= static_cast<uint64_t>(1) << 47; // Present
     desc |= static_cast<uint64_t>(1) << 44; // System Segment
-    // Long Mode bit はデータセグメントでは無視されることが多いが0にしておく
+    desc |= static_cast<uint64_t>(0xF) << 48;
+    desc |= static_cast<uint64_t>(1) << 55;
+    // desc |= static_cast<uint64_t>(1) << 54;
     return desc;
 }
 
@@ -72,8 +74,8 @@ void SetupSegments()
     // 2: Kernel DS (Type=2: Read/Write, DPL=0)
     gdt[2] = MakeDataSegmentDescriptor(0);
 
-    // 3: User DS (32bit dummy) - NULLにしておくのが一般的
-    gdt[3] = 0;
+    // 3: User DS (32bit dummy)
+    gdt[3] = 0x00cffa000000ffff;
 
     // 4: User DS (64bit) (Type=2: Read/Write, DPL=3)
     gdt[4] = MakeDataSegmentDescriptor(3);

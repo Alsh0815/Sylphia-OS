@@ -1,0 +1,1 @@
+objdump -d -S -C ../build/kernel.elf > ../kernel_dump.txt
