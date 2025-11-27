@@ -53,13 +53,6 @@ extern "C" __attribute__((ms_abi)) void KernelMain(
     kprintf("Memory Manager Initialized.\n");
     PageManager::Initialize();
 
-    kprintf("Testing Divide Error Exception...\n");
-
-    // コンパイラの最適化で消されないように volatile を使う
-    volatile int a = 100;
-    volatile int b = 0;
-    volatile int c = a / b; // ここで #DE が発生するはず
-
     kprintf("Searching for NVMe Controller...\n");
 
     // PCIバスを探索してNVMeを探す (簡易実装)
@@ -133,23 +126,23 @@ nvme_found:
             kprintf("[Installer] Valid file system detected.\n");
         }
 
-        FileSystem::FAT32Driver fat_driver(2048);
-        fat_driver.Initialize();
+        FileSystem::g_fat32_driver = new FileSystem::FAT32Driver(2048);
+        FileSystem::g_fat32_driver->Initialize();
 
         kprintf("[Installer] Copying system files to NVMe...\n");
 
         if (boot_volume.bootloader_file.buffer)
         {
             // フォルダ作成: Root -> EFI
-            uint32_t efi_cluster = fat_driver.CreateDirectory("EFI        ");
+            uint32_t efi_cluster = FileSystem::g_fat32_driver->CreateDirectory("EFI        ");
             if (efi_cluster != 0)
             {
                 // フォルダ作成: EFI -> BOOT
-                uint32_t boot_cluster = fat_driver.CreateDirectory("BOOT       ", efi_cluster);
+                uint32_t boot_cluster = FileSystem::g_fat32_driver->CreateDirectory("BOOT       ", efi_cluster);
                 if (boot_cluster != 0)
                 {
                     // ファイル書き込み: \EFI\BOOT\BOOTX64.EFI
-                    fat_driver.WriteFile(
+                    FileSystem::g_fat32_driver->WriteFile(
                         "BOOTX64 EFI",
                         boot_volume.bootloader_file.buffer,
                         (uint32_t)boot_volume.bootloader_file.size,
@@ -159,7 +152,7 @@ nvme_found:
                     // カーネルも同じ場所に置くのが一般的
                     if (boot_volume.kernel_file.buffer)
                     {
-                        fat_driver.WriteFile(
+                        FileSystem::g_fat32_driver->WriteFile(
                             "KERNEL  ELF",
                             boot_volume.kernel_file.buffer,
                             (uint32_t)boot_volume.kernel_file.size,
@@ -171,7 +164,7 @@ nvme_found:
         }
 
         const char *startup_script = "\\EFI\\BOOT\\BOOTX64.EFI";
-        fat_driver.WriteFile(
+        FileSystem::g_fat32_driver->WriteFile(
             "STARTUP NSH", // 8.3形式
             startup_script,
             21, // 文字列の長さ

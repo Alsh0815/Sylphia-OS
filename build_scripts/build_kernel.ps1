@@ -47,6 +47,7 @@ foreach ($src in $SOURCES) {
         -fno-rtti -fno-exceptions `
         -mno-red-zone `
         -mgeneral-regs-only `
+        -I.. `
         -I..\kernel `
         -c $src `
         -o $objPath

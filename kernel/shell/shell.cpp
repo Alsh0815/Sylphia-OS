@@ -1,3 +1,6 @@
+#include <std/string.h>
+#include "fs/fat32/fat32_driver.hpp"
+#include "memory/memory_manager.hpp"
 #include "shell/shell.hpp"
 #include "console.hpp"
 #include "printk.hpp"
@@ -86,13 +89,62 @@ void Shell::ExecuteCommand()
     {
         kprintf("Available commands: hello, help, clear, whoami\n");
     }
+    else if (strncmp(buffer_, "cat ", 4) == 0)
+    {
+        // "cat " の後ろがファイル名
+        char *filename = &buffer_[4];
+
+        // ファイルシステムが初期化されているか確認
+        if (!FileSystem::g_fat32_driver)
+        {
+            kprintf("Error: File System not initialized.\n");
+            return;
+        }
+
+        uint32_t buf_size = 4096;
+        char *buf = static_cast<char *>(MemoryManager::Allocate(buf_size));
+
+        // バッファを0クリア
+        memset(buf, 0, buf_size);
+
+        // ファイル読み込み実行
+        uint32_t bytes_read = FileSystem::g_fat32_driver->ReadFile(filename, buf, buf_size);
+
+        if (bytes_read > 0)
+        {
+            // テキストファイルとして表示
+            // 安全のため、読み込んだ最後の文字の次は必ずNULLにする
+            if (bytes_read < buf_size)
+                buf[bytes_read] = '\0';
+            else
+                buf[buf_size - 1] = '\0';
+
+            kprintf("%s\n", buf);
+        }
+        else
+        {
+            kprintf("Error: File not found or empty.\n");
+        }
+
+        MemoryManager::Free(buf, buf_size);
+    }
     else if (strcmp(buffer_, "clear") == 0)
     {
         // 画面クリア機能 (未実装なら改行連打でごまかす)
         // ※GraphicsやConsoleにClearメソッドを追加するのが理想
         for (int i = 0; i < 30; i++)
             kprintf("\n");
-        // カーソル位置リセット等の機能も必要ですが、簡易的に
+    }
+    else if (strcmp(buffer_, "ls") == 0)
+    {
+        if (FileSystem::g_fat32_driver)
+        {
+            FileSystem::g_fat32_driver->ListDirectory(); // 引数なし＝ルートディレクトリ
+        }
+        else
+        {
+            kprintf("Error: File System not initialized.\n");
+        }
     }
     else if (strcmp(buffer_, "whoami") == 0)
     {

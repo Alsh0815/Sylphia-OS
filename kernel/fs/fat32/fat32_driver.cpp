@@ -7,6 +7,7 @@
 
 namespace FileSystem
 {
+    FAT32Driver *g_fat32_driver = nullptr;
 
     FAT32Driver::FAT32Driver(uint64_t partition_lba)
         : part_lba_(partition_lba) {}
@@ -102,6 +103,75 @@ namespace FileSystem
         MemoryManager::Free(buf, 512);
     }
 
+    uint32_t FAT32Driver::GetNextCluster(uint32_t current_cluster)
+    {
+        uint32_t sector_offset = current_cluster / 128; // 1セクタに128エントリ
+        uint32_t entry_offset = current_cluster % 128;
+
+        uint64_t target_lba = fat_start_lba_ + sector_offset;
+
+        uint8_t *buf = static_cast<uint8_t *>(MemoryManager::Allocate(512, 4096));
+        NVMe::g_nvme->Read(target_lba, buf, 1);
+
+        uint32_t *entries = reinterpret_cast<uint32_t *>(buf);
+        uint32_t next = entries[entry_offset] & 0x0FFFFFFF; // 下位28ビットが有効
+
+        MemoryManager::Free(buf, 512);
+        return next;
+    }
+
+    bool FAT32Driver::IsNameEqual(const char *entry_name, const char *target_name)
+    {
+        // entry_name: "KERNEL  ELF" (11文字固定, スペース埋め)
+        // target_name: "kernel.elf" (ユーザ入力)
+
+        char converted[11];
+        memset(converted, ' ', 11);
+
+        int i = 0; // target_name index
+        int j = 0; // converted index
+
+        // 1. ベース名部分 (ドットの前まで)
+        while (target_name[i] && target_name[i] != '.')
+        {
+            if (j < 8)
+            {
+                char c = target_name[i];
+                // 小文字 -> 大文字変換
+                if (c >= 'a' && c <= 'z')
+                    c -= 32;
+                converted[j++] = c;
+            }
+            i++;
+        }
+
+        // 2. ドットがあれば拡張子部分へ
+        if (target_name[i] == '.')
+        {
+            i++;   // ドットをスキップ
+            j = 8; // 拡張子エリアへ移動
+            while (target_name[i])
+            {
+                if (j < 11)
+                {
+                    char c = target_name[i];
+                    if (c >= 'a' && c <= 'z')
+                        c -= 32;
+                    converted[j++] = c;
+                }
+                i++;
+            }
+        }
+
+        // 3. 比較
+        for (int k = 0; k < 11; ++k)
+        {
+            if (entry_name[k] != converted[k])
+                return false;
+        }
+        return true;
+    }
+
     void FAT32Driver::AddDirectoryEntry(const char *name, uint32_t start_cluster, uint32_t size, uint8_t attr, uint32_t parent_cluster)
     {
         // 親ディレクトリの開始クラスタを決定 (0ならルート)
@@ -136,6 +206,53 @@ namespace FileSystem
         }
         MemoryManager::Free(buf, 512);
         kprintf("[FAT32] Directory full!\n");
+    }
+
+    bool FAT32Driver::FindDirectoryEntry(const char *name, uint32_t parent_cluster, DirectoryEntry *found_entry)
+    {
+        uint32_t current_cluster = (parent_cluster == 0) ? root_clus_ : parent_cluster;
+        uint8_t *buf = static_cast<uint8_t *>(MemoryManager::Allocate(sec_per_clus_ * 512, 4096));
+
+        while (current_cluster < 0x0FFFFFF8)
+        {
+            uint64_t lba = ClusterToLBA(current_cluster);
+
+            // 1クラスタ分読み込み
+            NVMe::g_nvme->Read(lba, buf, sec_per_clus_);
+
+            DirectoryEntry *entries = reinterpret_cast<DirectoryEntry *>(buf);
+            int num_entries = (sec_per_clus_ * 512) / 32;
+
+            for (int i = 0; i < num_entries; ++i)
+            {
+                // 0x00: これ以降エントリなし
+                if (entries[i].name[0] == 0x00)
+                {
+                    MemoryManager::Free(buf, sec_per_clus_ * 512);
+                    return false;
+                }
+                // 0xE5: 削除済み
+                if ((unsigned char)entries[i].name[0] == 0xE5)
+                    continue;
+
+                // 属性チェック (ボリュームラベル等はスキップ)
+                if (entries[i].attr == 0x0F)
+                    continue; // LFN (Long File Name) スキップ
+
+                if (IsNameEqual(entries[i].name, name))
+                {
+                    *found_entry = entries[i]; // コピーして返す
+                    MemoryManager::Free(buf, sec_per_clus_ * 512);
+                    return true;
+                }
+            }
+
+            // 次のクラスタへ (ディレクトリが複数クラスタにまたがる場合)
+            current_cluster = GetNextCluster(current_cluster);
+        }
+
+        MemoryManager::Free(buf, sec_per_clus_ * 512);
+        return false;
     }
 
     uint32_t FAT32Driver::CreateDirectory(const char *name, uint32_t parent_cluster)
@@ -182,6 +299,120 @@ namespace FileSystem
         AddDirectoryEntry(name, new_cluster, 0, 0x10, parent_cluster);
 
         return new_cluster;
+    }
+
+    void FAT32Driver::ListDirectory(uint32_t cluster)
+    {
+        uint32_t current_cluster = (cluster == 0) ? root_clus_ : cluster;
+        uint32_t cluster_bytes = sec_per_clus_ * 512;
+        uint8_t *buf = static_cast<uint8_t *>(MemoryManager::Allocate(cluster_bytes, 4096));
+
+        kprintf("Type     Size       Name\n");
+        kprintf("----     ----       ----\n");
+
+        while (current_cluster < 0x0FFFFFF8)
+        {
+            NVMe::g_nvme->Read(ClusterToLBA(current_cluster), buf, sec_per_clus_);
+            DirectoryEntry *entries = reinterpret_cast<DirectoryEntry *>(buf);
+            int num_entries = cluster_bytes / 32;
+
+            for (int i = 0; i < num_entries; ++i)
+            {
+                if (entries[i].name[0] == 0x00)
+                    break;
+                if ((unsigned char)entries[i].name[0] == 0xE5)
+                    continue;
+                if (entries[i].attr == 0x0F)
+                    continue; // LFNスキップ
+
+                // 名前を整形 ("KERNEL  ELF" -> "KERNEL.ELF")
+                char name_buf[13];
+                int idx = 0;
+                // Base
+                for (int k = 0; k < 8; ++k)
+                {
+                    if (entries[i].name[k] != ' ')
+                        name_buf[idx++] = entries[i].name[k];
+                }
+                // Ext (ディレクトリ以外なら)
+                if (!(entries[i].attr & 0x10) && entries[i].name[8] != ' ')
+                {
+                    name_buf[idx++] = '.';
+                    for (int k = 8; k < 11; ++k)
+                    {
+                        if (entries[i].name[k] != ' ')
+                            name_buf[idx++] = entries[i].name[k];
+                    }
+                }
+                name_buf[idx] = '\0';
+
+                if (entries[i].attr & 0x10)
+                    kprintf("DIR      ");
+                else
+                    kprintf("FILE     ");
+
+                // サイズ表示 (簡易整列)
+                char size_str[16];
+                // ※sprintfがないので簡易表示
+                kprintf("%d ", entries[i].file_size);
+
+                // 位置合わせのためのスペース
+                if (entries[i].file_size < 1000000)
+                    kprintf(" ");
+                if (entries[i].file_size < 1000)
+                    kprintf("   ");
+
+                kprintf("%s\n", name_buf);
+            }
+            current_cluster = GetNextCluster(current_cluster);
+        }
+        MemoryManager::Free(buf, cluster_bytes);
+    }
+
+    uint32_t FAT32Driver::ReadFile(const char *name, void *buffer, uint32_t buffer_size)
+    {
+        DirectoryEntry entry;
+        // ルートディレクトリから検索 (サブディレクトリ対応はパス解析が必要だが今回は簡易版)
+        if (!FindDirectoryEntry(name, 0, &entry))
+        {
+            return 0; // File Not Found
+        }
+
+        if (entry.file_size > buffer_size)
+        {
+            kprintf("[FAT32] Error: Buffer too small (%d < %d)\n", buffer_size, entry.file_size);
+            return 0;
+        }
+
+        uint32_t current_cluster = (entry.fst_clus_hi << 16) | entry.fst_clus_lo;
+        uint32_t bytes_remaining = entry.file_size;
+        uint32_t offset = 0;
+        uint8_t *out_ptr = static_cast<uint8_t *>(buffer);
+        uint32_t cluster_bytes = sec_per_clus_ * 512;
+
+        // 作業用バッファ (NVMeのアライメント要件を満たすため)
+        uint8_t *temp_buf = static_cast<uint8_t *>(MemoryManager::Allocate(cluster_bytes, 4096));
+
+        while (bytes_remaining > 0 && current_cluster < 0x0FFFFFF8)
+        {
+            uint64_t lba = ClusterToLBA(current_cluster);
+
+            // 1クラスタ読み込み
+            NVMe::g_nvme->Read(lba, temp_buf, sec_per_clus_);
+
+            // 必要な分だけコピー
+            uint32_t copy_len = (bytes_remaining > cluster_bytes) ? cluster_bytes : bytes_remaining;
+            memcpy(out_ptr + offset, temp_buf, copy_len);
+
+            offset += copy_len;
+            bytes_remaining -= copy_len;
+
+            // 次のクラスタへ
+            current_cluster = GetNextCluster(current_cluster);
+        }
+
+        MemoryManager::Free(temp_buf, cluster_bytes);
+        return entry.file_size;
     }
 
     void FAT32Driver::WriteFile(const char *name, const void *data, uint32_t size, uint32_t parent_cluster)
