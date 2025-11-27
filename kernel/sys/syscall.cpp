@@ -1,5 +1,6 @@
 #include "syscall.hpp"
 #include <stdint.h>
+#include "fs/fat32/fat32_driver.hpp"
 #include "memory/memory_manager.hpp"
 #include "printk.hpp"
 
@@ -20,13 +21,52 @@ SyscallContext *g_syscall_context = nullptr;
 
 // ■ C++側システムコールハンドラ
 // アセンブリ側から呼び出される
-extern "C" void SyscallHandler(uint64_t syscall_number, uint64_t arg1, uint64_t arg2, uint64_t arg3, uint64_t return_rip)
+extern "C" uint64_t SyscallHandler(
+    uint64_t syscall_number,
+    uint64_t arg1,
+    uint64_t arg2,
+    uint64_t arg3,
+    uint64_t arg4,
+    uint64_t return_rip)
 {
-    // テスト用: 呼ばれたことをログに出す
-    kprintf("SYSCALL Called! Num: %ld, Args: %ld, %ld, %ld, RIP: %lx\n", syscall_number, arg1, arg2, arg3, return_rip);
+    switch (syscall_number)
+    {
+    case 1: // PutChar
+        kprintf("%c", static_cast<char>(arg1));
+        return 0;
 
-    // ここで syscall_number に応じて処理を分岐
-    // if (syscall_number == 1) { ... }
+    case 2: // Exit
+        kprintf("\n[Kernel] App Exited.\n");
+        while (1)
+            __asm__ volatile("hlt");
+        return 0;
+
+    case 3: // ListDirectory (ls)
+        // arg1: cluster (0=Root)
+        if (FileSystem::g_fat32_driver)
+        {
+            FileSystem::g_fat32_driver->ListDirectory(static_cast<uint32_t>(arg1));
+        }
+        return 0;
+
+    case 4: // ReadFile
+        // arg1: filename (char*)
+        // arg2: buffer (void*)
+        // arg3: buffer_size (uint32_t)
+        // 戻り値: 読み込んだバイト数 (uint64_t)
+        if (FileSystem::g_fat32_driver)
+        {
+            const char *name = reinterpret_cast<const char *>(arg1);
+            void *buf = reinterpret_cast<void *>(arg2);
+            uint32_t len = static_cast<uint32_t>(arg3);
+            return FileSystem::g_fat32_driver->ReadFile(name, buf, len);
+        }
+        return 0;
+
+    default:
+        kprintf("Unknown Syscall: %ld\n", syscall_number);
+        return 0;
+    }
 }
 
 void InitializeSyscall()

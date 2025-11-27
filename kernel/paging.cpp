@@ -98,7 +98,7 @@ void PageManager::Initialize()
     pml4_table_->entries[0].SetAddress(reinterpret_cast<uint64_t>(pdp_table));
     pml4_table_->entries[0].bits.present = 1;
     pml4_table_->entries[0].bits.read_write = 1;
-    // pml4_table_->entries[0].bits.user_supervisor = 1; // ユーザーモードからもアクセス可
+    pml4_table_->entries[0].bits.user_supervisor = 1; // ユーザーモードからもアクセス可
 
     // 64個のPDテーブルを作成して、64GB分 (64 * 1GB) をマップする
     for (int i_pdp = 0; i_pdp < 64; ++i_pdp)
@@ -107,7 +107,7 @@ void PageManager::Initialize()
         pdp_table->entries[i_pdp].SetAddress(reinterpret_cast<uint64_t>(pd_table));
         pdp_table->entries[i_pdp].bits.present = 1;
         pdp_table->entries[i_pdp].bits.read_write = 1;
-        // pdp_table->entries[i_pdp].bits.user_supervisor = 1; // ユーザーモードからもアクセス可
+        pdp_table->entries[i_pdp].bits.user_supervisor = 1; // ユーザーモードからもアクセス可
 
         // PDエントリを埋める (各エントリ 2MB * 512 = 1GB)
         for (int i_pd = 0; i_pd < 512; ++i_pd)
@@ -122,7 +122,7 @@ void PageManager::Initialize()
             pd_table->entries[i_pd].bits.present = 1;
             pd_table->entries[i_pd].bits.read_write = 1;
             pd_table->entries[i_pd].bits.huge_page = 1; // 2MBページ
-            // pd_table->entries[i_pd].bits.user_supervisor = 1; // ユーザーモードからもアクセス可
+            pd_table->entries[i_pd].bits.user_supervisor = 1; // ユーザーモードからもアクセス可
         }
     }
 

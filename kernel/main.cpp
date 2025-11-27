@@ -31,13 +31,19 @@ const uint32_t kColorGreen = 0xFF00FF00;
 // Sylphia-OSっぽい背景色 (例: 少し青みがかったダークグレー)
 const uint32_t kColorDesktopBG = 0xFF454545;
 
-// ユーザーモード用のコードバイナリ（ただの無限ループとsyscall）
-// mov rax, 1; syscall; jmp -2 (自分自身へ無限ループ)
+// ユーザーモード用のコードバイナリ
 const uint8_t kUserCode[] = {
-    0x48, 0xc7, 0xc0, 0x01, 0x00, 0x00, 0x00, // mov rax, 1
-    0x0f, 0x05,                               // syscall
-    0xeb, 0xfe                                // jmp $ (無限ループ)
-};
+    // mov rdi, 0 (Root Directory Cluster)
+    0x48, 0xc7, 0xc7, 0x00, 0x00, 0x00, 0x00,
+    // mov rax, 3 (Syscall No.3 = ListDirectory)
+    0x48, 0xc7, 0xc0, 0x03, 0x00, 0x00, 0x00,
+    // syscall
+    0x0f, 0x05,
+
+    // mov rax, 2 (Syscall No.2 = Exit)
+    0x48, 0xc7, 0xc0, 0x02, 0x00, 0x00, 0x00,
+    // syscall
+    0x0f, 0x05};
 
 void JumpToUserMode()
 {
@@ -111,8 +117,6 @@ extern "C" __attribute__((ms_abi)) void KernelMain(
 
     PageManager::Initialize();
     InitializeSyscall();
-
-    JumpToUserMode();
 
     kprintf("Searching for NVMe Controller...\n");
 
@@ -249,6 +253,8 @@ nvme_found:
 
     IOAPIC::Enable(1, 0x40, g_lapic->GetID());
     kprintf("I/O APIC: Keyboard (IRQ1) -> Vector 0x40\n");
+
+    JumpToUserMode();
 
     g_shell->OnKey(0);
     kprintf("\nWelcome to Sylphia-OS!\n");
