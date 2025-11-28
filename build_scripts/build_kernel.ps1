@@ -6,11 +6,10 @@ $NASM = "nasm"
 
 New-Item -ItemType Directory -Force -Path "..\build" | Out-Null
 
-Write-Host "Compiling Kernel (C++)..." -ForegroundColor Cyan
-
 $ASM_SOURCES = @("..\kernel\asmfunc.asm")
 $SOURCES = @(
     "..\kernel\main.cpp", "..\kernel\cxx.cpp", "..\kernel\new.cpp",
+    "..\kernel\app\elf\elf_loader.cpp",
     "..\kernel\driver\nvme\nvme_driver.cpp",
     "..\kernel\fs\fat32\fat32_driver.cpp", "..\kernel\fs\fat32\fat32.cpp", "..\kernel\fs\gpt.cpp", "..\kernel\fs\installer.cpp",
     "..\kernel\memory\memory_manager.cpp",
@@ -23,6 +22,10 @@ $SOURCES = @(
 )
 
 $OBJECTS = @()
+
+Write-Host "Cleaning previous build artifacts..." -ForegroundColor Cyan
+
+Get-ChildItem -Path "build" -Recurse -Filter "*.obj" | Remove-Item -Force
 
 Write-Host "Compiling Assembly (NASM)..." -ForegroundColor Cyan
 
@@ -37,6 +40,8 @@ foreach ($src in $ASM_SOURCES) {
         Write-Warning "Assembly file not found: $src (Skipping...)"
     }
 }
+
+Write-Host "Compiling Kernel (C++)..." -ForegroundColor Cyan
 
 foreach ($src in $SOURCES) {
     $objName = [System.IO.Path]::GetFileNameWithoutExtension($src) + ".obj"
@@ -57,7 +62,7 @@ Write-Host "Linking Kernel (OBJ -> ELF)..." -ForegroundColor Cyan
 
 & $LD -entry KernelMain `
     -z norelro `
-    --image-base 0x100000 `
+    -T ..\kernel\kernel.ld `
     --static `
     -o ..\build\kernel.elf `
     $OBJECTS

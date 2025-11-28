@@ -2,13 +2,15 @@
 #include "cxx.hpp"
 #include "graphics.hpp"
 
+extern "C" char __kernel_start;
+extern "C" char __kernel_end;
+
 Bitmap MemoryManager::bitmap_;
 uintptr_t MemoryManager::range_begin_ = 0;
 uintptr_t MemoryManager::range_end_ = 0;
 
 void MemoryManager::Initialize(const MemoryMap &memmap)
 {
-    // 1. メモリの最大範囲(range_end_)を計算する
     uintptr_t iter = reinterpret_cast<uintptr_t>(memmap.buffer);
     for (unsigned int i = 0; i < memmap.map_size / memmap.descriptor_size; ++i)
     {
@@ -22,13 +24,9 @@ void MemoryManager::Initialize(const MemoryMap &memmap)
         iter += memmap.descriptor_size;
     }
 
-    // 2. ビットマップに必要なサイズを計算 (1フレーム=1ビット)
-    // 全物理メモリをカバーするために必要なビット数 / 8 = バイト数
     size_t total_frames = range_end_ / kFrameSize;
     size_t bitmap_size = (total_frames + 7) / 8; // 切り上げ
 
-    // 3. ビットマップ自体を置く場所を確保
-    // ConventionalMemory(使用可能メモリ)の中から、bitmap_sizeが入る場所を探す
     uintptr_t bitmap_base = 0;
     iter = reinterpret_cast<uintptr_t>(memmap.buffer);
     for (unsigned int i = 0; i < memmap.map_size / memmap.descriptor_size; ++i)
@@ -53,13 +51,10 @@ void MemoryManager::Initialize(const MemoryMap &memmap)
             __asm__ volatile("hlt");
     }
 
-    // ビットマップを設定
     bitmap_.SetBuffer(reinterpret_cast<uint8_t *>(bitmap_base), bitmap_size);
 
-    // 4. 初期化: まず「全て使用中(1)」にする (安全のため)
     memset(reinterpret_cast<void *>(bitmap_base), 0xFF, bitmap_size);
 
-    // 5. UEFIメモリマップを見て、「空き(Conventional)」の場所だけ 0 にする
     iter = reinterpret_cast<uintptr_t>(memmap.buffer);
     for (unsigned int i = 0; i < memmap.map_size / memmap.descriptor_size; ++i)
     {
@@ -78,13 +73,25 @@ void MemoryManager::Initialize(const MemoryMap &memmap)
         iter += memmap.descriptor_size;
     }
 
-    // 6. 最後に、ビットマップ自体が置いてある場所を「使用中」に戻す
     uintptr_t bitmap_start_frame = bitmap_base / kFrameSize;
     uintptr_t bitmap_end_frame = (bitmap_base + bitmap_size + kFrameSize - 1) / kFrameSize;
     for (size_t f = bitmap_start_frame; f < bitmap_end_frame; ++f)
     {
         bitmap_.Set(f, true); // 使用中
     }
+
+    uintptr_t k_start = reinterpret_cast<uintptr_t>(&__kernel_start);
+    uintptr_t k_end = reinterpret_cast<uintptr_t>(&__kernel_end);
+
+    size_t k_start_frame = k_start / kFrameSize;
+    size_t k_end_frame = (k_end + kFrameSize - 1) / kFrameSize;
+
+    for (size_t f = k_start_frame; f < k_end_frame; ++f)
+    {
+        bitmap_.Set(f, true); // 使用中(1)にマーク
+    }
+
+    bitmap_.Set(0, true);
 }
 
 // 1フレーム(4KB)だけ確保する

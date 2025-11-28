@@ -1,4 +1,5 @@
 #include <std/string.h>
+#include "app/elf/elf_loader.hpp"
 #include "fs/fat32/fat32_driver.hpp"
 #include "memory/memory_manager.hpp"
 #include "shell/shell.hpp"
@@ -171,6 +172,20 @@ void Shell::ExecuteCommand()
     }
     else
     {
-        kprintf("Unknown command: %s\n", buffer_);
+        char path[64];
+        const char *prefix = "/sys/bin/";
+        int idx = 0;
+        for (int i = 0; prefix[i]; ++i)
+            path[idx++] = prefix[i];
+        for (int i = 0; buffer_[i]; ++i)
+            path[idx++] = buffer_[i];
+        path[idx] = 0;
+
+        bool ret = ElfLoader::LoadAndRun(path);
+
+        if (!ret)
+        {
+            kprintf("Unknown command: %s\n", buffer_);
+        }
     }
 }

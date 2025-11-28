@@ -75,6 +75,9 @@ namespace FileSystem
         // found_entry: 見つかったエントリのコピーを格納する先
         // return: 見つかったらtrue
         bool FindDirectoryEntry(const char *name, uint32_t parent_cluster, DirectoryEntry *found_entry);
+        // パスからディレクトリエントリを取得する内部関数
+        // ret_entry: 見つかったエントリの格納先
+        bool GetFileEntry(const char *path, DirectoryEntry *ret_entry);
     };
 
     extern FAT32Driver *g_fat32_driver; // グローバルインスタンス

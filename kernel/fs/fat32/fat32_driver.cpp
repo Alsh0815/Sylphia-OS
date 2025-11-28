@@ -273,6 +273,49 @@ namespace FileSystem
         return false;
     }
 
+    bool FAT32Driver::GetFileEntry(const char *path, DirectoryEntry *ret_entry)
+    {
+        uint32_t current_cluster = 0;
+        char name_buf[16];
+        const char *p = path;
+
+        if (*p == '/')
+            p++;
+
+        while (*p)
+        {
+            int i = 0;
+            while (*p && *p != '/' && i < 15)
+            {
+                name_buf[i++] = *p++;
+            }
+            name_buf[i] = 0;
+
+            DirectoryEntry entry;
+            if (!FindDirectoryEntry(name_buf, current_cluster, &entry))
+            {
+                return false;
+            }
+
+            // パスの末尾なら、そのエントリが対象ファイル
+            if (*p == 0)
+            {
+                *ret_entry = entry;
+                return true;
+            }
+
+            if (!(entry.attr & 0x10))
+            {
+                return false; // ディレクトリでないのにさらに下位を探索しようとした
+            }
+            current_cluster = (entry.fst_clus_hi << 16) | entry.fst_clus_lo;
+            if (*p == '/')
+                p++;
+        }
+
+        return false;
+    }
+
     uint32_t FAT32Driver::CreateDirectory(const char *name, uint32_t parent_cluster)
     {
         kprintf("[FAT32] Creating Directory: %s...\n", name);
@@ -466,8 +509,8 @@ namespace FileSystem
     uint32_t FAT32Driver::ReadFile(const char *name, void *buffer, uint32_t buffer_size)
     {
         DirectoryEntry entry;
-        // ルートディレクトリから検索 (サブディレクトリ対応はパス解析が必要だが今回は簡易版)
-        if (!FindDirectoryEntry(name, 0, &entry))
+
+        if (!GetFileEntry(name, &entry))
         {
             return 0; // File Not Found
         }

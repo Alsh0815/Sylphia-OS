@@ -49,7 +49,8 @@ rem readonly=on - コード領域は書き込み不可にする
 -drive file=%NVME_IMG%,if=none,id=nvm ^
 -device nvme,serial=deadbeef,drive=nvm ^
 -net none ^
--monitor stdio
+-monitor stdio ^
+-d int -D qemu.log
 
 del "%OVMF_VARS_TMP%"
 

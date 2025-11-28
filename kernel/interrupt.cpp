@@ -54,8 +54,6 @@ void LoadIDT(uint16_t limit, uint64_t base)
 __attribute__((interrupt)) void DivideErrorHandler(InterruptFrame *frame)
 {
     if (g_console)
-        g_console->Panic(kWhiteColor, kBsodBgColor);
-    if (g_console)
         g_console->SetColor(kRedColor, kBsodBgColor);
 
     kprintf("\n========================================\n");
@@ -75,8 +73,6 @@ __attribute__((interrupt)) void DivideErrorHandler(InterruptFrame *frame)
 
 __attribute__((interrupt)) void InvalidOpcodeHandler(InterruptFrame *frame)
 {
-    if (g_console)
-        g_console->Panic(kWhiteColor, kBsodBgColor);
     if (g_console)
         g_console->SetColor(kRedColor, kBsodBgColor);
 
@@ -101,8 +97,6 @@ __attribute__((interrupt)) void InvalidOpcodeHandler(InterruptFrame *frame)
 __attribute__((interrupt)) void DoubleFaultHandler(InterruptFrame *frame, uint64_t error_code)
 {
     if (g_console)
-        g_console->Panic(kWhiteColor, kBsodBgColor);
-    if (g_console)
         g_console->SetColor(kRedColor, kBsodBgColor);
 
     kprintf("\n========================================\n");
@@ -125,10 +119,6 @@ __attribute__((interrupt)) void DoubleFaultHandler(InterruptFrame *frame, uint64
 
 __attribute__((interrupt)) void GPFaultHandler(InterruptFrame *frame, uint64_t error_code)
 {
-    /*
-    if (g_console)
-        g_console->Panic(kWhiteColor, kBsodBgColor);
-    */
     if (g_console)
         g_console->SetColor(kRedColor, kBsodBgColor);
     kprintf("\n========================================\n");
@@ -154,9 +144,6 @@ __attribute__((interrupt)) void GPFaultHandler(InterruptFrame *frame, uint64_t e
 __attribute__((interrupt)) void PageFaultHandler(InterruptFrame *frame, uint64_t error_code)
 {
     uint64_t cr2 = GetCR2();
-
-    if (g_console)
-        g_console->Panic(kWhiteColor, kBsodBgColor);
 
     if (g_console)
         g_console->SetColor(kYellowColor, kBsodBgColor);

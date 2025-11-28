@@ -12,5 +12,7 @@
 build/*
 *.code-workspace
 *.img
+*.log
+*.o
 
 kernel_dump.txt
