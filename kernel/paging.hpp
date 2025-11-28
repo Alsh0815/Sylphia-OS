@@ -61,6 +61,10 @@ extern "C" void InvalidateTLB(uint64_t virtual_addr);
 class PageManager
 {
 public:
+    static const uint64_t kPresent = 1 << 0;
+    static const uint64_t kWritable = 1 << 1;
+    static const uint64_t kUser = 1 << 2;
+
     // ページングの初期化 (PML4の作成とアイデンティティマッピング)
     static void Initialize();
 
@@ -68,7 +72,11 @@ public:
     // virtual_addr: 仮想アドレス (4KB整列)
     // physical_addr: 物理アドレス (4KB整列)
     // count: ページ数
-    static void MapPage(uint64_t virtual_addr, uint64_t physical_addr, size_t count = 1);
+    static void MapPage(uint64_t virtual_addr, uint64_t physical_addr, size_t count = 1, uint64_t flags = kPresent | kWritable);
+
+    // 指定された仮想アドレス領域に、新しい物理フレームを割り当ててマップする
+    // 成功したらtrue、メモリ不足などで失敗したらfalse
+    static bool AllocateVirtual(uint64_t virtual_addr, size_t size, uint64_t flags = kPresent | kWritable | kUser);
 
     // 新しいページテーブル領域を確保して初期化するヘルパー
     static PageTable *AllocateTable();

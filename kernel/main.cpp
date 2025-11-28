@@ -45,27 +45,28 @@ const uint8_t kUserCode[] = {
     // syscall
     0x0f, 0x05};
 
-void JumpToUserMode()
+// 引数でエントリポイント(実行開始アドレス)を受け取るように変更
+void JumpToUserMode(uint64_t entry_point)
 {
-    kprintf("[Kernel] Switching to Ring 3...\n");
+    kprintf("[Kernel] Switching to Ring 3 (Entry: %lx)...\n", entry_point);
 
     // 1. ユーザー用のスタック確保
     const size_t kUserStackSize = 4096;
     void *user_stack = MemoryManager::Allocate(kUserStackSize);
+    if (!user_stack)
+    {
+        kprintf("Failed to allocate user stack\n");
+        return;
+    }
     uint64_t user_rsp = reinterpret_cast<uint64_t>(user_stack) + kUserStackSize;
 
-    // 2. ユーザー用のコード領域確保（ここが重要）
-    // MemoryManager::Allocate で確保した領域は U/S=1 になっている前提
-    void *user_code_mem = MemoryManager::Allocate(4096);
-    memcpy(user_code_mem, kUserCode, sizeof(kUserCode));
+    // 2. コード領域の確保とコピー処理は削除 (呼び出し元で完了している前提)
 
-    // コード領域のアドレス
-    uint64_t rip = reinterpret_cast<uint64_t>(user_code_mem);
-
-    // セグメントセレクタ
+    // 3. セグメント設定などはそのまま
+    uint64_t rip = entry_point;
     uint16_t ss = kUserDS;   // 0x23
     uint16_t cs = kUserCS;   // 0x2B
-    uint64_t rflags = 0x202; // IF=1 (割り込み許可)
+    uint64_t rflags = 0x202; // IF=1
 
     // Ring 3 へ遷移
     __asm__ volatile(
@@ -254,7 +255,51 @@ nvme_found:
     IOAPIC::Enable(1, 0x40, g_lapic->GetID());
     kprintf("I/O APIC: Keyboard (IRQ1) -> Vector 0x40\n");
 
-    JumpToUserMode();
+    // --- AllocateVirtual テスト ---
+    // 一般的なELFのエントリポイントである 0x400000 を確保してみる
+    uint64_t target_addr = 0x400000;
+    size_t target_size = 4096;
+
+    // フラグ: Present | Writable | User
+    uint64_t flags = PageManager::kPresent | PageManager::kWritable | PageManager::kUser;
+
+    if (PageManager::AllocateVirtual(target_addr, target_size, flags))
+    {
+        kprintf("[Test] AllocateVirtual(%lx) Success!\n", target_addr);
+
+        // 1. カーネルモードでの書き込みテスト
+        // マップされたメモリにテスト値を書き込む
+        volatile uint32_t *ptr = reinterpret_cast<uint32_t *>(target_addr);
+        *ptr = 0x12345678;
+
+        if (*ptr == 0x12345678)
+        {
+            kprintf("[Test] Memory Read/Write Check Passed.\n");
+        }
+        else
+        {
+            kprintf("[Test] Memory Read/Write Check Failed! (Read: %x)\n", *ptr);
+            while (1)
+                __asm__ volatile("hlt");
+        }
+
+        // 2. 実行テスト
+        // kUserCode (システムコールを呼ぶ機械語) を確保した領域にコピー
+        // ※ kUserCodeは以前定義したものを使用
+        memcpy(reinterpret_cast<void *>(target_addr), kUserCode, sizeof(kUserCode));
+
+        kprintf("[Test] Jumping to %lx ...\n", target_addr);
+
+        // 指定アドレスへジャンプ！
+        // これで "A" が表示されたりファイル一覧が出れば成功
+        JumpToUserMode(target_addr);
+    }
+    else
+    {
+        kprintf("[Test] AllocateVirtual Failed!\n");
+        while (1)
+            __asm__ volatile("hlt");
+    }
 
     g_shell->OnKey(0);
     kprintf("\nWelcome to Sylphia-OS!\n");

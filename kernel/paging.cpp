@@ -18,7 +18,39 @@ PageTable *PageManager::AllocateTable()
     return static_cast<PageTable *>(ptr);
 }
 
-void PageManager::MapPage(uint64_t virtual_addr, uint64_t physical_addr, size_t count)
+bool PageManager::AllocateVirtual(uint64_t virtual_addr, size_t size, uint64_t flags)
+{
+    // 4KBアライメントチェック
+    if (virtual_addr % kPageSize4K != 0)
+        return false;
+
+    size_t num_pages = (size + kPageSize4K - 1) / kPageSize4K;
+
+    for (size_t i = 0; i < num_pages; ++i)
+    {
+        uint64_t vaddr = virtual_addr + (i * kPageSize4K);
+
+        // 1. 物理フレームを確保
+        void *frame = MemoryManager::AllocateFrame();
+        if (frame == nullptr)
+        {
+            // メモリ不足 (本来はここでロールバックが必要)
+            return false;
+        }
+
+        // 2. 物理フレームの中身をクリア (セキュリティ対策)
+        // ここでは物理アドレス(identity map)経由で書き込む
+        memset(frame, 0, kPageSize4K);
+
+        // 3. マッピング
+        uint64_t paddr = reinterpret_cast<uint64_t>(frame);
+        MapPage(vaddr, paddr, 1, flags);
+    }
+
+    return true;
+}
+
+void PageManager::MapPage(uint64_t virtual_addr, uint64_t physical_addr, size_t count, uint64_t flags)
 {
     if (!pml4_table_)
         return;
@@ -28,51 +60,94 @@ void PageManager::MapPage(uint64_t virtual_addr, uint64_t physical_addr, size_t 
         uint64_t vaddr = virtual_addr + (i * kPageSize4K);
         uint64_t paddr = physical_addr + (i * kPageSize4K);
 
+        // ... (インデックス計算省略) ...
         uint64_t pml4_idx = (vaddr >> 39) & 0x1FF;
         uint64_t pdp_idx = (vaddr >> 30) & 0x1FF;
         uint64_t pd_idx = (vaddr >> 21) & 0x1FF;
         uint64_t pt_idx = (vaddr >> 12) & 0x1FF;
 
-        // --- Level 4 (PML4) ---
-        if (!pml4_table_->entries[pml4_idx].bits.present)
+        // ... (EnsureEntry ラムダ省略) ...
+        auto EnsureEntry = [&](PageTableEntry &entry) -> PageTable *
         {
-            PageTable *new_table = AllocateTable();
-            if (!new_table)
-                return; // メモリ不足時は中断
-            pml4_table_->entries[pml4_idx].SetAddress(reinterpret_cast<uint64_t>(new_table));
-            pml4_table_->entries[pml4_idx].bits.present = 1;
-            pml4_table_->entries[pml4_idx].bits.read_write = 1;
-        }
-        PageTable *pdp_table = reinterpret_cast<PageTable *>(pml4_table_->entries[pml4_idx].GetAddress());
+            if (!entry.bits.present)
+            {
+                PageTable *new_table = AllocateTable();
+                if (!new_table)
+                    return nullptr;
+                entry.SetAddress(reinterpret_cast<uint64_t>(new_table));
+                entry.bits.present = 1;
+                entry.bits.read_write = 1;
+                entry.bits.user_supervisor = (flags & kUser) ? 1 : 0;
+            }
+            else
+            {
+                if (flags & kUser)
+                {
+                    entry.bits.user_supervisor = 1;
+                }
+            }
+            return reinterpret_cast<PageTable *>(entry.GetAddress());
+        };
+
+        // --- Level 4 (PML4) ---
+        PageTable *pdp_table = EnsureEntry(pml4_table_->entries[pml4_idx]);
+        if (!pdp_table)
+            return;
 
         // --- Level 3 (PDP) ---
-        if (!pdp_table->entries[pdp_idx].bits.present)
-        {
-            PageTable *new_table = AllocateTable();
-            if (!new_table)
-                return;
-            pdp_table->entries[pdp_idx].SetAddress(reinterpret_cast<uint64_t>(new_table));
-            pdp_table->entries[pdp_idx].bits.present = 1;
-            pdp_table->entries[pdp_idx].bits.read_write = 1;
-        }
-        PageTable *pd_table = reinterpret_cast<PageTable *>(pdp_table->entries[pdp_idx].GetAddress());
+        PageTable *pd_table = EnsureEntry(pdp_table->entries[pdp_idx]);
+        if (!pd_table)
+            return;
 
         // --- Level 2 (PD) ---
-        if (!pd_table->entries[pd_idx].bits.present)
+        // ★ Huge Page 衝突時の分割処理 (Split) ★
+        if (pd_table->entries[pd_idx].bits.present && pd_table->entries[pd_idx].bits.huge_page)
         {
-            PageTable *new_table = AllocateTable();
-            if (!new_table)
-                return;
-            pd_table->entries[pd_idx].SetAddress(reinterpret_cast<uint64_t>(new_table));
+            // 1. 新しいページテーブル(PT)を作成
+            PageTable *new_pt = AllocateTable();
+            if (!new_pt)
+                return; // メモリ不足
+
+            // 2. Huge Pageの中身(2MB分)を、512個の4KBエントリとしてコピー
+            uint64_t huge_base_phys = pd_table->entries[pd_idx].GetAddress();
+            uint64_t huge_flags = pd_table->entries[pd_idx].value & 0xFFF; // 下位フラグを保持
+
+            for (int k = 0; k < 512; ++k)
+            {
+                new_pt->entries[k].SetAddress(huge_base_phys + (k * kPageSize4K));
+
+                // フラグをコピー (Hugeビットは落とす)
+                // valueに直接書き込むことで属性を引き継ぐ
+                new_pt->entries[k].value |= huge_flags;
+                new_pt->entries[k].bits.huge_page = 0;
+                new_pt->entries[k].bits.present = 1;
+            }
+
+            // 3. PDエントリを、作成したPTに向ける
+            // Hugeビットを落とし、PTへのポインタをセット
+            pd_table->entries[pd_idx].SetAddress(reinterpret_cast<uint64_t>(new_pt));
+            pd_table->entries[pd_idx].bits.huge_page = 0;
             pd_table->entries[pd_idx].bits.present = 1;
-            pd_table->entries[pd_idx].bits.read_write = 1;
+            // PD自体もUser権限が必要なら付与する
+            if (flags & kUser)
+            {
+                pd_table->entries[pd_idx].bits.user_supervisor = 1;
+            }
+
+            // ログ出し (デバッグ用)
+            // kprintf("[Paging] Split Huge Page at PD[%ld] (Virt ~%lx)\n", pd_idx, vaddr & ~0x1FFFFF);
         }
-        PageTable *pt_table = reinterpret_cast<PageTable *>(pd_table->entries[pd_idx].GetAddress());
+
+        PageTable *pt_table = EnsureEntry(pd_table->entries[pd_idx]);
+        if (!pt_table)
+            return;
 
         // --- Level 1 (PT) ---
+        // ここで対象のページだけ新しい設定で上書きされる
         pt_table->entries[pt_idx].SetAddress(paddr);
-        pt_table->entries[pt_idx].bits.present = 1;
-        pt_table->entries[pt_idx].bits.read_write = 1;
+        pt_table->entries[pt_idx].bits.present = (flags & kPresent) ? 1 : 0;
+        pt_table->entries[pt_idx].bits.read_write = (flags & kWritable) ? 1 : 0;
+        pt_table->entries[pt_idx].bits.user_supervisor = (flags & kUser) ? 1 : 0;
 
         InvalidateTLB(vaddr);
     }
@@ -121,7 +196,7 @@ void PageManager::Initialize()
             pd_table->entries[i_pd].SetAddress(physical_addr);
             pd_table->entries[i_pd].bits.present = 1;
             pd_table->entries[i_pd].bits.read_write = 1;
-            pd_table->entries[i_pd].bits.huge_page = 1; // 2MBページ
+            pd_table->entries[i_pd].bits.huge_page = 1;       // 2MBページ
             pd_table->entries[i_pd].bits.user_supervisor = 1; // ユーザーモードからもアクセス可
         }
     }
