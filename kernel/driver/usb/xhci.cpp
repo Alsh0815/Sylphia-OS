@@ -245,13 +245,13 @@ namespace USB::XHCI
                                 delete g_usb_keyboard;
                                 g_usb_keyboard = nullptr;
 
-                                auto storage = new USB::MassStorage(this, slot_id);
-                                if (storage->Initialize())
+                                g_mass_storage = new USB::MassStorage(this, slot_id);
+                                if (g_mass_storage->Initialize())
                                 {
                                     kprintf("[xHCI - ms] Mass Storage initialized!\n");
 
                                     uint8_t *sec0 = (uint8_t *)MemoryManager::Allocate(512, 64);
-                                    if (storage->ReadSectors(0, 1, sec0))
+                                    if (g_mass_storage->ReadSectors(0, 1, sec0))
                                     {
                                         kprintf("Sector 0 Dump: %x %x ...\n", sec0[0], sec0[1]);
                                     }
@@ -439,13 +439,14 @@ namespace USB::XHCI
 
     int Controller::PollEndpoint(uint8_t slot_id, uint8_t ep_addr)
     {
-        __asm__ volatile("wbinvd");
-        volatile TRB &event = event_ring_[event_ring_index_];
+        uint64_t *event_ptr = reinterpret_cast<uint64_t *>(&event_ring_[event_ring_index_]);
+
+        TRB event = event_ring_[event_ring_index_];
         uint32_t control = event.control;
 
         if ((control & 1) == dcs_)
         {
-            int ret_code = 0;
+            int ret_code = -1;
             uint32_t trb_type = (control >> 10) & 0x3F;
 
             if (trb_type == 32)
@@ -459,6 +460,9 @@ namespace USB::XHCI
                 {
                     uint32_t comp_code = (event.status >> 24) & 0xFF;
                     ret_code = comp_code;
+                }
+                else
+                {
                 }
             }
             event_ring_index_++;

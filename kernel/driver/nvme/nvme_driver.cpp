@@ -283,7 +283,7 @@ namespace NVMe
         return prp_list;
     }
 
-    void Driver::Read(uint64_t lba, void *buffer, uint16_t count)
+    void Driver::ReadLBA(uint64_t lba, void *buffer, uint16_t count)
     {
         if (count == 0)
         {
@@ -314,7 +314,7 @@ namespace NVMe
         }
     }
 
-    void Driver::Write(uint64_t lba, const void *buffer, uint16_t count)
+    void Driver::WriteLBA(uint64_t lba, const void *buffer, uint16_t count)
     {
         if (count == 0)
         {

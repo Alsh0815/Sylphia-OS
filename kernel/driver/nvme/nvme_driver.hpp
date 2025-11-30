@@ -3,11 +3,12 @@
 #include "driver/nvme/nvme_identify.hpp"
 #include "driver/nvme/nvme_reg.hpp"
 #include "driver/nvme/nvme_queue.hpp"
+#include "block_device.hpp"
 
 namespace NVMe
 {
 
-    class Driver
+    class Driver : public BlockDevice
     {
     public:
         // コンストラクタ: BAR0のアドレスを受け取る
@@ -18,8 +19,22 @@ namespace NVMe
 
         void CreateIOQueues();
 
-        void Read(uint64_t lba, void *buffer, uint16_t count);
-        void Write(uint64_t lba, const void *buffer, uint16_t count);
+        void ReadLBA(uint64_t lba, void *buffer, uint16_t count);
+        void WriteLBA(uint64_t lba, const void *buffer, uint16_t count);
+
+        bool Read(uint64_t lba, void *buffer, uint32_t count) override
+        {
+            ReadLBA(lba, buffer, count);
+            return true;
+        }
+
+        bool Write(uint64_t lba, const void *buffer, uint32_t count) override
+        {
+            WriteLBA(lba, buffer, count);
+            return true;
+        }
+
+        uint32_t GetBlockSize() const override { return 0; }
 
     private:
         volatile Registers *regs_; // MMIOレジスタへのアクセサ

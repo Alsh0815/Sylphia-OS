@@ -2,6 +2,7 @@
 #include <stdint.h>
 
 #include "fat32_defs.hpp"
+#include "block_device.hpp"
 
 namespace FileSystem
 {
@@ -9,36 +10,23 @@ namespace FileSystem
     class FAT32Driver
     {
     public:
-        // コンストラクタ: パーティションの開始LBAを受け取る
-        FAT32Driver(uint64_t partition_lba);
+        FAT32Driver(BlockDevice *dev, uint64_t partition_lba);
 
-        // 初期化 (BPBを読み込んでパラメータを計算)
         void Initialize();
 
-        // ディレクトリを作成する
         uint32_t CreateDirectory(const char *name, uint32_t parent_cluster = 0);
-        // ディレクトリ内のファイルを表示する
-        // cluster: 表示したいディレクトリのクラスタ (0=ルート)
+        uint32_t EnsureDirectory(const char *path);
         void ListDirectory(uint32_t cluster = 0);
-        // ファイルを削除する
-        // name: ファイル名
-        // parent_cluster: 親ディレクトリ (0=ルート)
-        // return: 成功したらtrue
+        uint32_t GetFileSize(const char *path);
         bool DeleteFile(const char *name, uint32_t parent_cluster = 0);
-        // ファイルを読み込む
-        // name: ファイル名 (8.3形式, 例: "KERNEL  ELF")
-        // buffer: 読み込み先のバッファ
-        // buffer_size: バッファのサイズ
-        // return: 実際に読み込んだサイズ
         uint32_t ReadFile(const char *name, void *buffer, uint32_t buffer_size);
-        // ファイルをルートディレクトリに保存する
-        // name: ファイル名 (8.3形式, 例: "KERNEL  ELF")
-        // data: データの中身
-        // size: データサイズ
-        // parent_cluster: 親ディレクトリのクラスタ番号 (省略時はルートディレクトリ)
         void WriteFile(const char *name, const void *data, uint32_t size, uint32_t parent_cluster = 0);
 
+        static void To83Format(const char *src, char *dst);
+
     private:
+        BlockDevice *dev_;
+
         uint64_t part_lba_;
         uint32_t sec_per_clus_;
         uint32_t reserved_sectors_;

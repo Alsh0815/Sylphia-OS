@@ -1,5 +1,6 @@
 #pragma once
 #include "driver/usb/xhci.hpp"
+#include "block_device.hpp"
 #include <stdint.h>
 
 namespace USB
@@ -24,17 +25,28 @@ namespace USB
         uint8_t status; // 0=Success, 1=Fail, 2=Phase Error
     } __attribute__((packed));
 
-    class MassStorage
+    class MassStorage : public BlockDevice
     {
     public:
         MassStorage(XHCI::Controller *controller, uint8_t slot_id);
+
+        bool Read(uint64_t lba, void *buffer, uint32_t count) override
+        {
+            return ReadSectors(lba, count, buffer);
+        }
+
+        bool Write(uint64_t lba, const void *buffer, uint32_t count) override
+        {
+            return false;
+        }
+
+        uint32_t GetBlockSize() const override { return block_size_; }
 
         bool Initialize();
 
         bool ReadSectors(uint64_t lba, uint32_t num_sectors, void *buffer);
 
         uint64_t GetTotalBlocks() const { return total_blocks_; }
-        uint32_t GetBlockSize() const { return block_size_; }
 
     private:
         XHCI::Controller *controller_;
@@ -55,4 +67,6 @@ namespace USB
         bool ScsiReadCapacity();
         bool ScsiRequestSense(); // エラー時に詳細を取得する場合に使用
     };
+
+    extern MassStorage *g_mass_storage;
 }

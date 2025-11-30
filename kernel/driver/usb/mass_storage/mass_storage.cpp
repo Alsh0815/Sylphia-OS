@@ -5,6 +5,8 @@
 
 namespace USB
 {
+    MassStorage *g_mass_storage = nullptr;
+
     MassStorage::MassStorage(XHCI::Controller *controller, uint8_t slot_id)
         : controller_(controller), slot_id_(slot_id), ep_bulk_in_(0), ep_bulk_out_(0),
           total_blocks_(0), block_size_(0)

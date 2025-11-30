@@ -9,14 +9,14 @@ namespace FileSystem
 {
     FAT32Driver *g_fat32_driver = nullptr;
 
-    FAT32Driver::FAT32Driver(uint64_t partition_lba)
-        : part_lba_(partition_lba) {}
+    FAT32Driver::FAT32Driver(BlockDevice *dev, uint64_t partition_lba)
+        : dev_(dev), part_lba_(partition_lba) {}
 
     void FAT32Driver::Initialize()
     {
         // BPB (LBA 0) を読み込む
         uint8_t *buf = static_cast<uint8_t *>(MemoryManager::Allocate(512, 4096));
-        NVMe::g_nvme->Read(part_lba_, buf, 1);
+        dev_->Read(part_lba_, buf, 1);
 
         FAT32_BPB *bpb = reinterpret_cast<FAT32_BPB *>(buf);
 
@@ -56,7 +56,7 @@ namespace FileSystem
 
         // クラスタ2から探索開始 (FAT領域の先頭セクタだけ見る簡易実装)
         // ※本気でやるならFAT領域全体をループする必要があります
-        NVMe::g_nvme->Read(fat_start_lba_, buf, 1);
+        dev_->Read(fat_start_lba_, buf, 1);
 
         for (int i = 2; i < 128; ++i)
         { // 1セクタには128個のエントリ (512/4)
@@ -64,9 +64,9 @@ namespace FileSystem
             {
                 // 空き発見！使用中(EOCC = 0x0FFFFFFF)マークをつけて保存
                 entries[i] = 0x0FFFFFFF;
-                NVMe::g_nvme->Write(fat_start_lba_, buf, 1);
+                dev_->Write(fat_start_lba_, buf, 1);
                 // FAT2(バックアップ)も更新
-                NVMe::g_nvme->Write(fat_start_lba_ + fat_sz32_, buf, 1);
+                dev_->Write(fat_start_lba_ + fat_sz32_, buf, 1);
 
                 MemoryManager::Free(buf, 512);
                 return i;
@@ -89,16 +89,16 @@ namespace FileSystem
 
         // セクタを読み込む
         uint8_t *buf = static_cast<uint8_t *>(MemoryManager::Allocate(512, 4096));
-        NVMe::g_nvme->Read(target_lba, buf, 1);
+        dev_->Read(target_lba, buf, 1);
 
         uint32_t *entries = reinterpret_cast<uint32_t *>(buf);
         entries[entry_offset] = next; // リンク更新
 
         // 書き戻す
-        NVMe::g_nvme->Write(target_lba, buf, 1);
+        dev_->Write(target_lba, buf, 1);
 
         // バックアップFAT(FAT2)も更新
-        NVMe::g_nvme->Write(target_lba + fat_sz32_, buf, 1);
+        dev_->Write(target_lba + fat_sz32_, buf, 1);
 
         MemoryManager::Free(buf, 512);
     }
@@ -111,7 +111,7 @@ namespace FileSystem
         uint64_t target_lba = fat_start_lba_ + sector_offset;
 
         uint8_t *buf = static_cast<uint8_t *>(MemoryManager::Allocate(512, 4096));
-        NVMe::g_nvme->Read(target_lba, buf, 1);
+        dev_->Read(target_lba, buf, 1);
 
         uint32_t *entries = reinterpret_cast<uint32_t *>(buf);
         uint32_t next = entries[entry_offset] & 0x0FFFFFFF; // 下位28ビットが有効
@@ -201,7 +201,7 @@ namespace FileSystem
         // 親ディレクトリの中身を走査 (簡易的に先頭クラスタのみ探索)
         for (int s = 0; s < sec_per_clus_; ++s)
         {
-            NVMe::g_nvme->Read(lba + s, buf, 1);
+            dev_->Read(lba + s, buf, 1);
             DirectoryEntry *dir = reinterpret_cast<DirectoryEntry *>(buf);
 
             for (int i = 0; i < 16; ++i)
@@ -216,7 +216,7 @@ namespace FileSystem
                     dir[i].fst_clus_lo = start_cluster & 0xFFFF;
                     dir[i].file_size = size;
 
-                    NVMe::g_nvme->Write(lba + s, buf, 1);
+                    dev_->Write(lba + s, buf, 1);
                     MemoryManager::Free(buf, 512);
                     return;
                 }
@@ -231,12 +231,23 @@ namespace FileSystem
         uint32_t current_cluster = (parent_cluster == 0) ? root_clus_ : parent_cluster;
         uint8_t *buf = static_cast<uint8_t *>(MemoryManager::Allocate(sec_per_clus_ * 512, 4096));
 
-        while (current_cluster < 0x0FFFFFF8)
+        int loop_safety = 0;
+        while (current_cluster < 0x0FFFFFF8 && current_cluster >= 2)
         {
+            if (loop_safety++ > 10000)
+            {
+                kprintf("[FAT32] Error: Directory cluster chain too long or loop detected.\n");
+                break;
+            }
+
             uint64_t lba = ClusterToLBA(current_cluster);
 
-            // 1クラスタ分読み込み
-            NVMe::g_nvme->Read(lba, buf, sec_per_clus_);
+            if (!dev_->Read(lba, buf, sec_per_clus_))
+            {
+                kprintf("[FAT32] Disk Read Error at LBA %lld\n", lba);
+                MemoryManager::Free(buf, sec_per_clus_ * 512);
+                return false;
+            }
 
             DirectoryEntry *entries = reinterpret_cast<DirectoryEntry *>(buf);
             int num_entries = (sec_per_clus_ * 512) / 32;
@@ -297,7 +308,6 @@ namespace FileSystem
                 return false;
             }
 
-            // パスの末尾なら、そのエントリが対象ファイル
             if (*p == 0)
             {
                 *ret_entry = entry;
@@ -349,7 +359,7 @@ namespace FileSystem
         dot_entries[1].fst_clus_hi = (parent_ref >> 16) & 0xFFFF;
         dot_entries[1].fst_clus_lo = parent_ref & 0xFFFF;
 
-        NVMe::g_nvme->Write(target_lba, buf, sec_per_clus_);
+        dev_->Write(target_lba, buf, sec_per_clus_);
         MemoryManager::Free(buf, cluster_bytes);
 
         // 3. FATチェーン終端
@@ -360,6 +370,59 @@ namespace FileSystem
         AddDirectoryEntry(name, new_cluster, 0, 0x10, parent_cluster);
 
         return new_cluster;
+    }
+
+    uint32_t FAT32Driver::EnsureDirectory(const char *path)
+    {
+        uint32_t current_cluster = root_clus_;
+
+        const char *p = path;
+        if (*p == '/')
+            p++;
+
+        char segment[16];
+
+        while (*p)
+        {
+            int i = 0;
+            while (*p && *p != '/' && i < 15)
+            {
+                segment[i++] = *p++;
+            }
+            segment[i] = '\0';
+            if (*p == '/')
+                p++;
+
+            if (i == 0)
+                break;
+
+            DirectoryEntry entry;
+            if (FindDirectoryEntry(segment, current_cluster, &entry))
+            {
+                if (entry.attr & 0x10)
+                {
+                    current_cluster = (entry.fst_clus_hi << 16) | entry.fst_clus_lo;
+                }
+                else
+                {
+                    kprintf("[FAT32] Error: %s is a file, not a directory.\n", segment);
+                    return 0;
+                }
+            }
+            else
+            {
+                char name83[11];
+                To83Format(segment, name83);
+
+                uint32_t new_cluster = CreateDirectory(name83, current_cluster);
+                if (new_cluster == 0)
+                    return 0;
+
+                current_cluster = new_cluster;
+            }
+        }
+
+        return current_cluster;
     }
 
     void FAT32Driver::ListDirectory(uint32_t cluster)
@@ -373,7 +436,7 @@ namespace FileSystem
 
         while (current_cluster < 0x0FFFFFF8)
         {
-            NVMe::g_nvme->Read(ClusterToLBA(current_cluster), buf, sec_per_clus_);
+            dev_->Read(ClusterToLBA(current_cluster), buf, sec_per_clus_);
             DirectoryEntry *entries = reinterpret_cast<DirectoryEntry *>(buf);
             int num_entries = cluster_bytes / 32;
 
@@ -430,6 +493,16 @@ namespace FileSystem
         MemoryManager::Free(buf, cluster_bytes);
     }
 
+    uint32_t FAT32Driver::GetFileSize(const char *path)
+    {
+        DirectoryEntry entry;
+        if (GetFileEntry(path, &entry))
+        {
+            return entry.file_size;
+        }
+        return 0;
+    }
+
     bool FAT32Driver::DeleteFile(const char *name, uint32_t parent_cluster)
     {
         kprintf("[FAT32] Deleting file: %s...\n", name);
@@ -443,7 +516,7 @@ namespace FileSystem
             uint64_t lba = ClusterToLBA(current_cluster);
 
             // 1クラスタ分読み込み
-            NVMe::g_nvme->Read(lba, buf, sec_per_clus_);
+            dev_->Read(lba, buf, sec_per_clus_);
 
             DirectoryEntry *entries = reinterpret_cast<DirectoryEntry *>(buf);
             int num_entries = (sec_per_clus_ * 512) / 32;
@@ -490,7 +563,7 @@ namespace FileSystem
                 uint8_t *sector_ptr = buf + (sector_offset * 512);
 
                 // 書き込み (LBA + セクタオフセット)
-                NVMe::g_nvme->Write(lba + sector_offset, sector_ptr, 1);
+                dev_->Write(lba + sector_offset, sector_ptr, 1);
 
                 kprintf("[FAT32] File deleted.\n");
                 MemoryManager::Free(buf, sec_per_clus_ * 512);
@@ -532,10 +605,11 @@ namespace FileSystem
 
         while (bytes_remaining > 0 && current_cluster < 0x0FFFFFF8)
         {
+            kprintf(".");
             uint64_t lba = ClusterToLBA(current_cluster);
 
             // 1クラスタ読み込み
-            NVMe::g_nvme->Read(lba, temp_buf, sec_per_clus_);
+            dev_->Read(lba, temp_buf, sec_per_clus_);
 
             // 必要な分だけコピー
             uint32_t copy_len = (bytes_remaining > cluster_bytes) ? cluster_bytes : bytes_remaining;
@@ -548,6 +622,7 @@ namespace FileSystem
             current_cluster = GetNextCluster(current_cluster);
         }
 
+        kprintf(" Done.\n");
         MemoryManager::Free(temp_buf, cluster_bytes);
         return entry.file_size;
     }
@@ -606,7 +681,7 @@ namespace FileSystem
             memcpy(sector_buf, src_ptr, write_len);
 
             // 1クラスタ分書き込み
-            NVMe::g_nvme->Write(target_lba, sector_buf, sec_per_clus_);
+            dev_->Write(target_lba, sector_buf, sec_per_clus_);
             MemoryManager::Free(sector_buf, cluster_size_bytes);
 
             // 3. 変数更新
@@ -623,5 +698,36 @@ namespace FileSystem
         AddDirectoryEntry(name, first_cluster, size, 0x20, parent_cluster);
 
         kprintf("[FAT32] File Written Successfully (Start Cluster %d)\n", first_cluster);
+    }
+
+    void FAT32Driver::To83Format(const char *src, char *dst)
+    {
+        memset(dst, ' ', 11);
+        int src_idx = 0;
+        int dst_idx = 0;
+
+        while (src[src_idx] && src[src_idx] != '.' && dst_idx < 8)
+        {
+            char c = src[src_idx++];
+            if (c >= 'a' && c <= 'z')
+                c -= 32;
+            dst[dst_idx++] = c;
+        }
+
+        while (src[src_idx] && src[src_idx] != '.')
+            src_idx++;
+
+        if (src[src_idx] == '.')
+        {
+            src_idx++;
+            dst_idx = 8;
+            while (src[src_idx] && dst_idx < 11)
+            {
+                char c = src[src_idx++];
+                if (c >= 'a' && c <= 'z')
+                    c -= 32;
+                dst[dst_idx++] = c;
+            }
+        }
     }
 }

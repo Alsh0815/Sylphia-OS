@@ -26,7 +26,7 @@ $OBJECTS = @()
 
 Write-Host "Cleaning previous build artifacts..." -ForegroundColor Cyan
 
-Get-ChildItem -Path "build" -Recurse -Filter "*.obj" | Remove-Item -Force
+Get-ChildItem -Path "..\build" -Recurse -Filter "*.obj" | Remove-Item -Force
 
 Write-Host "Compiling Assembly (NASM)..." -ForegroundColor Cyan
 
@@ -67,5 +67,7 @@ Write-Host "Linking Kernel (OBJ -> ELF)..." -ForegroundColor Cyan
     --static `
     -o ..\build\kernel.elf `
     $OBJECTS
+
+Get-ChildItem -Path "..\build" -Recurse -Filter "*.obj" | Remove-Item -Force
 
 Write-Host "Kernel Build Success! Output: build\kernel.elf" -ForegroundColor Green

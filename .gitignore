@@ -14,5 +14,6 @@ build/*
 *.img
 *.log
 *.o
+*.vhd
 
 kernel_dump.txt
