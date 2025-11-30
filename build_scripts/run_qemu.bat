@@ -48,6 +48,8 @@ rem readonly=on - コード領域は書き込み不可にする
 -drive file=fat:rw:%BUILD_DIR%,format=raw,media=disk ^
 -drive file=%NVME_IMG%,if=none,id=nvm ^
 -device nvme,serial=deadbeef,drive=nvm ^
+-device qemu-xhci,id=xhci ^
+-device usb-kbd ^
 -net none ^
 -monitor stdio ^
 -d int -D qemu.log

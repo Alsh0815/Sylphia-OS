@@ -1,4 +1,4 @@
-#include "keyboard.hpp"
+#include "keyboard_layout.hpp"
 
 // スキャンコード(Set 1) の最大値+1 (主要キーのみ)
 const int kKeyMapSize = 0x7d + 1;

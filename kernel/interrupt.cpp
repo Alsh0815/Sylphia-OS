@@ -3,7 +3,7 @@
 #include "console.hpp"
 #include "interrupt.hpp"
 #include "io.hpp"
-#include "keyboard.hpp"
+#include "keyboard_layout.hpp"
 #include "printk.hpp"
 #include <stdint.h>
 
@@ -185,6 +185,7 @@ __attribute__((interrupt)) void PageFaultHandler(InterruptFrame *frame, uint64_t
         __asm__ volatile("hlt");
 }
 
+/*
 // Shiftキーの状態管理フラグ
 bool g_shift_pressed = false;
 
@@ -214,6 +215,7 @@ __attribute__((interrupt)) void KeyboardHandler(InterruptFrame *frame)
 
     g_lapic->EndOfInterrupt();
 }
+*/
 
 void SetupInterrupts()
 {
@@ -235,7 +237,7 @@ void SetupInterrupts()
     SetIDTEntry(14, (uint64_t)PageFaultHandler, 0x08, IDT_TYPE_INTERRUPT_GATE);
 
     // キーボード (Vector 0x40)
-    SetIDTEntry(0x40, (uint64_t)KeyboardHandler, 0x08, IDT_TYPE_INTERRUPT_GATE);
+    // SetIDTEntry(0x40, (uint64_t)KeyboardHandler, 0x08, IDT_TYPE_INTERRUPT_GATE);
 
     LoadIDT(sizeof(idt) - 1, (uint64_t)&idt[0]);
 }

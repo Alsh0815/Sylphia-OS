@@ -1,3 +1,4 @@
+#include "driver/usb/xhci.hpp"
 #include "pci/pci.hpp"
 #include "io.hpp"
 #include "printk.hpp"
@@ -45,6 +46,12 @@ namespace PCI
     {
         IoOut32(kConfigAddress, MakeAddress(dev.bus, dev.device, dev.function, reg_addr));
         return IoIn32(kConfigData);
+    }
+
+    void WriteConfReg(const Device &dev, uint8_t reg_addr, uint32_t value)
+    {
+        IoOut32(kConfigAddress, MakeAddress(dev.bus, dev.device, dev.function, reg_addr));
+        IoOut32(kConfigData, value);
     }
 
     // デバイスを追加する (今回は表示するだけ)
@@ -114,5 +121,43 @@ namespace PCI
             }
         }
         kprintf("PCI Scan Done.\n");
+    }
+
+    void SetupPCI()
+    {
+        kprintf("Setting up PCI...\n");
+        for (int bus = 0; bus < 256; ++bus)
+        {
+            for (int dev = 0; dev < 32; ++dev)
+            {
+                for (int func = 0; func < 8; ++func)
+                {
+                    PCI::Device d = {static_cast<uint8_t>(bus), static_cast<uint8_t>(dev), static_cast<uint8_t>(func)};
+                    uint16_t vendor = PCI::ReadConfReg(d, 0x00) & 0xFFFF;
+
+                    if (vendor == 0xFFFF)
+                        continue;
+
+                    uint32_t reg8 = PCI::ReadConfReg(d, 0x08);
+                    uint8_t base = (reg8 >> 24) & 0xFF;
+                    uint8_t sub = (reg8 >> 16) & 0xFF;
+                    uint8_t prog_if = (reg8 >> 8) & 0xFF;
+
+                    // USB xHCI Controller
+                    // Base=0x0C (Serial Bus), Sub=0x03 (USB), Prog_IF=0x30 (xHCI)
+                    if (base == 0x0C && sub == 0x03 && prog_if == 0x30)
+                    {
+                        kprintf("Found xHCI Controller!\n");
+                        PCI::Device *xhci_dev = nullptr;
+                        PCI::Device found_dev;
+                        found_dev = d;
+                        xhci_dev = &found_dev;
+                        g_xhci = new USB::XHCI::Controller(*xhci_dev);
+                        g_xhci->Initialize();
+                    }
+                }
+            }
+        }
+        kprintf("PCI Setup Complete.\n");
     }
 }

@@ -2,6 +2,7 @@
 
 #include "driver/nvme/nvme_driver.hpp"
 #include "driver/nvme/nvme_reg.hpp"
+#include "driver/usb/keyboard/keyboard.hpp"
 #include "fs/fat32/fat32_driver.hpp"
 #include "fs/fat32/fat32.hpp"
 #include "fs/installer.hpp"
@@ -18,7 +19,7 @@
 #include "interrupt.hpp"
 #include "io.hpp"
 #include "ioapic.hpp"
-#include "keyboard.hpp"
+#include "keyboard_layout.hpp"
 #include "paging.hpp"
 #include "pic.hpp"
 #include "printk.hpp"
@@ -98,7 +99,7 @@ extern "C" __attribute__((ms_abi)) void KernelMain(
     static Console console(config, 0xFFFFFFFF, kDesktopBG);
     g_console = &console;
 
-    kprintf("Sylphia-OS Kernel v0.5.3\n");
+    kprintf("Sylphia-OS Kernel v0.5.4\n");
     kprintf("----------------------\n");
 
     SetupSegments();
@@ -107,14 +108,14 @@ extern "C" __attribute__((ms_abi)) void KernelMain(
     EnableSSE();
 
     MemoryManager::Initialize(memmap);
-    kprintf("Memory Manager Initialized.\n");
+    // kprintf("Memory Manager Initialized.\n");
 
     const size_t kKernelStackSize = 1024 * 16; // 16KB
     void *kernel_stack = MemoryManager::Allocate(kKernelStackSize);
     uint64_t kernel_stack_end = reinterpret_cast<uint64_t>(kernel_stack) + kKernelStackSize;
     SetKernelStack(kernel_stack_end);
 
-    kprintf("Kernel Stack setup complete at %lx\n", kernel_stack_end);
+    // kprintf("Kernel Stack setup complete at %lx\n", kernel_stack_end);
 
     PageManager::Initialize();
     InitializeSyscall();
@@ -158,7 +159,7 @@ nvme_found:
     if (nvme_dev)
     {
         uintptr_t bar0 = PCI::ReadBar0(*nvme_dev);
-        kprintf("NVMe BAR0 Address: %lx\n", bar0);
+        // kprintf("NVMe BAR0 Address: %lx\n", bar0);
         NVMe::g_nvme = new NVMe::Driver(bar0);
         NVMe::g_nvme->Initialize();
         NVMe::g_nvme->IdentifyController();
@@ -245,6 +246,8 @@ nvme_found:
         kprintf("NVMe Controller not found.\n");
     }
 
+    PCI::SetupPCI();
+
     static Shell shell;
     g_shell = &shell;
 
@@ -253,7 +256,7 @@ nvme_found:
     g_lapic->Enable();
 
     IOAPIC::Enable(1, 0x40, g_lapic->GetID());
-    kprintf("I/O APIC: Keyboard (IRQ1) -> Vector 0x40\n");
+    // kprintf("I/O APIC: Keyboard (IRQ1) -> Vector 0x40\n");
 
     g_shell->OnKey(0);
     kprintf("\nWelcome to Sylphia-OS!\n");
@@ -261,6 +264,10 @@ nvme_found:
 
     __asm__ volatile("sti");
 
+    while (1)
+    {
+        g_usb_keyboard->Update();
+    }
     while (1)
         __asm__ volatile("hlt");
 }

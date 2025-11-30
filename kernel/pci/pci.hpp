@@ -23,8 +23,11 @@ namespace PCI
 
     uintptr_t ReadBar0(const Device &dev);
     uint32_t ReadConfReg(const Device &dev, uint8_t reg_addr);
+    void WriteConfReg(const Device &dev, uint8_t reg_addr, uint32_t value);
 
     // バス全体をスキャンして、見つかったデバイスを画面に表示する
     void ScanAllBus();
+
+    void SetupPCI();
 
 } // namespace PCI
