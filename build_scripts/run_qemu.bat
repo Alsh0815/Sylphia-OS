@@ -45,10 +45,11 @@ rem readonly=on - コード領域は書き込み不可にする
 -m 512M ^
 -drive if=pflash,format=raw,readonly=on,file=%OVMF_CODE% ^
 -drive if=pflash,format=raw,file=%OVMF_VARS_TMP% ^
--drive file=fat:rw:%BUILD_DIR%,format=raw,media=disk ^
+-drive file=fat:rw:%BUILD_DIR%,format=raw,media=disk,if=none,id=usbstick ^
 -drive file=%NVME_IMG%,if=none,id=nvm ^
 -device nvme,serial=deadbeef,drive=nvm ^
 -device qemu-xhci,id=xhci ^
+-device usb-storage,bus=xhci.0,drive=usbstick,bootindex=1 ^
 -device usb-kbd ^
 -net none ^
 -monitor stdio ^

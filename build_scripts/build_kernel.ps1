@@ -11,7 +11,7 @@ $SOURCES = @(
     "..\kernel\main.cpp", "..\kernel\cxx.cpp", "..\kernel\new.cpp",
     "..\kernel\app\elf\elf_loader.cpp",
     "..\kernel\driver\nvme\nvme_driver.cpp",
-    "..\kernel\driver\usb\keyboard\keyboard.cpp", "..\kernel\driver\usb\xhci.cpp",
+    "..\kernel\driver\usb\keyboard\keyboard.cpp", "..\kernel\driver\usb\mass_storage\mass_storage.cpp", "..\kernel\driver\usb\xhci.cpp",
     "..\kernel\fs\fat32\fat32_driver.cpp", "..\kernel\fs\fat32\fat32.cpp", "..\kernel\fs\gpt.cpp", "..\kernel\fs\installer.cpp",
     "..\kernel\memory\memory_manager.cpp",
     "..\kernel\pci\pci.cpp",

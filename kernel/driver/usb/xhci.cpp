@@ -1,5 +1,6 @@
 #include "xhci.hpp"
 #include "driver/usb/keyboard/keyboard.hpp"
+#include "driver/usb/mass_storage/mass_storage.hpp"
 #include "memory/memory_manager.hpp"
 #include "pci/pci.hpp"
 #include "printk.hpp"
@@ -14,11 +15,14 @@ namespace USB::XHCI
     Controller::Controller(const PCI::Device &dev)
         : pci_dev_(dev), mmio_base_(0), dcs_(1), pcs_(1), cmd_ring_index_(0), event_ring_index_(0)
     {
-        for (int i = 0; i < 32; ++i)
+        for (int slot = 0; slot < 256; ++slot)
         {
-            transfer_rings_[i] = nullptr;
-            ring_cycle_state_[i] = 1;
-            ring_index_[i] = 0;
+            for (int i = 0; i < 32; ++i)
+            {
+                transfer_rings_[slot][i] = nullptr;
+                ring_cycle_state_[slot][i] = 1;
+                ring_index_[slot][i] = 0;
+            }
         }
     }
 
@@ -228,10 +232,31 @@ namespace USB::XHCI
                 {
                     if (AddressDevice(slot_id, i, speed))
                     {
-                        g_usb_keyboard = new USB::Keyboard(this, slot_id);
-                        if (g_usb_keyboard->Initialize())
+                        DeviceDescriptor dev_desc;
+                        if (ControlIn(slot_id, 0x80, 6, 0x0100, 0, 18, &dev_desc))
                         {
-                            kprintf("[xHCI] Keyboard initialized successfully.\n");
+                            g_usb_keyboard = new USB::Keyboard(this, slot_id);
+                            if (g_usb_keyboard->Initialize())
+                            {
+                                kprintf("[xHCI - kbd] Keyboard initialized.\n");
+                            }
+                            else
+                            {
+                                delete g_usb_keyboard;
+                                g_usb_keyboard = nullptr;
+
+                                auto storage = new USB::MassStorage(this, slot_id);
+                                if (storage->Initialize())
+                                {
+                                    kprintf("[xHCI - ms] Mass Storage initialized!\n");
+
+                                    uint8_t *sec0 = (uint8_t *)MemoryManager::Allocate(512, 64);
+                                    if (storage->ReadSectors(0, 1, sec0))
+                                    {
+                                        kprintf("Sector 0 Dump: %x %x ...\n", sec0[0], sec0[1]);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -240,20 +265,20 @@ namespace USB::XHCI
     }
 
     bool Controller::ConfigureEndpoint(uint8_t slot_id, uint8_t ep_addr,
-                                       uint16_t max_packet_size, uint8_t interval)
+                                       uint16_t max_packet_size, uint8_t interval, uint8_t type)
     {
         uint8_t dci = AddressToDCI(ep_addr);
-        kprintf("[xHCI] Configuring Endpoint %02x (DCI=%d)...\n", ep_addr, dci);
+        kprintf("[xHCI] Configuring Endpoint %x (DCI=%d)...\n", ep_addr, dci);
 
-        if (transfer_rings_[dci] == nullptr)
+        if (transfer_rings_[slot_id][dci] == nullptr)
         {
-            transfer_rings_[dci] = static_cast<TRB *>(MemoryManager::Allocate(sizeof(TRB) * 32, 64));
-            uint8_t *p = reinterpret_cast<uint8_t *>(transfer_rings_[dci]);
+            transfer_rings_[slot_id][dci] = static_cast<TRB *>(MemoryManager::Allocate(sizeof(TRB) * 32, 64));
+            uint8_t *p = reinterpret_cast<uint8_t *>(transfer_rings_[slot_id][dci]);
             for (size_t i = 0; i < sizeof(TRB) * 32; ++i)
                 p[i] = 0;
 
-            ring_cycle_state_[dci] = 1;
-            ring_index_[dci] = 0;
+            ring_cycle_state_[slot_id][dci] = 1;
+            ring_index_[slot_id][dci] = 0;
         }
 
         InputContext *input_ctx = static_cast<InputContext *>(MemoryManager::Allocate(sizeof(InputContext), 64));
@@ -273,7 +298,14 @@ namespace USB::XHCI
         // Endpoint Context
         EndpointContext &ep_ctx = input_ctx->ep_contexts[dci - 1];
 
-        ep_ctx.ep_type = (ep_addr & 0x80) ? 7 : 3; // 7=Interrupt IN, 3=Interrupt OUT
+        if (type == 2) // Bulk
+        {
+            ep_ctx.ep_type = (ep_addr & 0x80) ? 6 : 2; // 6=Bulk IN, 2=Bulk OUT
+        }
+        else // Interrupt (Assuming type 3)
+        {
+            ep_ctx.ep_type = (ep_addr & 0x80) ? 7 : 3; // 7=Interrupt IN, 3=Interrupt OUT
+        }
         ep_ctx.max_packet_size = max_packet_size;
         ep_ctx.interval = interval; // Descriptorから取った値を設定
         ep_ctx.average_trb_length = 1;
@@ -282,7 +314,7 @@ namespace USB::XHCI
 
         ep_ctx.max_burst_size = 0;
 
-        uint64_t ring_base = reinterpret_cast<uint64_t>(transfer_rings_[dci]);
+        uint64_t ring_base = reinterpret_cast<uint64_t>(transfer_rings_[slot_id][dci]);
         ep_ctx.dequeue_pointer = ring_base | 1; // DCS=1
 
         uint64_t command_trb_ptr = reinterpret_cast<uint64_t>(&command_ring_[cmd_ring_index_]);
@@ -343,7 +375,7 @@ namespace USB::XHCI
                                uint16_t value, uint16_t index,
                                uint16_t length, void *buffer)
     {
-        TRB &setup_trb = transfer_rings_[1][ring_index_[1]++];
+        TRB &setup_trb = transfer_rings_[slot_id][1][ring_index_[slot_id][1]++];
 
         // Setup Parameter: (Length << 48) | (Index << 32) | (Value << 16) | (Request << 8) | ReqType
         setup_trb.parameter = (static_cast<uint64_t>(length) << 48) |
@@ -352,22 +384,22 @@ namespace USB::XHCI
                               (static_cast<uint64_t>(request) << 8) |
                               req_type;
 
-        setup_trb.status = 8;                                                              // Setup Packet Size
-        setup_trb.control = (ring_cycle_state_[1] & 1) | (2 << 10) | (1 << 6) | (3 << 16); // IDT, Setup, In Data
+        setup_trb.status = 8;                                                                       // Setup Packet Size
+        setup_trb.control = (ring_cycle_state_[slot_id][1] & 1) | (2 << 10) | (1 << 6) | (3 << 16); // IDT, Setup, In Data
 
         if (length > 0)
         {
-            TRB &data_trb = transfer_rings_[1][ring_index_[1]++];
+            TRB &data_trb = transfer_rings_[slot_id][1][ring_index_[slot_id][1]++];
             data_trb.parameter = reinterpret_cast<uint64_t>(buffer);
             data_trb.status = length;
-            data_trb.control = (ring_cycle_state_[1] & 1) | (3 << 10) | (1 << 16) | (1 << 5); // Data, In, IOC
+            data_trb.control = (ring_cycle_state_[slot_id][1] & 1) | (3 << 10) | (1 << 16) | (1 << 5); // Data, In, IOC
         }
 
-        TRB &status_trb = transfer_rings_[1][ring_index_[1]++];
+        TRB &status_trb = transfer_rings_[slot_id][1][ring_index_[slot_id][1]++];
         status_trb.parameter = 0;
         status_trb.status = 0;
         // SetupがINならStatusはOUT(Dir=0)
-        status_trb.control = (ring_cycle_state_[1] & 1) | (4 << 10) | (1 << 1);
+        status_trb.control = (ring_cycle_state_[slot_id][1] & 1) | (4 << 10) | (1 << 1);
 
         RingDoorbell(slot_id, 1);
 
@@ -451,12 +483,12 @@ namespace USB::XHCI
     bool Controller::SendNormalTRB(uint8_t slot_id, uint8_t ep_addr, void *data_buf, uint32_t len)
     {
         uint8_t dci = AddressToDCI(ep_addr);
-        TRB *ring = transfer_rings_[dci];
+        TRB *ring = transfer_rings_[slot_id][dci];
         if (!ring)
             return false;
 
-        uint32_t idx = ring_index_[dci];
-        uint8_t pcs = ring_cycle_state_[dci];
+        uint32_t idx = ring_index_[slot_id][dci];
+        uint8_t pcs = ring_cycle_state_[slot_id][dci];
 
         TRB &trb = ring[idx];
         trb.parameter = reinterpret_cast<uint64_t>(data_buf);
@@ -465,16 +497,16 @@ namespace USB::XHCI
         // Type=1 (Normal), IOC=1 (完了時にイベント発生), ISP=1 (Short Packet時もイベント)
         trb.control = (pcs & 1) | (1 << 10) | (1 << 5) | (1 << 2);
 
-        ring_index_[dci]++;
+        ring_index_[slot_id][dci]++;
 
-        if (ring_index_[dci] == 31)
+        if (ring_index_[slot_id][dci] == 31)
         {
             TRB &link = ring[31];
             link.parameter = reinterpret_cast<uint64_t>(ring);
             link.status = 0;
             link.control = (pcs & 1) | (6 << 10) | (1 << 1);
-            ring_cycle_state_[dci] ^= 1;
-            ring_index_[dci] = 0;
+            ring_cycle_state_[slot_id][dci] ^= 1;
+            ring_index_[slot_id][dci] = 0;
         }
 
         __asm__ volatile("wbinvd");
@@ -585,13 +617,13 @@ namespace USB::XHCI
         // --- Endpoint Context 0 (Control Pipe) の設定 ---
         input_ctx->ep_contexts[0].ep_type = 4; // Control Endpoint (Bidirectional)
 
-        transfer_rings_[1] = static_cast<TRB *>(MemoryManager::Allocate(sizeof(TRB) * 32, 64));
+        transfer_rings_[slot_id][1] = static_cast<TRB *>(MemoryManager::Allocate(sizeof(TRB) * 32, 64));
         {
-            uint8_t *p = reinterpret_cast<uint8_t *>(transfer_rings_[1]);
+            uint8_t *p = reinterpret_cast<uint8_t *>(transfer_rings_[slot_id][1]);
             for (size_t i = 0; i < sizeof(TRB) * 32; ++i)
                 p[i] = 0;
         }
-        uint64_t tr_phys = reinterpret_cast<uint64_t>(transfer_rings_[1]);
+        uint64_t tr_phys = reinterpret_cast<uint64_t>(transfer_rings_[slot_id][1]);
         if (speed == 4)
             input_ctx->ep_contexts[0].max_packet_size = 512;
         else if (speed == 3)

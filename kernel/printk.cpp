@@ -98,6 +98,20 @@ extern "C" int kprintf(const char *format, ...)
                     buffer[buf_idx++] = *p;
                 break;
             }
+            case 'u':
+            {
+                // 64bit対応
+                unsigned long long val;
+                if (long_mode > 0)
+                    val = va_arg(args, unsigned long long);
+                else
+                    val = va_arg(args, unsigned int);
+
+                itoa(val, num_buf, 10);
+                for (char *p = num_buf; *p; p++)
+                    buffer[buf_idx++] = *p;
+                break;
+            }
             case 'x':
             case 'p':
             { // %p も 16進数扱いで処理

@@ -103,7 +103,7 @@ namespace USB
                         uint16_t max_pkt = 8;  // Boot Protocol Keyboardは大抵8バイト
                         uint8_t interval = 10; // 10ms (Descriptorの値を推奨)
 
-                        if (!controller_->ConfigureEndpoint(slot_id_, ep_interrupt_in_, max_pkt, interval))
+                        if (!controller_->ConfigureEndpoint(slot_id_, ep_interrupt_in_, max_pkt, interval , 3))
                         {
                             return false;
                         }

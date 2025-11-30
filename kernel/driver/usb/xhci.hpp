@@ -112,7 +112,7 @@ namespace USB::XHCI
         void Initialize();
 
         bool ConfigureEndpoint(uint8_t slot_id, uint8_t ep_addr,
-                               uint16_t max_packet_size, uint8_t interval);
+                               uint16_t max_packet_size, uint8_t interval, uint8_t type);
         bool ControlIn(uint8_t slot_id, uint8_t req_type, uint8_t request,
                        uint16_t value, uint16_t index,
                        uint16_t length, void *buffer);
@@ -138,9 +138,9 @@ namespace USB::XHCI
         uint32_t cmd_ring_index_;   // Command Ringの書き込み位置
         uint32_t event_ring_index_; // Event Ringの読み取り位置
 
-        TRB *transfer_rings_[32];
-        uint8_t ring_cycle_state_[32];
-        uint32_t ring_index_[32];
+        TRB *transfer_rings_[256][32];
+        uint8_t ring_cycle_state_[256][32];
+        uint32_t ring_index_[256][32];
 
         uint32_t Read32(uint32_t offset) const;
         void Write32(uint32_t offset, uint32_t value);
