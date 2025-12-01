@@ -17,9 +17,11 @@ namespace FileSystem
         uint32_t CreateDirectory(const char *name, uint32_t parent_cluster = 0);
         uint32_t EnsureDirectory(const char *path);
         void ListDirectory(uint32_t cluster = 0);
+        uint32_t GetDirectoryCluster(const char *path, uint32_t base_cluster = 0);
+        bool GetFileEntry(const char *path, DirectoryEntry *ret_entry, uint32_t base_cluster = 0);
         uint32_t GetFileSize(const char *path);
         bool DeleteFile(const char *name, uint32_t parent_cluster = 0);
-        uint32_t ReadFile(const char *name, void *buffer, uint32_t buffer_size);
+        uint32_t ReadFile(const char *name, void *buffer, uint32_t buffer_size, uint32_t base_cluster = 0);
         void WriteFile(const char *name, const void *data, uint32_t size, uint32_t parent_cluster = 0);
 
         static void To83Format(const char *src, char *dst);
@@ -63,10 +65,8 @@ namespace FileSystem
         // found_entry: 見つかったエントリのコピーを格納する先
         // return: 見つかったらtrue
         bool FindDirectoryEntry(const char *name, uint32_t parent_cluster, DirectoryEntry *found_entry);
-        // パスからディレクトリエントリを取得する内部関数
-        // ret_entry: 見つかったエントリの格納先
-        bool GetFileEntry(const char *path, DirectoryEntry *ret_entry);
     };
 
-    extern FAT32Driver *g_fat32_driver; // グローバルインスタンス
+    extern FAT32Driver *g_fat32_driver;
+    extern FAT32Driver *g_system_fs;
 }

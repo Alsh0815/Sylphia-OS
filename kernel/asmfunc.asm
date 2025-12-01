@@ -1,4 +1,9 @@
 bits 64
+section .bss
+
+global g_kernel_rsp_save
+g_kernel_rsp_save: resq 1
+
 section .text
 
 ; void EnableSSE();
@@ -22,6 +27,13 @@ global EnterUserMode
 
 ; void EnterUserMode(uint64_t entry_point, uint64_t user_stack_top);
 EnterUserMode:
+    push rbp
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    mov [g_kernel_rsp_save], rsp
     ; 引数: RDI = entry_point, RSI = user_stack_tops
     cli                 ; 割り込み禁止（コンテキストスイッチ中）
     ; 1. SS (User Data Segment)
@@ -51,6 +63,19 @@ EnterUserMode:
     mov fs, ax
     mov gs, ax
     iretq
+
+global ExitApp
+ExitApp:
+    mov rsp, [g_kernel_rsp_save]
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    pop rbp
+    cli
+    swapgs
+    ret
 
 ; void LoadCR3(uint64_t pml4_addr);
 global LoadCR3

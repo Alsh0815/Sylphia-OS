@@ -192,6 +192,8 @@ nvme_found:
         NVMe::g_nvme->Read(2048, check_buf, 1);
         FileSystem::FAT32_BPB *check_bpb = reinterpret_cast<FileSystem::FAT32_BPB *>(check_buf);
 
+        bool already_installed = false;
+
         // シグネチャが 0xAA55 でなければ未フォーマットとみなす
         if (check_bpb->signature != 0xAA55)
         {
@@ -206,11 +208,15 @@ nvme_found:
         }
         else
         {
+            already_installed = true;
             kprintf("[Installer] Valid file system detected.\n");
         }
 
         FileSystem::FAT32Driver *nvme_fs = new FileSystem::FAT32Driver(NVMe::g_nvme, 2048);
         nvme_fs->Initialize();
+
+        FileSystem::g_system_fs = nvme_fs;
+        FileSystem::g_fat32_driver = nvme_fs;
 
         if (USB::g_mass_storage)
         {
@@ -241,22 +247,30 @@ nvme_found:
             FileSystem::FAT32Driver *usb_fs = new FileSystem::FAT32Driver(USB::g_mass_storage, usb_part_lba);
             usb_fs->Initialize();
 
-            CopyFile(usb_fs, "EFI/BOOT/BOOTX64.EFI", nvme_fs, "EFI/BOOT/BOOTX64.EFI");
-            CopyFile(usb_fs, "apps/test.elf", nvme_fs, "sys/bin/test.elf");
-            CopyFile(usb_fs, "kernel.elf", nvme_fs, "kernel.elf");
+            if (!already_installed)
+            {
+                kprintf("[Installer] Performing initial file copy...\n");
+                nvme_fs->EnsureDirectory("sys");
+                nvme_fs->EnsureDirectory("sys/bin");
+                nvme_fs->EnsureDirectory("home");
 
-            kprintf("Update process finished.\n");
+                CopyFile(usb_fs, "EFI/BOOT/BOOTX64.EFI", nvme_fs, "EFI/BOOT/BOOTX64.EFI");
+                CopyFile(usb_fs, "apps/test.elf", nvme_fs, "sys/bin/test.elf");
+                CopyFile(usb_fs, "kernel.elf", nvme_fs, "kernel.elf");
+
+                kprintf("Update process finished.\n");
+
+                const char *startup_script = "\\EFI\\BOOT\\BOOTX64.EFI";
+                nvme_fs->WriteFile(
+                    "STARTUP NSH",
+                    startup_script,
+                    21,
+                    0);
+                kprintf("[Installer] startup.nsh created.\n");
+
+                kprintf("[Installer] Installation Complete!\n");
+            }
         }
-
-        const char *startup_script = "\\EFI\\BOOT\\BOOTX64.EFI";
-        nvme_fs->WriteFile(
-            "STARTUP NSH",
-            startup_script,
-            21,
-            0);
-        kprintf("[Installer] startup.nsh created.\n");
-
-        kprintf("[Installer] Installation Complete!\n");
     }
     else
     {

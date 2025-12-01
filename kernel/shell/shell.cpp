@@ -1,4 +1,4 @@
-#include <std/string.h>
+#include <std/string.hpp>
 #include "app/elf/elf_loader.hpp"
 #include "fs/fat32/fat32_driver.hpp"
 #include "memory/memory_manager.hpp"
@@ -8,17 +8,6 @@
 
 Shell *g_shell = nullptr;
 
-// 簡易strcmp (一致したら0を返す)
-int strcmp(const char *s1, const char *s2)
-{
-    while (*s1 && (*s1 == *s2))
-    {
-        s1++;
-        s2++;
-    }
-    return *(const unsigned char *)s1 - *(const unsigned char *)s2;
-}
-
 // 簡易memset
 void memset(void *dest, int val, int len)
 {
@@ -27,14 +16,14 @@ void memset(void *dest, int val, int len)
         *ptr++ = val;
 }
 
-Shell::Shell() : cursor_pos_(0)
+Shell::Shell() : cursor_pos_(0), current_cluster_(0)
 {
     memset(buffer_, 0, kMaxCommandLen);
 }
 
 void Shell::PrintPrompt()
 {
-    kprintf("Sylphia> ");
+    kprintf("Sylphia:/$ ");
 }
 
 void Shell::OnKey(char c)

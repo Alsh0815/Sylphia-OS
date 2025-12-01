@@ -1,5 +1,14 @@
-#ifndef _STD_STRING_H_
-#define _STD_STRING_H_
+#include "string.hpp"
+
+int strcmp(const char *s1, const char *s2)
+{
+    while (*s1 && (*s1 == *s2))
+    {
+        s1++;
+        s2++;
+    }
+    return *(const unsigned char *)s1 - *(const unsigned char *)s2;
+}
 
 int strncmp(const char *s1, const char *s2, int n)
 {
@@ -12,5 +21,3 @@ int strncmp(const char *s1, const char *s2, int n)
     }
     return 0;
 }
-
-#endif // _STD_STRING_H_

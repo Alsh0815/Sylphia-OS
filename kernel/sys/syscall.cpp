@@ -1,5 +1,6 @@
 #include "syscall.hpp"
 #include <stdint.h>
+#include "app/elf/elf_loader.hpp"
 #include "fs/fat32/fat32_driver.hpp"
 #include "memory/memory_manager.hpp"
 #include "printk.hpp"
@@ -12,6 +13,7 @@ const uint32_t kMSR_FMASK = 0xC0000084;
 const uint32_t kMSR_KERNEL_GS_BASE = 0xC0000102;
 
 // asmfunc.asm
+extern "C" void ExitApp();
 extern "C" uint64_t ReadMSR(uint32_t msr);
 extern "C" void WriteMSR(uint32_t msr, uint64_t value);
 extern "C" void SyscallEntry();
@@ -36,7 +38,12 @@ extern "C" uint64_t SyscallHandler(
         return 0;
 
     case 2: // Exit
-        kprintf("\n[Kernel] App Exited.\n");
+        kprintf("\n[Kernel] App Exited via Syscall.\n");
+
+        // ★ 修正: 安全にコンテキストを復元して戻る関数を呼ぶ
+        ExitApp();
+
+        // ここには戻ってこない
         while (1)
             __asm__ volatile("hlt");
         return 0;

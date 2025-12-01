@@ -1,6 +1,7 @@
 $ErrorActionPreference = "Stop"
 
-$CLANG = "clang++"
+$CLANG = "clang"
+$CLANGP = "clang++"
 $LD = "ld.lld"
 $NASM = "nasm"
 
@@ -20,6 +21,10 @@ $SOURCES = @(
     "..\kernel\apic.cpp", "..\kernel\console.cpp", "..\kernel\font.cpp", "..\kernel\graphics.cpp",
     "..\kernel\interrupt.cpp", "..\kernel\ioapic.cpp", "..\kernel\keyboard_layout.cpp", "..\kernel\paging.cpp",
     "..\kernel\pic.cpp", "..\kernel\printk.cpp", "..\kernel\segmentation.cpp"
+)
+
+$STD_SOURCES = @(
+    "..\std\string.cpp"
 )
 
 $OBJECTS = @()
@@ -49,7 +54,7 @@ foreach ($src in $SOURCES) {
     $objPath = "..\build\$objName"
     $OBJECTS += $objPath
 
-    & $CLANG -target x86_64-elf `
+    $result = & $CLANGP -target x86_64-elf `
         -ffreestanding `
         -fno-rtti -fno-exceptions `
         -mno-red-zone `
@@ -57,8 +62,40 @@ foreach ($src in $SOURCES) {
         -I.. `
         -I..\kernel `
         -c $src `
-        -o $objPath
+        -o $objPath 2>&1
+    
+    if (-not $result) {
+        Write-Host "- OK ($src)" -ForegroundColor Cyan
+    }
+    else {
+        Write-Host "- ERROR ($src)" -ForegroundColor Red
+        $result
+    }
 }
+
+Write-Host "Compiling Standard Library (C++)..." -ForegroundColor Cyan
+foreach ($src in $STD_SOURCES) {
+    $objName = [System.IO.Path]::GetFileNameWithoutExtension($src) + ".obj"
+    $objPath = "..\build\$objName"
+    $OBJECTS += $objPath
+
+    $result = & $CLANG -target x86_64-elf `
+        -ffreestanding `
+        -fno-rtti -fno-exceptions `
+        -mno-red-zone `
+        -mgeneral-regs-only `
+        -c $src `
+        -o $objPath 2>&1
+
+    if (-not $result) {
+        Write-Host "- OK ($src)" -ForegroundColor Cyan
+    }
+    else {
+        Write-Host "- ERROR ($src)" -ForegroundColor Red
+        $result
+    }
+}
+
 Write-Host "Linking Kernel (OBJ -> ELF)..." -ForegroundColor Cyan
 
 & $LD -entry KernelMain `

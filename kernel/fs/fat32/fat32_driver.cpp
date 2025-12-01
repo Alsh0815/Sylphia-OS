@@ -1,3 +1,4 @@
+#include <std/string.hpp>
 #include "driver/nvme/nvme_driver.hpp"
 #include "memory/memory_manager.hpp"
 #include "cxx.hpp"
@@ -8,6 +9,7 @@
 namespace FileSystem
 {
     FAT32Driver *g_fat32_driver = nullptr;
+    FAT32Driver *g_system_fs = nullptr;
 
     FAT32Driver::FAT32Driver(BlockDevice *dev, uint64_t partition_lba)
         : dev_(dev), part_lba_(partition_lba) {}
@@ -284,48 +286,6 @@ namespace FileSystem
         return false;
     }
 
-    bool FAT32Driver::GetFileEntry(const char *path, DirectoryEntry *ret_entry)
-    {
-        uint32_t current_cluster = 0;
-        char name_buf[16];
-        const char *p = path;
-
-        if (*p == '/')
-            p++;
-
-        while (*p)
-        {
-            int i = 0;
-            while (*p && *p != '/' && i < 15)
-            {
-                name_buf[i++] = *p++;
-            }
-            name_buf[i] = 0;
-
-            DirectoryEntry entry;
-            if (!FindDirectoryEntry(name_buf, current_cluster, &entry))
-            {
-                return false;
-            }
-
-            if (*p == 0)
-            {
-                *ret_entry = entry;
-                return true;
-            }
-
-            if (!(entry.attr & 0x10))
-            {
-                return false; // ディレクトリでないのにさらに下位を探索しようとした
-            }
-            current_cluster = (entry.fst_clus_hi << 16) | entry.fst_clus_lo;
-            if (*p == '/')
-                p++;
-        }
-
-        return false;
-    }
-
     uint32_t FAT32Driver::CreateDirectory(const char *name, uint32_t parent_cluster)
     {
         kprintf("[FAT32] Creating Directory: %s...\n", name);
@@ -493,6 +453,77 @@ namespace FileSystem
         MemoryManager::Free(buf, cluster_bytes);
     }
 
+    uint32_t FAT32Driver::GetDirectoryCluster(const char *path, uint32_t base_cluster)
+    {
+        DirectoryEntry entry;
+        if (strcmp(path, "/") == 0)
+            return root_clus_;
+        if (path[0] == 0 || strcmp(path, ".") == 0)
+            return base_cluster == 0 ? root_clus_ : base_cluster;
+
+        if (GetFileEntry(path, &entry, base_cluster))
+        {
+            if (entry.attr & 0x10)
+            {
+                uint32_t clus = (entry.fst_clus_hi << 16) | entry.fst_clus_lo;
+                return (clus == 0) ? root_clus_ : clus;
+            }
+        }
+        return 0xFFFFFFFF;
+    }
+
+    bool FAT32Driver::GetFileEntry(const char *path, DirectoryEntry *ret_entry, uint32_t base_cluster)
+    {
+        uint32_t current_cluster = base_cluster;
+        const char *p = path;
+
+        if (*p == '/')
+        {
+            current_cluster = root_clus_;
+            p++;
+        }
+        else if (current_cluster == 0)
+        {
+            current_cluster = root_clus_;
+        }
+
+        char name_buf[16];
+
+        while (*p)
+        {
+            int i = 0;
+            while (*p && *p != '/' && i < 15)
+            {
+                name_buf[i++] = *p++;
+            }
+            name_buf[i] = 0;
+
+            DirectoryEntry entry;
+            if (!FindDirectoryEntry(name_buf, current_cluster, &entry))
+            {
+                return false;
+            }
+
+            if (*p == 0)
+            {
+                *ret_entry = entry;
+                return true;
+            }
+
+            if (!(entry.attr & 0x10))
+            {
+                return false;
+            }
+            current_cluster = (entry.fst_clus_hi << 16) | entry.fst_clus_lo;
+            if (current_cluster == 0)
+                current_cluster = root_clus_;
+
+            if (*p == '/')
+                p++;
+        }
+        return false;
+    }
+
     uint32_t FAT32Driver::GetFileSize(const char *path)
     {
         DirectoryEntry entry;
@@ -579,14 +610,11 @@ namespace FileSystem
         return false;
     }
 
-    uint32_t FAT32Driver::ReadFile(const char *name, void *buffer, uint32_t buffer_size)
+    uint32_t FAT32Driver::ReadFile(const char *name, void *buffer, uint32_t buffer_size, uint32_t base_cluster)
     {
         DirectoryEntry entry;
-
-        if (!GetFileEntry(name, &entry))
-        {
-            return 0; // File Not Found
-        }
+        if (!GetFileEntry(name, &entry, base_cluster))
+            return 0;
 
         if (entry.file_size > buffer_size)
         {

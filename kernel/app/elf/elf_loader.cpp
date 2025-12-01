@@ -10,20 +10,17 @@ extern "C" void EnterUserMode(uint64_t entry_point, uint64_t user_stack_top);
 
 bool ElfLoader::LoadAndRun(const char *filename)
 {
-    if (!FileSystem::g_fat32_driver)
+    auto *fs = FileSystem::g_system_fs;
+    if (!fs)
     {
-        kprintf("File System not ready.\n");
+        kprintf("System File System not ready.\n");
         return false;
     }
 
-    // 1. ファイル全体を読み込むためのバッファ確保 (例: 1MB制限)
-    // ※本来はファイルサイズを取得してから確保すべきですが、簡易実装として固定サイズにします
     uint32_t buf_size = 1024 * 1024;
     void *file_buf = MemoryManager::Allocate(buf_size);
 
-    // 2. ファイル全体をバッファに読み込む
-    // ReadFileは読み込んだバイト数を返します
-    uint32_t file_size = FileSystem::g_fat32_driver->ReadFile(filename, file_buf, buf_size);
+    uint32_t file_size = fs->ReadFile(filename, file_buf, buf_size);
 
     if (file_size == 0)
     {
@@ -32,11 +29,8 @@ bool ElfLoader::LoadAndRun(const char *filename)
         return false;
     }
 
-    // バッファの先頭をELFヘッダとして解釈する
     Elf64_Ehdr *ehdr = reinterpret_cast<Elf64_Ehdr *>(file_buf);
 
-    // 3. マジックナンバー確認 (\x7F E L F)
-    // ファイルサイズがヘッダより小さい場合はエラー
     if (file_size < sizeof(Elf64_Ehdr) ||
         ehdr->e_ident[0] != 0x7F || ehdr->e_ident[1] != 'E' ||
         ehdr->e_ident[2] != 'L' || ehdr->e_ident[3] != 'F')
@@ -46,8 +40,6 @@ bool ElfLoader::LoadAndRun(const char *filename)
         return false;
     }
 
-    // 4. セグメントのロード (メモリ展開)
-    // プログラムヘッダテーブルの位置を取得
     Elf64_Phdr *phdr = reinterpret_cast<Elf64_Phdr *>(
         static_cast<uint8_t *>(file_buf) + ehdr->e_phoff);
 
@@ -82,14 +74,11 @@ bool ElfLoader::LoadAndRun(const char *filename)
                 return false;
             }
 
-            // データのコピー
-            // file_buf (読み込んだデータ) の該当オフセットから、メモリ (vaddr) へコピー
             uint8_t *src = static_cast<uint8_t *>(file_buf) + ph->p_offset;
             uint8_t *dest = reinterpret_cast<uint8_t *>(vaddr_start);
 
             memcpy(dest, src, file_size_seg);
 
-            // BSS領域 (ファイルサイズ < メモリサイズ の部分) を0クリア
             if (mem_size > file_size_seg)
             {
                 memset(dest + file_size_seg, 0, mem_size - file_size_seg);
@@ -99,10 +88,8 @@ bool ElfLoader::LoadAndRun(const char *filename)
 
     uint64_t entry_point = ehdr->e_entry;
 
-    // 一時バッファ解放
     MemoryManager::Free(file_buf, buf_size);
 
-    // 5. ユーザースタックの準備 (64KB)
     uint64_t stack_addr = 0x70000000;
     uint64_t stack_size = 16 * 4096;
 
@@ -115,8 +102,10 @@ bool ElfLoader::LoadAndRun(const char *filename)
 
     kprintf("Starting App at %lx...\n", entry_point);
 
-    // ユーザーモードへ遷移
     EnterUserMode(entry_point, stack_addr);
+    __asm__ volatile("sti");
+
+    kprintf("App finished.\n");
 
     return true;
 }
