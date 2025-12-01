@@ -1,6 +1,7 @@
 #include "memory/memory_manager.hpp"
 #include "cxx.hpp"
 #include "graphics.hpp"
+#include "printk.hpp"
 
 extern "C" char __kernel_start;
 extern "C" char __kernel_end;
@@ -15,7 +16,6 @@ void MemoryManager::Initialize(const MemoryMap &memmap)
     for (unsigned int i = 0; i < memmap.map_size / memmap.descriptor_size; ++i)
     {
         auto *desc = reinterpret_cast<const MemoryDescriptor *>(iter);
-        // この領域の終端アドレス (開始 + サイズ)
         uintptr_t region_end = desc->physical_start + (desc->number_of_pages * 4096);
         if (region_end > range_end_)
         {
@@ -46,7 +46,7 @@ void MemoryManager::Initialize(const MemoryMap &memmap)
 
     if (bitmap_base == 0)
     {
-        // エラー: 管理領域さえ確保できない
+        kprintf("Error: No suitable memory region found for bitmap.\n");
         while (1)
             __asm__ volatile("hlt");
     }

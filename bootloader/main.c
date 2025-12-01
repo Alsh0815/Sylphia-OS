@@ -11,7 +11,6 @@ EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     EFI_STATUS Status;
     EFI_GRAPHICS_OUTPUT_PROTOCOL *Gop;
 
-    // 1. GOP (Graphics Output Protocol) を探す
     Status = SystemTable->BootServices->LocateProtocol(
         &gEfiGraphicsOutputProtocolGuid,
         (VOID *)0,
@@ -24,14 +23,11 @@ EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
             __asm__ volatile("hlt");
     }
 
-    // 2. フレームバッファの情報を取得
     UINT32 *FrameBuffer = (UINT32 *)Gop->Mode->FrameBufferBase;
     UINTN FrameBufferSize = Gop->Mode->FrameBufferSize;
     UINT32 HorizontalResolution = Gop->Mode->Info->HorizontalResolution;
     UINT32 VerticalResolution = Gop->Mode->Info->VerticalResolution;
 
-    // 3. 画面全体をオレンジ色で塗りつぶす (AARRGGBB形式)
-    // オレンジ: R=255(0xFF), G=128(0x80), B=0(0x00)
     for (UINTN i = 0; i < VerticalResolution * HorizontalResolution; i++)
     {
         FrameBuffer[i] = 0xFFFF8000;
@@ -39,14 +35,12 @@ EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 
     SystemTable->ConOut->OutputString(SystemTable->ConOut, (CHAR16 *)L"\r\nGetting Memory Map (Dynamic)...\r\n");
 
-    // メモリマップ格納用変数の初期化
     UINTN MemoryMapSize = 0;
     EFI_MEMORY_DESCRIPTOR *MemoryMap = (void *)0;
     UINTN MapKey;
     UINTN DescriptorSize;
     UINT32 DescriptorVersion;
 
-    // 1. まずサイズ取得のために一度呼び出す (Buffer=NULL, Size=0 で呼ぶ)
     Status = SystemTable->BootServices->GetMemoryMap(
         &MemoryMapSize,
         (void *)0,
@@ -54,20 +48,14 @@ EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
         &DescriptorSize,
         &DescriptorVersion);
 
-    // EFI_BUFFER_TOO_SMALL が返ってくるはず
     if (Status != 0x80000005)
-    { // EFI_BUFFER_TOO_SMALL 以外ならエラーか、既に成功(ありえない)
-      // エラー処理 (省略)
+    {
     }
 
-    // 2. 必要なサイズ + 予備を確保して再試行するループ
-    // (AllocatePool自体がメモリマップを断片化させてサイズが増える可能性があるためループする)
     while (1)
     {
-        // 余裕を持たせる (Descriptor数個分)
-        MemoryMapSize += DescriptorSize * 2;
+        MemoryMapSize += 4096;
 
-        // メモリ確保 (EfiLoaderDataとして確保)
         Status = SystemTable->BootServices->AllocatePool(
             EfiLoaderData,
             MemoryMapSize,
@@ -80,7 +68,6 @@ EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
                 __asm__ volatile("hlt");
         }
 
-        // 確保したバッファで再挑戦
         Status = SystemTable->BootServices->GetMemoryMap(
             &MemoryMapSize,
             MemoryMap,
@@ -90,17 +77,14 @@ EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 
         if (Status == EFI_SUCCESS)
         {
-            break; // 成功！
+            break;
         }
         else if (Status == 0x80000005)
-        { // まだ足りない (AllocatePoolでマップが育った)
-            // 失敗したバッファは解放して、次へ
+        {
             SystemTable->BootServices->FreePool(MemoryMap);
-            // ループ先頭に戻り、より大きなサイズで再確保
         }
         else
         {
-            // その他のエラー
             SystemTable->ConOut->OutputString(SystemTable->ConOut, (CHAR16 *)L"GetMemoryMap Failed!\r\n");
             while (1)
                 __asm__ volatile("hlt");
@@ -111,7 +95,6 @@ EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 
     SystemTable->ConOut->OutputString(SystemTable->ConOut, (CHAR16 *)L"\r\nLoading kernel.elf...\r\n");
 
-    // 1. Loaded Image Protocol を取得 (自分自身がどのデバイスから起動したかを知る)
     EFI_LOADED_IMAGE_PROTOCOL *LoadedImage;
     Status = SystemTable->BootServices->HandleProtocol(
         ImageHandle,
@@ -125,7 +108,6 @@ EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
             __asm__ volatile("hlt");
     }
 
-    // 2. そのデバイスの File System Protocol を開く
     EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *FileSystem;
     Status = SystemTable->BootServices->HandleProtocol(
         LoadedImage->DeviceHandle,
@@ -139,11 +121,9 @@ EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
             __asm__ volatile("hlt");
     }
 
-    // 3. ルートディレクトリを開く
     EFI_FILE_PROTOCOL *Root;
     Status = FileSystem->OpenVolume(FileSystem, &Root);
 
-    // 4. kernel.elf を開く
     EFI_FILE_PROTOCOL *KernelFile;
     Status = Root->Open(
         Root,
@@ -159,10 +139,59 @@ EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
             __asm__ volatile("hlt");
     }
 
-    // 5. ファイルサイズを取得する
-    // サイズ取得用の構造体 + ファイル名の分くらいのバッファ
+    VOID *HeaderBuffer;
+    UINTN HeaderBufferSize = 4096;
+    Status = SystemTable->BootServices->AllocatePool(EfiLoaderData, HeaderBufferSize, &HeaderBuffer);
+
+    UINTN ReadSizeHeader = HeaderBufferSize;
+    KernelFile->Read(KernelFile, &ReadSizeHeader, HeaderBuffer);
+
+    Elf64_Ehdr *Ehdr = (Elf64_Ehdr *)HeaderBuffer;
+
+    if (Ehdr->e_ident[0] != 0x7F || Ehdr->e_ident[1] != 'E' ||
+        Ehdr->e_ident[2] != 'L' || Ehdr->e_ident[3] != 'F')
+    {
+        SystemTable->ConOut->OutputString(SystemTable->ConOut, (CHAR16 *)L"Error: Not a valid ELF file!\r\n");
+        while (1)
+            __asm__ volatile("hlt");
+    }
+
+    UINT64 KernelFirst = 0xFFFFFFFFFFFFFFFF;
+    UINT64 KernelLast = 0;
+    Elf64_Phdr *Phdr = (Elf64_Phdr *)((UINT64)Ehdr + Ehdr->e_phoff);
+
+    for (int i = 0; i < Ehdr->e_phnum; i++)
+    {
+        if (Phdr[i].p_type == PT_LOAD)
+        {
+            if (Phdr[i].p_vaddr < KernelFirst)
+                KernelFirst = Phdr[i].p_vaddr;
+            UINT64 EndAddr = Phdr[i].p_vaddr + Phdr[i].p_memsz;
+            if (EndAddr > KernelLast)
+                KernelLast = EndAddr;
+        }
+    }
+
+    UINTN NumPages = (KernelLast - KernelFirst + 0xFFF) / 0x1000;
+    EFI_PHYSICAL_ADDRESS KernelBaseAddr = KernelFirst; // 0x100000
+
+    Status = SystemTable->BootServices->AllocatePages(
+        AllocateAddress,
+        EfiLoaderData,
+        NumPages,
+        &KernelBaseAddr);
+
+    if (Status != EFI_SUCCESS)
+    {
+        SystemTable->ConOut->OutputString(SystemTable->ConOut, (CHAR16 *)L"Error: Failed to allocate kernel memory at 0x100000.\r\n");
+        while (1)
+            __asm__ volatile("hlt");
+    }
+
+    SystemTable->BootServices->FreePool(HeaderBuffer);
+
     UINTN FileInfoSize = sizeof(EFI_FILE_INFO) + sizeof(CHAR16) * 128;
-    UINT8 FileInfoBuffer[256]; // スタックで十分
+    UINT8 FileInfoBuffer[256];
     EFI_FILE_INFO *FileInfo = (EFI_FILE_INFO *)FileInfoBuffer;
 
     Status = KernelFile->GetInfo(
@@ -171,59 +200,43 @@ EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
         &FileInfoSize,
         FileInfo);
 
-    // 6. カーネル格納用メモリを確保 (AllocatePool)
     VOID *KernelBuffer;
     Status = SystemTable->BootServices->AllocatePool(
         EfiLoaderData,
         FileInfo->FileSize,
         &KernelBuffer);
 
-    // 7. ファイルを読み込む
+    if (Status != EFI_SUCCESS)
+    {
+        SystemTable->ConOut->OutputString(SystemTable->ConOut, (CHAR16 *)L"Error: Failed to allocate file buffer.\r\n");
+        while (1)
+            __asm__ volatile("hlt");
+    }
+
+    KernelFile->SetPosition(KernelFile, 0);
     UINTN ReadSize = FileInfo->FileSize;
     Status = KernelFile->Read(KernelFile, &ReadSize, KernelBuffer);
 
     if (Status != EFI_SUCCESS)
     {
         SystemTable->ConOut->OutputString(SystemTable->ConOut, (CHAR16 *)L"Error: Read failed\r\n");
-        KernelFile->Close(KernelFile);
-    }
-
-    SystemTable->ConOut->OutputString(SystemTable->ConOut, (CHAR16 *)L"Kernel Read Success. Parsing ELF Header...\r\n");
-
-    // バッファをELFヘッダーとして解釈
-    Elf64_Ehdr *Ehdr = (Elf64_Ehdr *)KernelBuffer;
-
-    // 1. マジックナンバーのチェック ( \x7F E L F )
-    if (Ehdr->e_ident[0] != 0x7F ||
-        Ehdr->e_ident[1] != 'E' ||
-        Ehdr->e_ident[2] != 'L' ||
-        Ehdr->e_ident[3] != 'F')
-    {
-
-        SystemTable->ConOut->OutputString(SystemTable->ConOut, (CHAR16 *)L"Error: Not a valid ELF file!\r\n");
         while (1)
             __asm__ volatile("hlt");
     }
 
-    // 2. エントリーポイントの表示
-    if (Ehdr->e_entry != 0)
-    {
-        SystemTable->ConOut->OutputString(SystemTable->ConOut, (CHAR16 *)L"ELF Header OK! Found Entry Point.\r\n");
-    }
+    SystemTable->ConOut->OutputString(SystemTable->ConOut, (CHAR16 *)L"Kernel Read Success. Loading Segments...\r\n");
 
-    // プログラムヘッダーテーブルの先頭アドレス
-    Elf64_Phdr *Phdr = (Elf64_Phdr *)((UINT64)Ehdr + Ehdr->e_phoff);
+    Ehdr = (Elf64_Ehdr *)KernelBuffer;
+    Phdr = (Elf64_Phdr *)((UINT64)Ehdr + Ehdr->e_phoff);
 
     for (int i = 0; i < Ehdr->e_phnum; i++)
     {
         if (Phdr[i].p_type == PT_LOAD)
         {
-            // メモリへのコピー (FileOffset -> VirtualAddress)
             CopyMem((VOID *)Phdr[i].p_vaddr,
                     (VOID *)((UINT64)Ehdr + Phdr[i].p_offset),
                     Phdr[i].p_filesz);
 
-            // BSS領域 (ファイルサイズよりメモリサイズが大きい部分) を0で埋める
             UINTN RemainBytes = Phdr[i].p_memsz - Phdr[i].p_filesz;
             if (RemainBytes > 0)
             {
@@ -231,47 +244,6 @@ EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
             }
         }
     }
-
-    SystemTable->ConOut->OutputString(SystemTable->ConOut, (CHAR16 *)L"Loading BOOTX64.EFI for installation...\r\n");
-
-    EFI_FILE_PROTOCOL *LoaderFile;
-    // パスは \EFI\BOOT\BOOTX64.EFI 固定と仮定 (本来は LoadedImage->FilePath から取得すべきだが簡易実装)
-    Status = Root->Open(
-        Root,
-        &LoaderFile,
-        (CHAR16 *)L"\\EFI\\BOOT\\BOOTX64.EFI",
-        EFI_FILE_MODE_READ,
-        0);
-
-    VOID *LoaderBuffer = (void *)0;
-    UINTN LoaderSize = 0;
-
-    if (Status == EFI_SUCCESS)
-    {
-        // サイズ取得
-        UINTN InfoSize = sizeof(EFI_FILE_INFO) + sizeof(CHAR16) * 128;
-        UINT8 InfoBuf[256];
-        EFI_FILE_INFO *Info = (EFI_FILE_INFO *)InfoBuf;
-        LoaderFile->GetInfo(LoaderFile, &gEfiFileInfoGuid, &InfoSize, Info);
-        LoaderSize = Info->FileSize;
-
-        // メモリ確保
-        SystemTable->BootServices->AllocatePool(EfiLoaderData, LoaderSize, &LoaderBuffer);
-
-        // 読み込み
-        LoaderFile->Read(LoaderFile, &LoaderSize, LoaderBuffer);
-        LoaderFile->Close(LoaderFile);
-    }
-    else
-    {
-        SystemTable->ConOut->OutputString(SystemTable->ConOut, (CHAR16 *)L"Warning: BOOTX64.EFI not found. Installation might be incomplete.\r\n");
-    }
-
-    struct BootVolumeConfig boot_volume;
-    boot_volume.kernel_file.buffer = KernelBuffer;
-    boot_volume.kernel_file.size = ReadSize;
-    boot_volume.bootloader_file.buffer = LoaderBuffer;
-    boot_volume.bootloader_file.size = LoaderSize;
 
     SystemTable->ConOut->OutputString(SystemTable->ConOut, (CHAR16 *)L"Segments Loaded. Exiting Boot Services...\r\n");
 
@@ -282,26 +254,79 @@ EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     Config.VerticalResolution = Gop->Mode->Info->VerticalResolution;
     Config.PixelsPerScanLine = Gop->Mode->Info->PixelsPerScanLine;
 
+    if (MemoryMap)
+    {
+        SystemTable->BootServices->FreePool(MemoryMap);
+        MemoryMap = NULL;
+    }
+    MemoryMapSize = 0;
+
     Status = SystemTable->BootServices->GetMemoryMap(
         &MemoryMapSize,
-        MemoryMap,
+        (void *)0,
         &MapKey,
         &DescriptorSize,
         &DescriptorVersion);
 
-    Status = SystemTable->BootServices->ExitBootServices(ImageHandle, MapKey);
-    if (Status != EFI_SUCCESS)
+    UINTN BufferSize = MemoryMapSize + 4096;
+
+    while (1)
     {
+        BufferSize += 4096;
+
+        Status = SystemTable->BootServices->AllocatePool(
+            EfiLoaderData,
+            BufferSize,
+            (VOID **)&MemoryMap);
+
+        if (Status != EFI_SUCCESS)
+        {
+            SystemTable->ConOut->OutputString(SystemTable->ConOut, (CHAR16 *)L"AllocatePool Failed at Exit\r\n");
+            while (1)
+                __asm__ volatile("hlt");
+        }
+
+        MemoryMapSize = BufferSize;
+
         Status = SystemTable->BootServices->GetMemoryMap(
             &MemoryMapSize,
             MemoryMap,
             &MapKey,
             &DescriptorSize,
             &DescriptorVersion);
+
+        if (Status == EFI_SUCCESS)
+        {
+            break;
+        }
+        else
+        {
+            SystemTable->BootServices->FreePool(MemoryMap);
+            MemoryMap = NULL;
+        }
+    }
+
+    Status = SystemTable->BootServices->ExitBootServices(ImageHandle, MapKey);
+    if (Status != EFI_SUCCESS)
+    {
+        MemoryMapSize = BufferSize;
+        Status = SystemTable->BootServices->GetMemoryMap(
+            &MemoryMapSize,
+            MemoryMap,
+            &MapKey,
+            &DescriptorSize,
+            &DescriptorVersion);
+
+        if (Status != EFI_SUCCESS)
+        {
+            SystemTable->ConOut->OutputString(SystemTable->ConOut, (CHAR16 *)L"Final GetMemoryMap Failed!\r\n");
+            while (1)
+                __asm__ volatile("hlt");
+        }
+
         SystemTable->BootServices->ExitBootServices(ImageHandle, MapKey);
     }
 
-    // メモリマップ情報を構造体にまとめる
     struct MemoryMap memmap_arg;
     memmap_arg.buffer_size = MemoryMapSize;
     memmap_arg.buffer = MemoryMap;
@@ -310,11 +335,10 @@ EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     memmap_arg.descriptor_size = DescriptorSize;
     memmap_arg.descriptor_version = DescriptorVersion;
 
-    // 第1引数: FrameBufferConfig*, 第2引数: MemoryMap*, 第3引数: BootVolumeConfig*
-    typedef void (*KernelEntryPoint)(FrameBufferConfig *, struct MemoryMap *, struct BootVolumeConfig *);
+    typedef void (*KernelEntryPoint)(FrameBufferConfig *, struct MemoryMap *);
     KernelEntryPoint KernelMainStart = (KernelEntryPoint)Ehdr->e_entry;
 
-    KernelMainStart(&Config, &memmap_arg, &boot_volume);
+    KernelMainStart(&Config, &memmap_arg);
     while (1)
         ;
 

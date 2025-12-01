@@ -14,6 +14,10 @@ typedef uint32_t UINT32;
 typedef uint64_t UINT64;
 typedef VOID *EFI_HANDLE;
 
+#ifndef NULL
+#define NULL ((VOID *)0)
+#endif
+
 ///
 /// 64-bit physical memory address.
 ///
@@ -124,6 +128,14 @@ typedef enum
     EfiMaxMemoryType
 } EFI_MEMORY_TYPE;
 
+typedef enum
+{
+    AllocateAnyPages,
+    AllocateMaxAddress,
+    AllocateAddress,
+    MaxAllocateType
+} EFI_ALLOCATE_TYPE;
+
 // メモリ記述子 (GetMemoryMapで取得される1要素)
 typedef struct
 {
@@ -222,6 +234,16 @@ typedef EFI_STATUS(EFIAPI *EFI_ALLOCATE_POOL)(
 typedef EFI_STATUS(EFIAPI *EFI_FREE_POOL)(
     VOID *Buffer);
 
+typedef EFI_STATUS(EFIAPI *EFI_ALLOCATE_PAGES)(
+    EFI_ALLOCATE_TYPE Type,
+    EFI_MEMORY_TYPE MemoryType,
+    UINTN Pages,
+    EFI_PHYSICAL_ADDRESS *Memory);
+
+typedef EFI_STATUS(EFIAPI *EFI_FREE_PAGES)(
+    EFI_PHYSICAL_ADDRESS Memory,
+    UINTN Pages);
+
 #define EFI_LOADED_IMAGE_PROTOCOL_GUID \
     {0x5B1B31A1, 0x9562, 0x11D2, {0x8E, 0x3F, 0x00, 0xA0, 0xC9, 0x69, 0x72, 0x3B}}
 #define EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID \
@@ -286,6 +308,10 @@ typedef EFI_STATUS(EFIAPI *EFI_FILE_READ)(
     UINTN *BufferSize,
     VOID *Buffer);
 
+typedef EFI_STATUS(EFIAPI *EFI_FILE_SET_POSITION)(
+    EFI_FILE_PROTOCOL *This,
+    UINT64 Position);
+
 typedef EFI_STATUS(EFIAPI *EFI_FILE_GET_INFO)(
     EFI_FILE_PROTOCOL *This,
     EFI_GUID *InformationType,
@@ -302,7 +328,7 @@ struct _EFI_FILE_PROTOCOL
     EFI_FILE_READ Read;
     VOID *Write;
     VOID *GetPosition;
-    VOID *SetPosition;
+    EFI_FILE_SET_POSITION SetPosition;
     EFI_FILE_GET_INFO GetInfo;
     VOID *SetInfo;
     VOID *Flush;
@@ -370,10 +396,12 @@ typedef EFI_STATUS(EFIAPI *EFI_EXIT_BOOT_SERVICES)(
 typedef struct
 {
     char _header[24];
-    char _pad_before_get_memory_map[32];
-    EFI_GET_MEMORY_MAP GetMemoryMap; // Index 4
-    EFI_ALLOCATE_POOL AllocatePool;  // Index 5
-    EFI_FREE_POOL FreePool;          // Index 6
+    char _pad_reserved_1[16];
+    EFI_ALLOCATE_PAGES AllocatePages; // Index 2
+    EFI_FREE_PAGES FreePages;         // Index 3
+    EFI_GET_MEMORY_MAP GetMemoryMap;  // Index 4
+    EFI_ALLOCATE_POOL AllocatePool;   // Index 5
+    EFI_FREE_POOL FreePool;           // Index 6
     char _pad_before_handle_protocol[72];
     EFI_HANDLE_PROTOCOL HandleProtocol; // Index 16
 

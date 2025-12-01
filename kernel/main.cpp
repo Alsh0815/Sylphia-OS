@@ -107,8 +107,7 @@ extern "C" void EnableSSE();
 
 extern "C" __attribute__((ms_abi)) void KernelMain(
     const FrameBufferConfig &config,
-    const MemoryMap &memmap,
-    const BootVolumeConfig &boot_volume)
+    const MemoryMap &memmap)
 {
     __asm__ volatile("cli");
     const uint32_t kDesktopBG = 0xFF181818;
@@ -121,9 +120,13 @@ extern "C" __attribute__((ms_abi)) void KernelMain(
     kprintf("----------------------\n");
 
     SetupSegments();
+    kprintf("Segments Setup complete.\n");
     SetupInterrupts();
+    kprintf("Interrupts Setup complete.\n");
     DisablePIC();
+    kprintf("PIC Disabled.\n");
     EnableSSE();
+    kprintf("SSE Enabled.\n");
 
     MemoryManager::Initialize(memmap);
     kprintf("Memory Manager Initialized.\n");
