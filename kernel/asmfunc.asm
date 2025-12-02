@@ -25,7 +25,7 @@ EnableSSE:
 
 global EnterUserMode
 
-; void EnterUserMode(uint64_t entry_point, uint64_t user_stack_top);
+; void EnterUserMode(uint64_t entry_point, uint64_t user_stack_top, int argc, uint64_t argv_ptr);
 EnterUserMode:
     push rbp
     push rbx
@@ -56,6 +56,16 @@ EnterUserMode:
     push rax
     ; 5. RIP (Entry Point)
     push rdi
+
+    ; Setup Arguments for User Mode
+    ; Kernel (SysV): RDX=argc, RCX=argv
+    ; User (SysV):   RDI=argc, RSI=argv
+    
+    mov rdi, rdx ; argc
+    mov rsi, rcx ; argv
+
+    mov r12, rdx ; Preserve argc in R12 just in case
+    
     ; セグメントレジスタの初期化 (DS, ES, FS, GS)
     mov ax, 0x23  ; User Data Segment
     mov ds, ax

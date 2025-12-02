@@ -3,9 +3,11 @@ global _start
 extern main
 
 section .text
+
 _start:
+    and rsp, -16
     call main
-    mov rax, 2 ; Syscall Exit
+    mov rax, 2
     syscall
 
 .hang:

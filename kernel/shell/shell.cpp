@@ -68,42 +68,41 @@ void Shell::OnKey(char c)
 void Shell::ExecuteCommand()
 {
     if (cursor_pos_ == 0)
-        return; // 空なら何もしない
+        return;
 
-    // コマンド分岐
-    if (strcmp(buffer_, "hello") == 0)
-    {
-        kprintf("Hello! I am Sylphia-OS.\n");
-    }
-    else if (strcmp(buffer_, "help") == 0)
-    {
-        kprintf("Available commands: hello, help, clear, whoami\n");
-    }
-    else if (strncmp(buffer_, "cat ", 4) == 0)
-    {
-        // "cat " の後ろがファイル名
-        char *filename = &buffer_[4];
+    char *argv[32]; // Max 32 arguments
+    int argc = 0;
 
-        // ファイルシステムが初期化されているか確認
+    char *p = buffer_;
+    while (*p)
+    {
+        while (*p == ' ')
+            *p++ = 0;
+        if (*p == 0)
+            break;
+        argv[argc++] = p;
+        if (argc >= 32)
+            break;
+        while (*p && *p != ' ')
+            p++;
+    }
+    if (argc == 0)
+        return;
+
+    if (strcmp(argv[0], "cat") == 0)
+    {
+        char *filename = argv[1];
         if (!FileSystem::g_fat32_driver)
         {
             kprintf("Error: File System not initialized.\n");
             return;
         }
-
         uint32_t buf_size = 4096;
         char *buf = static_cast<char *>(MemoryManager::Allocate(buf_size));
-
-        // バッファを0クリア
         memset(buf, 0, buf_size);
-
-        // ファイル読み込み実行
         uint32_t bytes_read = FileSystem::g_fat32_driver->ReadFile(filename, buf, buf_size);
-
         if (bytes_read > 0)
         {
-            // テキストファイルとして表示
-            // 安全のため、読み込んだ最後の文字の次は必ずNULLにする
             if (bytes_read < buf_size)
                 buf[bytes_read] = '\0';
             else
@@ -118,27 +117,29 @@ void Shell::ExecuteCommand()
 
         MemoryManager::Free(buf, buf_size);
     }
-    else if (strcmp(buffer_, "clear") == 0)
+    else if (strcmp(argv[0], "clear") == 0)
     {
-        // 画面クリア機能 (未実装なら改行連打でごまかす)
-        // ※GraphicsやConsoleにClearメソッドを追加するのが理想
         for (int i = 0; i < 30; i++)
             kprintf("\n");
     }
-    else if (strcmp(buffer_, "ls") == 0)
+    else if (strcmp(argv[0], "echo") == 0)
+    {
+        kprintf("%s\n", argv[1]);
+    }
+    else if (strcmp(argv[0], "ls") == 0)
     {
         if (FileSystem::g_fat32_driver)
         {
-            FileSystem::g_fat32_driver->ListDirectory(); // 引数なし＝ルートディレクトリ
+            FileSystem::g_fat32_driver->ListDirectory();
         }
         else
         {
             kprintf("Error: File System not initialized.\n");
         }
     }
-    else if (strncmp(buffer_, "rm ", 3) == 0)
+    else if (strcmp(argv[0], "rm") == 0)
     {
-        char *filename = &buffer_[3];
+        char *filename = argv[1];
         if (FileSystem::g_fat32_driver)
         {
             if (FileSystem::g_fat32_driver->DeleteFile(filename))
@@ -155,26 +156,18 @@ void Shell::ExecuteCommand()
             kprintf("File System not initialized.\n");
         }
     }
-    else if (strcmp(buffer_, "whoami") == 0)
+    else if (strcmp(argv[0], "whoami") == 0)
     {
         kprintf("root\n");
     }
     else
     {
         char path[64];
-        const char *prefix = "/sys/bin/";
-        int idx = 0;
-        for (int i = 0; prefix[i]; ++i)
-            path[idx++] = prefix[i];
-        for (int i = 0; buffer_[i]; ++i)
-            path[idx++] = buffer_[i];
-        path[idx] = 0;
-
-        bool ret = ElfLoader::LoadAndRun(path);
-
-        if (!ret)
+        strcpy(path, "/sys/bin/");
+        strcat(path, argv[0]);
+        if (!ElfLoader::LoadAndRun(path, argc, argv))
         {
-            kprintf("Unknown command: %s\n", buffer_);
+            kprintf("Unknown command: %s\n", argv[0]);
         }
     }
 }

@@ -16,4 +16,5 @@ build/*
 *.o
 *.vhd
 
+compile_flags.txt
 kernel_dump.txt
