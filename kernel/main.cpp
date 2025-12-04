@@ -160,6 +160,8 @@ KernelMain(const FrameBufferConfig &config, const MemoryMap &memmap)
 
     PCI::SetupPCI();
 
+    __asm__ volatile("sti");
+
     for (int bus = 0; bus < 256; ++bus)
     {
         for (int dev = 0; dev < 32; ++dev)
@@ -302,9 +304,10 @@ nvme_found:
     static LocalAPIC lapic;
     g_lapic = &lapic;
     g_lapic->Enable();
-
     IOAPIC::Enable(1, 0x40, g_lapic->GetID());
     // kprintf("I/O APIC: Keyboard (IRQ1) -> Vector 0x40\n");
+    g_lapic->StartTimer(10, 0x20);
+    kprintf("[Init] LAPIC Timer started (10ms interval)\\n");
 
     uint64_t cr4;
     __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
@@ -314,12 +317,10 @@ nvme_found:
     kprintf("\nWelcome to Sylphia-OS!\n");
     kprintf("Sylphia> ");
 
-    __asm__ volatile("sti");
+    kprintf("[Main] Entering interrupt-driven mode. Waiting for events...\n");
 
-    while (1)
-    {
-        g_usb_keyboard->Update();
-    }
+    // 割り込みベースに移行したため、hltで待機
+    // USB割り込み発生時にUsbInterruptHandler()が呼ばれる
     while (1)
         __asm__ volatile("hlt");
 }

@@ -1,5 +1,6 @@
 #include "elf_loader.hpp"
 #include "cxx.hpp"
+#include "driver/usb/xhci.hpp"
 #include "elf.hpp"
 #include "fs/fat32/fat32_driver.hpp"
 #include "memory/memory_manager.hpp"
@@ -10,8 +11,14 @@
 extern "C" void EnterUserMode(uint64_t entry_point, uint64_t user_stack_top,
                               int argc, uint64_t argv_ptr);
 
+// アプリ実行状態を追跡するグローバル変数
+bool g_app_running = false;
+
 bool ElfLoader::LoadAndRun(const char *filename, int argc, char **argv)
 {
+    // アプリ実行開始
+    g_app_running = true;
+
     auto *fs = FileSystem::g_system_fs;
     if (!fs)
     {
@@ -162,6 +169,10 @@ bool ElfLoader::LoadAndRun(const char *filename, int argc, char **argv)
     kprintf("  SP: %lx, argv_ptr: %lx\n", sp, argv_ptr);
 
     EnterUserMode(entry_point, sp, argc, argv_ptr);
+
+    // アプリ終了後、実行状態をリセット
+    g_app_running = false;
+
     __asm__ volatile("sti");
 
     return true;

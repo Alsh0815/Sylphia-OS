@@ -2,7 +2,6 @@
 #include "pci/pci.hpp"
 #include <stdint.h>
 
-
 namespace USB::XHCI
 {
 struct TRB
@@ -121,6 +120,11 @@ class Controller
     int PollEndpoint(uint8_t slot_id, uint8_t ep_addr);
     bool SendNormalTRB(uint8_t slot_id, uint8_t ep_addr, void *data_buf,
                        uint32_t len);
+
+    // 割り込みハンドラから呼ばれるEvent Ring処理
+    void ProcessInterrupt();
+
+    void DebugDump() const;
 
   private:
     PCI::Device pci_dev_;

@@ -1,10 +1,11 @@
-#include "shell/shell.hpp"
+#include "interrupt.hpp"
 #include "apic.hpp"
 #include "console.hpp"
-#include "interrupt.hpp"
+#include "driver/usb/keyboard/keyboard.hpp"
 #include "io.hpp"
 #include "keyboard_layout.hpp"
 #include "printk.hpp"
+#include "shell/shell.hpp"
 #include <stdint.h>
 
 // IDTの実体 (256個の割り込みに対応)
@@ -94,7 +95,8 @@ __attribute__((interrupt)) void InvalidOpcodeHandler(InterruptFrame *frame)
         __asm__ volatile("hlt");
 }
 
-__attribute__((interrupt)) void DoubleFaultHandler(InterruptFrame *frame, uint64_t error_code)
+__attribute__((interrupt)) void DoubleFaultHandler(InterruptFrame *frame,
+                                                   uint64_t error_code)
 {
     if (g_console)
         g_console->SetColor(kRedColor, kBsodBgColor);
@@ -117,7 +119,8 @@ __attribute__((interrupt)) void DoubleFaultHandler(InterruptFrame *frame, uint64
         __asm__ volatile("hlt");
 }
 
-__attribute__((interrupt)) void GPFaultHandler(InterruptFrame *frame, uint64_t error_code)
+__attribute__((interrupt)) void GPFaultHandler(InterruptFrame *frame,
+                                               uint64_t error_code)
 {
     if (g_console)
         g_console->SetColor(kRedColor, kBsodBgColor);
@@ -141,7 +144,8 @@ __attribute__((interrupt)) void GPFaultHandler(InterruptFrame *frame, uint64_t e
         __asm__ volatile("hlt");
 }
 
-__attribute__((interrupt)) void PageFaultHandler(InterruptFrame *frame, uint64_t error_code)
+__attribute__((interrupt)) void PageFaultHandler(InterruptFrame *frame,
+                                                 uint64_t error_code)
 {
     uint64_t cr2 = GetCR2();
 
@@ -185,37 +189,38 @@ __attribute__((interrupt)) void PageFaultHandler(InterruptFrame *frame, uint64_t
         __asm__ volatile("hlt");
 }
 
-/*
-// Shiftキーの状態管理フラグ
-bool g_shift_pressed = false;
+extern USB::XHCI::Controller *g_xhci;
+extern USB::Keyboard *g_usb_keyboard;
 
-// 使用するキーボード配列設定 (ここで切り替え可能！)
-// KeyboardLayout kCurrentLayout = KeyboardLayout::US_Standard;
-const KeyboardLayout kCurrentLayout = KeyboardLayout::JP_Standard; // 日本語配列の場合
-
-// ■ キーボード割り込みハンドラ
-__attribute__((interrupt)) void KeyboardHandler(InterruptFrame *frame)
+__attribute__((interrupt)) void UsbInterruptHandler(InterruptFrame *frame)
 {
-    uint8_t scancode = IoIn8(0x60);
-    bool is_break = (scancode & 0x80) != 0;
-    uint8_t keycode = scancode & 0x7F;
-
-    if (keycode == 0x2A || keycode == 0x36)
+    kprintf("[IRQ] USB Interrupt!\\n");
+    // xHCIコントローラーのEvent Ringを処理
+    if (g_xhci)
     {
-        g_shift_pressed = !is_break;
+        g_xhci->ProcessInterrupt();
     }
-    else if (!is_break)
+    // LAPIC EOI (End of Interrupt) を送信
+    if (g_lapic)
     {
-        char ascii = ConvertScanCodeToAscii(keycode, g_shift_pressed, kCurrentLayout);
-        if (ascii != 0 && g_shell)
-        {
-            g_shell->OnKey(ascii);
-        }
+        g_lapic->EndOfInterrupt();
     }
-
-    g_lapic->EndOfInterrupt();
 }
-*/
+
+__attribute__((interrupt)) void TimerHandler(InterruptFrame *frame)
+{
+    // USB処理を実行
+    extern USB::Keyboard *g_usb_keyboard;
+    if (g_usb_keyboard)
+    {
+        g_usb_keyboard->Update();
+    }
+    // EOI送信
+    if (g_lapic)
+    {
+        g_lapic->EndOfInterrupt();
+    }
+}
 
 void SetupInterrupts()
 {
@@ -223,7 +228,8 @@ void SetupInterrupts()
     SetIDTEntry(0, (uint64_t)DivideErrorHandler, 0x08, IDT_TYPE_INTERRUPT_GATE);
 
     // 無効オペコード例外 (Vector 6)
-    SetIDTEntry(6, (uint64_t)InvalidOpcodeHandler, 0x08, IDT_TYPE_INTERRUPT_GATE);
+    SetIDTEntry(6, (uint64_t)InvalidOpcodeHandler, 0x08,
+                IDT_TYPE_INTERRUPT_GATE);
 
     // ダブルフォールト例外 (Vector 8)
     SetIDTEntry(8, (uint64_t)DoubleFaultHandler, 0x08, IDT_TYPE_INTERRUPT_GATE);
@@ -236,8 +242,11 @@ void SetupInterrupts()
     // 0xE  = IDT_TYPE_INTERRUPT_GATE (割り込みゲート)
     SetIDTEntry(14, (uint64_t)PageFaultHandler, 0x08, IDT_TYPE_INTERRUPT_GATE);
 
-    // キーボード (Vector 0x40)
-    // SetIDTEntry(0x40, (uint64_t)KeyboardHandler, 0x08, IDT_TYPE_INTERRUPT_GATE);
+    SetIDTEntry(0x20, (uint64_t)TimerHandler, 0x08, IDT_TYPE_INTERRUPT_GATE);
+
+    // USB xHCI割り込み (Vector 0x50)
+    SetIDTEntry(0x50, (uint64_t)UsbInterruptHandler, 0x08,
+                IDT_TYPE_INTERRUPT_GATE);
 
     LoadIDT(sizeof(idt) - 1, (uint64_t)&idt[0]);
 }

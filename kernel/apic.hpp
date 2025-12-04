@@ -13,7 +13,7 @@
 
 class LocalAPIC
 {
-public:
+  public:
     LocalAPIC();
 
     // Local APICを有効化する
@@ -25,7 +25,10 @@ public:
     // APIC ID (CPU Core ID) を取得
     uint32_t GetID();
 
-private:
+    // LAPIC Timerを開始 (定期割り込み)
+    void StartTimer(uint32_t interval_ms, uint8_t vector);
+
+  private:
     // レジスタ読み書き用
     uint32_t Read(uint32_t register_offset);
     void Write(uint32_t register_offset, uint32_t value);

@@ -5,13 +5,15 @@ extern USB::Keyboard *g_usb_keyboard;
 
 int KeyboardFD::Read(void *buf, size_t len)
 {
-    // ノンブロッキングRead: バッファにデータがなければ即座に0を返す
+    if (g_usb_keyboard)
+    {
+        g_usb_keyboard->Update();
+    }
+
     if (count_ == 0)
     {
         return 0;
     }
-
-    kprintf("[KeyboardFD] Got data! count_=%d\n", count_);
 
     char *p = static_cast<char *>(buf);
     size_t read_count = 0;

@@ -9,7 +9,6 @@ extern "C" int main(int argc, char **argv)
         len++;
     Write(1, msg, len);
 
-    /*
     char buf[128];
     while (true)
     {
@@ -27,7 +26,6 @@ extern "C" int main(int argc, char **argv)
         if (read_len > 0 && buf[0] == 'q')
             break;
     }
-    */
 
     const char *exit_msg = "\nExiting...\n";
     len = 0;

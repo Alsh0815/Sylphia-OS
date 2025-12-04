@@ -1,10 +1,14 @@
 #include "syscall.hpp"
 #include "app/elf/elf_loader.hpp"
+#include "driver/usb/xhci.hpp"
 #include "fs/fat32/fat32_driver.hpp"
 #include "memory/memory_manager.hpp"
 #include "printk.hpp"
 #include "sys/std/file_descriptor.hpp"
 #include <stdint.h>
+
+// アプリ実行状態（elf_loader.cppで定義）
+extern bool g_app_running;
 
 // 定数定義 (MSR)
 const uint32_t kMSR_EFER = 0xC0000080;
@@ -36,6 +40,9 @@ extern "C" uint64_t SyscallHandler(uint64_t syscall_number, uint64_t arg1,
 
         case 2: // Exit
             kprintf("\n[Kernel] App Exited via Syscall.\n");
+
+            // アプリ実行状態をリセット
+            g_app_running = false;
 
             // ★ 修正: 安全にコンテキストを復元して戻る関数を呼ぶ
             ExitApp();
@@ -73,15 +80,11 @@ extern "C" uint64_t SyscallHandler(uint64_t syscall_number, uint64_t arg1,
             int fd = static_cast<int>(arg1);
             void *buf = reinterpret_cast<void *>(arg2);
             size_t len = static_cast<size_t>(arg3);
-            kprintf("[Syscall] Read(fd=%d, buf=%lx, len=%d)\n", fd, buf, len);
             if (fd >= 0 && fd < 16 && g_fds[fd])
             {
-                kprintf("[Syscall] g_fds[fd]->Read(buf, len)\n");
                 int ret = g_fds[fd]->Read(buf, len);
-                kprintf("[Syscall] Read ret=%d\n", ret);
                 return ret;
             }
-            kprintf("[Syscall] Read Invalid FD\n");
             return -1;
         }
 
@@ -91,7 +94,6 @@ extern "C" uint64_t SyscallHandler(uint64_t syscall_number, uint64_t arg1,
             const void *buf = reinterpret_cast<const void *>(arg2);
             size_t len = static_cast<size_t>(arg3);
 
-            kprintf("[Syscall] Write(fd=%d, buf=%lx, len=%d)\n", fd, buf, len);
             if (fd >= 0 && fd < 16 && g_fds[fd])
             {
                 char kernel_buf[256];
@@ -102,11 +104,9 @@ extern "C" uint64_t SyscallHandler(uint64_t syscall_number, uint64_t arg1,
                 }
                 kernel_buf[len < 255 ? len : 255] = '\0';
                 int ret = g_fds[fd]->Write(kernel_buf, len);
-                kprintf("[Syscall] Write ret=%d\n", ret);
                 // delete[] kernel_buf;
                 return ret;
             }
-            kprintf("[Syscall] Write Invalid FD\n");
             return -1;
         }
 

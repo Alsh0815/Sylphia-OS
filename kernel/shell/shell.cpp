@@ -1,6 +1,7 @@
 #include "shell/shell.hpp"
 #include "app/elf/elf_loader.hpp"
 #include "console.hpp"
+#include "driver/usb/keyboard/keyboard.hpp"
 #include "fs/fat32/fat32_driver.hpp"
 #include "memory/memory_manager.hpp"
 #include "printk.hpp"
@@ -229,6 +230,7 @@ void Shell::ExecuteSingleCommand(char *cmd_line)
         {
             g_fds[0]->Flush();
         }
+        g_usb_keyboard->ForceSendTRB();
         char path[64];
         strcpy(path, "/sys/bin/");
         strcat(path, argv[0]);

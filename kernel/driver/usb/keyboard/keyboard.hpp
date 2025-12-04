@@ -4,15 +4,19 @@
 
 namespace USB
 {
+void UsbKeyboardOnInterrupt();
 class Keyboard
 {
   public:
     Keyboard(XHCI::Controller *controller, uint8_t slot_id);
     bool Initialize();
-
-    void Update();
+    void Update();      // ポーリング用（互換性のため残す）
+    void OnInterrupt(); // 割り込みハンドラから呼ばれる
+    void ForceSendTRB();
 
   private:
+    void ProcessKeyboardData(); // キー入力処理ロジック
+
     XHCI::Controller *controller_;
     uint8_t slot_id_;
     uint8_t ep_interrupt_in_;

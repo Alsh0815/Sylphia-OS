@@ -1,4 +1,5 @@
 #include "driver/usb/keyboard/keyboard.hpp"
+#include "app/elf/elf_loader.hpp"
 #include "cxx.hpp"
 #include "memory/memory_manager.hpp"
 #include "printk.hpp"
@@ -132,6 +133,14 @@ bool Keyboard::Initialize()
     return (ep_interrupt_in_ != 0);
 }
 
+void Keyboard::ForceSendTRB()
+{
+    memcpy(prev_buf_, buf_, 8);
+    memset(buf_, 0, 8);
+    controller_->SendNormalTRB(slot_id_, ep_interrupt_in_, buf_, 8);
+    kprintf("[Keyboard] ForceSendTRB\n");
+}
+
 void Keyboard::Update()
 {
     int result = controller_->PollEndpoint(slot_id_, ep_interrupt_in_);
@@ -139,6 +148,7 @@ void Keyboard::Update()
 
     if (result == 1)
     {
+
         // buf_[0]: Modifier (Bit1=LShift, Bit5=RShift)
         bool shift = (buf_[0] & 0x02) || (buf_[0] & 0x20);
 
@@ -169,10 +179,9 @@ void Keyboard::Update()
                 {
                     if (g_fds[0]->GetType() == FDType::FD_KEYBOARD)
                     {
-                        // kprintf("[Keyboard] OnInput(%c)\n", ascii);
                         ((KeyboardFD *)g_fds[0])->OnInput(ascii);
                     }
-                    if (g_shell)
+                    if (g_shell && !g_app_running)
                     {
                         g_shell->OnKey(ascii);
                     }
@@ -181,7 +190,6 @@ void Keyboard::Update()
         }
 
         memcpy(prev_buf_, buf_, 8);
-
         memset(buf_, 0, 8);
         controller_->SendNormalTRB(slot_id_, ep_interrupt_in_, buf_, 8);
     }

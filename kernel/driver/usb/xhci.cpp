@@ -209,6 +209,18 @@ void Controller::Initialize()
 
     kprintf("[xHCI] Memory Structures Allocated & Registers Set.\n");
 
+    // MSI/MSI-X割り込みを設定 (ベクタ 0x50)
+    kprintf("[xHCI] Setting up MSI/MSI-X interrupts...\n");
+    if (PCI::SetupMSI(pci_dev_, 0x50))
+    {
+        kprintf("[xHCI] MSI/MSI-X setup successful.\n");
+    }
+    else
+    {
+        kprintf("[xHCI] Warning: MSI/MSI-X setup failed, interrupts may not "
+                "work.\n");
+    }
+
     uint32_t usbcmd = ReadOpReg(0x00);
     usbcmd |= 1;
     WriteOpReg(0x00, usbcmd);
@@ -888,5 +900,67 @@ void Controller::ResetPort(int port_id)
     {
         kprintf("[xHCI] Port %d Reset Failed (Not Enabled).\n", port_id);
     }
+}
+
+void Controller::ProcessInterrupt()
+{
+    kprintf("[xHCI] ProcessInterrupt()\\n");
+    volatile TRB &event = event_ring_[event_ring_index_];
+    uint32_t control = event.control;
+
+    if ((control & 1) == dcs_)
+    {
+        uint32_t trb_type = (control >> 10) & 0x3F;
+
+        // Transfer Event の場合、Event Ringのみ更新
+        if (trb_type == 32)
+        {
+            // イベント処理は Update() に任せる
+        }
+
+        event_ring_index_++;
+        if (event_ring_index_ == 32)
+        {
+            event_ring_index_ = 0;
+            dcs_ ^= 1;
+        }
+
+        uint64_t erdp =
+            reinterpret_cast<uint64_t>(&event_ring_[event_ring_index_]);
+        WriteRtReg(0x20 + 0x18, (erdp & 0xFFFFFFFF) | (1 << 3));
+        WriteRtReg(0x20 + 0x1C, (erdp >> 32));
+    }
+
+    // 割り込み後にUpdate()を呼び出してキーボードイベントを処理
+    if (g_usb_keyboard)
+    {
+        g_usb_keyboard->Update();
+    }
+}
+
+void Controller::DebugDump() const
+{
+    kprintf("[xHCI Debug] event_ring_ addr: %lx\n",
+            reinterpret_cast<uint64_t>(event_ring_));
+    kprintf("[xHCI Debug] event_ring_index_: %d, dcs_: %d\n", event_ring_index_,
+            dcs_);
+
+    // 現在のイベントリングエントリをダンプ
+    volatile TRB &event = event_ring_[event_ring_index_];
+    kprintf(
+        "[xHCI Debug] event.control: %x (cycle bit: %d, expected dcs_: %d)\n",
+        event.control, event.control & 1, dcs_);
+    kprintf("[xHCI Debug] event.parameter: %lx\n", event.parameter);
+    kprintf("[xHCI Debug] event.status: %x\n", event.status);
+
+    // ★ 追加: xHCI レジスタの状態を直接確認
+    uint32_t usbsts = ReadOpReg(0x04);
+    kprintf("[xHCI Debug] USBSTS: %x (HCH=%d, HSE=%d, EINT=%d)\n", usbsts,
+            usbsts & 1, (usbsts >> 2) & 1, (usbsts >> 3) & 1);
+
+    // ERDP (Event Ring Dequeue Pointer) の確認
+    uint32_t erdp_low = ReadRtReg(0x20 + 0x18);
+    uint32_t erdp_high = ReadRtReg(0x20 + 0x1C);
+    kprintf("[xHCI Debug] ERDP: %x %x\n", erdp_high, erdp_low);
 }
 } // namespace USB::XHCI
