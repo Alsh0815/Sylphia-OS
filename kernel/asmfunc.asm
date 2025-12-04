@@ -195,6 +195,12 @@ SyscallEntry:
     push r13
     push r14
     push r15
+    push rdi
+    push rsi
+    push rdx
+    push r10
+    push r8
+    push r9
 
     ; --- 引数のセットアップ ---
     ; User  : RAX(No), RDI(1), RSI(2), RDX(3), R10(4)
@@ -215,6 +221,12 @@ SyscallEntry:
     ; pop 命令は RAX を変更しないので、そのままユーザーに返る
 
     ; レジスタ復帰
+    pop r9
+    pop r8
+    pop r10
+    pop rdx
+    pop rsi
+    pop rdi
     pop r15
     pop r14
     pop r13

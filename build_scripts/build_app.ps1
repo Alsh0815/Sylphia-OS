@@ -19,12 +19,12 @@ if (-not (Test-Path $OutputDir)) {
 
 Write-Host "Building application: $AppName" -ForegroundColor Cyan
 
-$StartObj = "$AppDir/start.o"
-if (Test-Path "$AppDir/start.asm") {
-    & $NASM -f elf64 "$AppDir/start.asm" -o $StartObj
+$StartObj = "$RepoRoot/apps/_link/start.o"
+if (Test-Path "$RepoRoot/apps/_link/start.asm") {
+    & $NASM -f elf64 "$RepoRoot/apps/_link/start.asm" -o $StartObj
 }
 else {
-    Write-Error "start.asm not found in $AppDir"
+    Write-Error "start.asm not found in apps/_link"
 }
 
 $CppSrcs = Get-ChildItem "$AppDir/*.cpp"
@@ -37,7 +37,7 @@ foreach ($Src in $CppSrcs) {
 }
 
 $OutputElf = "$OutputDir/$AppName.elf"
-$LinkerScript = "$AppDir/linker.ld"
+$LinkerScript = "$RepoRoot/apps/_link/linker.ld"
 
 $AllObjs = @($StartObj) + $CppObjs
 
@@ -46,7 +46,7 @@ if (Test-Path $LinkerScript) {
     # & $LD -T $LinkerScript -o $OutputElf $AllObjs --entry _start -z separate-code
 }
 else {
-    Write-Error "linker.ld not found in $AppDir"
+    Write-Error "linker.ld not found in apps/_link"
 }
 
 Write-Host "Build Complete! Output: $OutputElf" -ForegroundColor Green

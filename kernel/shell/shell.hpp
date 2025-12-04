@@ -6,18 +6,19 @@ const int kMaxCommandLen = 100;
 
 class Shell
 {
-public:
+  public:
     Shell();
 
     void OnKey(char c);
 
-private:
+  private:
     char buffer_[kMaxCommandLen];
     int cursor_pos_;
     uint32_t current_cluster_;
 
     void PrintPrompt();
     void ExecuteCommand();
+    void ExecuteSingleCommand(char *cmd_line);
 };
 
 extern Shell *g_shell;

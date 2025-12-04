@@ -3,6 +3,6 @@
 
 class ElfLoader
 {
-public:
+  public:
     static bool LoadAndRun(const char *filename, int argc, char **argv);
 };

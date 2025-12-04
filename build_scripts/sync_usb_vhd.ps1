@@ -59,7 +59,7 @@ if (-not (Test-Path "${DiskLetter}:\")) {
 }
 
 Write-Host "Syncing files from $AbsBuildDir to ${DiskLetter}:\"
-robocopy $AbsBuildDir "${DiskLetter}:\" /MIR /NFL /NDL /NJH /NJS /nc /ns /np
+robocopy $AbsBuildDir "${DiskLetter}:\" /MIR /nc /ns
 
 Write-Host "Unmounting VHD..."
 $dps = @"

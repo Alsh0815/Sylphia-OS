@@ -1,10 +1,11 @@
-#include <std/string.hpp>
+#include "shell/shell.hpp"
 #include "app/elf/elf_loader.hpp"
+#include "console.hpp"
 #include "fs/fat32/fat32_driver.hpp"
 #include "memory/memory_manager.hpp"
-#include "shell/shell.hpp"
-#include "console.hpp"
 #include "printk.hpp"
+#include "sys/std/file_descriptor.hpp"
+#include <std/string.hpp>
 
 Shell *g_shell = nullptr;
 
@@ -70,10 +71,53 @@ void Shell::ExecuteCommand()
     if (cursor_pos_ == 0)
         return;
 
+    // パイプ処理 (|)
+    char *pipe_pos = nullptr;
+    for (int i = 0; i < cursor_pos_; ++i)
+    {
+        if (buffer_[i] == '|')
+        {
+            buffer_[i] = 0;
+            pipe_pos = &buffer_[i + 1];
+            break;
+        }
+    }
+
+    if (pipe_pos)
+    {
+        // パイプあり: コマンドA | コマンドB
+        PipeFD *pipe = new PipeFD();
+
+        // Stdout(1) をパイプに退避/差し替え
+        FileDescriptor *original_stdout = g_fds[1];
+        g_fds[1] = pipe;
+
+        ExecuteSingleCommand(buffer_);
+
+        g_fds[1] = original_stdout;
+
+        // Stdin(0) をパイプに退避/差し替え
+        FileDescriptor *original_stdin = g_fds[0];
+        g_fds[0] = pipe;
+
+        ExecuteSingleCommand(pipe_pos);
+
+        g_fds[0] = original_stdin;
+
+        delete pipe;
+    }
+    else
+    {
+        ExecuteSingleCommand(buffer_);
+    }
+}
+
+void Shell::ExecuteSingleCommand(char *cmd_line)
+{
     char *argv[32]; // Max 32 arguments
     int argc = 0;
 
-    char *p = buffer_;
+    char *p = cmd_line;
     while (*p)
     {
         while (*p == ' ')
@@ -91,31 +135,45 @@ void Shell::ExecuteCommand()
 
     if (strcmp(argv[0], "cat") == 0)
     {
-        char *filename = argv[1];
-        if (!FileSystem::g_fat32_driver)
+        if (argc == 1)
         {
-            kprintf("Error: File System not initialized.\n");
-            return;
-        }
-        uint32_t buf_size = 4096;
-        char *buf = static_cast<char *>(MemoryManager::Allocate(buf_size));
-        memset(buf, 0, buf_size);
-        uint32_t bytes_read = FileSystem::g_fat32_driver->ReadFile(filename, buf, buf_size);
-        if (bytes_read > 0)
-        {
-            if (bytes_read < buf_size)
-                buf[bytes_read] = '\0';
-            else
-                buf[buf_size - 1] = '\0';
-
-            kprintf("%s\n", buf);
+            // 引数なしcat: Stdin -> Stdout
+            char buf[128];
+            while (true)
+            {
+                int len = g_fds[0]->Read(buf, sizeof(buf) - 1);
+                if (len <= 0)
+                    break;
+                g_fds[1]->Write(buf, len);
+                if (g_fds[0]->GetType() == FD_KEYBOARD)
+                    break;
+            }
         }
         else
         {
-            kprintf("Error: File not found or empty.\n");
+            char *filename = argv[1];
+            if (!FileSystem::g_fat32_driver)
+            {
+                kprintf("Error: File System not initialized.\n");
+                return;
+            }
+            uint32_t buf_size = 4096;
+            char *buf = static_cast<char *>(MemoryManager::Allocate(buf_size));
+            memset(buf, 0, buf_size);
+            uint32_t bytes_read =
+                FileSystem::g_fat32_driver->ReadFile(filename, buf, buf_size);
+            if (bytes_read > 0)
+            {
+                g_fds[1]->Write(buf, bytes_read);
+                char nl = '\n';
+                g_fds[1]->Write(&nl, 1);
+            }
+            else
+            {
+                kprintf("Error: File not found or empty.\n");
+            }
+            MemoryManager::Free(buf, buf_size);
         }
-
-        MemoryManager::Free(buf, buf_size);
     }
     else if (strcmp(argv[0], "clear") == 0)
     {
@@ -124,7 +182,12 @@ void Shell::ExecuteCommand()
     }
     else if (strcmp(argv[0], "echo") == 0)
     {
-        kprintf("%s\n", argv[1]);
+        if (argc > 1)
+        {
+            g_fds[1]->Write(argv[1], strlen(argv[1]));
+            char nl = '\n';
+            g_fds[1]->Write(&nl, 1);
+        }
     }
     else if (strcmp(argv[0], "ls") == 0)
     {
@@ -162,6 +225,10 @@ void Shell::ExecuteCommand()
     }
     else
     {
+        if (g_fds[0]->GetType() == FD_KEYBOARD)
+        {
+            g_fds[0]->Flush();
+        }
         char path[64];
         strcpy(path, "/sys/bin/");
         strcat(path, argv[0]);

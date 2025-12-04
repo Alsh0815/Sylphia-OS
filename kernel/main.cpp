@@ -1,30 +1,33 @@
 #include <stdint.h>
 
-#include "driver/nvme/nvme_driver.hpp"
-#include "driver/nvme/nvme_reg.hpp"
-#include "driver/usb/keyboard/keyboard.hpp"
-#include "driver/usb/mass_storage/mass_storage.hpp"
-#include "fs/fat32/fat32_driver.hpp"
-#include "fs/fat32/fat32.hpp"
-#include "fs/installer.hpp"
-#include "memory/memory_manager.hpp"
-#include "memory/memory.hpp"
-#include "pci/pci.hpp"
-#include "shell/shell.hpp"
-#include "sys/syscall.hpp"
 #include "apic.hpp"
 #include "boot_info.hpp"
 #include "console.hpp"
 #include "cxx.hpp"
+#include "driver/nvme/nvme_driver.hpp"
+#include "driver/nvme/nvme_reg.hpp"
+#include "driver/usb/keyboard/keyboard.hpp"
+#include "driver/usb/mass_storage/mass_storage.hpp"
+#include "fs/fat32/fat32.hpp"
+#include "fs/fat32/fat32_driver.hpp"
+#include "fs/installer.hpp"
 #include "graphics.hpp"
 #include "interrupt.hpp"
 #include "io.hpp"
 #include "ioapic.hpp"
 #include "keyboard_layout.hpp"
+#include "memory/memory.hpp"
+#include "memory/memory_manager.hpp"
 #include "paging.hpp"
+#include "pci/pci.hpp"
 #include "pic.hpp"
 #include "printk.hpp"
 #include "segmentation.hpp"
+#include "shell/shell.hpp"
+#include "sys/std/file_descriptor.hpp"
+#include "sys/syscall.hpp"
+
+FileDescriptor *g_fds[16];
 
 // 色の定義 (0x00RRGGBB)
 const uint32_t kColorWhite = 0xFFFFFFFF;
@@ -43,7 +46,8 @@ bool CopyFile(FileSystem::FAT32Driver *src_fs, const char *src_path,
         return false;
     }
 
-    kprintf("Copying file from %s to %s... (%d bytes)\n", src_path, dst_path, size);
+    kprintf("Copying file from %s to %s... (%d bytes)\n", src_path, dst_path,
+            size);
 
     uint8_t *buf = static_cast<uint8_t *>(MemoryManager::Allocate(size));
     if (!buf)
@@ -105,13 +109,13 @@ bool CopyFile(FileSystem::FAT32Driver *src_fs, const char *src_path,
 
 extern "C" void EnableSSE();
 
-extern "C" __attribute__((ms_abi)) void KernelMain(
-    const FrameBufferConfig &config,
-    const MemoryMap &memmap)
+extern "C" __attribute__((ms_abi)) void
+KernelMain(const FrameBufferConfig &config, const MemoryMap &memmap)
 {
     __asm__ volatile("cli");
     const uint32_t kDesktopBG = 0xFF181818;
-    FillRectangle(config, 0, 0, config.HorizontalResolution, config.VerticalResolution, kDesktopBG);
+    FillRectangle(config, 0, 0, config.HorizontalResolution,
+                  config.VerticalResolution, kDesktopBG);
 
     static Console console(config, 0xFFFFFFFF, kDesktopBG);
     g_console = &console;
@@ -133,13 +137,20 @@ extern "C" __attribute__((ms_abi)) void KernelMain(
 
     const size_t kKernelStackSize = 1024 * 16; // 16KB
     void *kernel_stack = MemoryManager::Allocate(kKernelStackSize);
-    uint64_t kernel_stack_end = reinterpret_cast<uint64_t>(kernel_stack) + kKernelStackSize;
+    uint64_t kernel_stack_end =
+        reinterpret_cast<uint64_t>(kernel_stack) + kKernelStackSize;
     SetKernelStack(kernel_stack_end);
 
     kprintf("Kernel Stack setup complete at %lx\n", kernel_stack_end);
 
     PageManager::Initialize();
     InitializeSyscall();
+
+    // Standard I/O Initialization
+    g_fds[0] = new KeyboardFD(); // Stdin
+    g_fds[1] = new ConsoleFD();  // Stdout
+    g_fds[2] = new ConsoleFD();  // Stderr
+    kprintf("Standard I/O Initialized (FD 0, 1, 2).\n");
 
     kprintf("Searching for NVMe Controller...\n");
 
@@ -155,7 +166,9 @@ extern "C" __attribute__((ms_abi)) void KernelMain(
         {
             for (int func = 0; func < 8; ++func)
             {
-                PCI::Device d = {static_cast<uint8_t>(bus), static_cast<uint8_t>(dev), static_cast<uint8_t>(func)};
+                PCI::Device d = {static_cast<uint8_t>(bus),
+                                 static_cast<uint8_t>(dev),
+                                 static_cast<uint8_t>(func)};
                 uint16_t vendor = PCI::ReadConfReg(d, 0x00) & 0xFFFF;
 
                 if (vendor == 0xFFFF)
@@ -188,9 +201,11 @@ nvme_found:
         NVMe::g_nvme->IdentifyController();
         NVMe::g_nvme->CreateIOQueues();
 
-        uint8_t *check_buf = static_cast<uint8_t *>(MemoryManager::Allocate(512, 4096));
+        uint8_t *check_buf =
+            static_cast<uint8_t *>(MemoryManager::Allocate(512, 4096));
         NVMe::g_nvme->Read(2048, check_buf, 1);
-        FileSystem::FAT32_BPB *check_bpb = reinterpret_cast<FileSystem::FAT32_BPB *>(check_buf);
+        FileSystem::FAT32_BPB *check_bpb =
+            reinterpret_cast<FileSystem::FAT32_BPB *>(check_buf);
 
         bool already_installed = false;
 
@@ -204,7 +219,8 @@ nvme_found:
             FileSystem::FormatDiskGPT(disk_size);
             FileSystem::FormatPartitionFAT32(disk_size - 2048);
 
-            kprintf("[Installer] Format complete. Reboot is recommended but continuing...\n");
+            kprintf("[Installer] Format complete. Reboot is recommended but "
+                    "continuing...\n");
         }
         else
         {
@@ -212,7 +228,8 @@ nvme_found:
             kprintf("[Installer] Valid file system detected.\n");
         }
 
-        FileSystem::FAT32Driver *nvme_fs = new FileSystem::FAT32Driver(NVMe::g_nvme, 2048);
+        FileSystem::FAT32Driver *nvme_fs =
+            new FileSystem::FAT32Driver(NVMe::g_nvme, 2048);
         nvme_fs->Initialize();
 
         FileSystem::g_system_fs = nvme_fs;
@@ -233,8 +250,10 @@ nvme_found:
 
                 if (!is_bpb)
                 {
-                    uint32_t start_lba = *reinterpret_cast<uint32_t *>(&buf[0x1BE + 8]);
-                    kprintf("MBR detected. Partition 1 starts at LBA %d\n", start_lba);
+                    uint32_t start_lba =
+                        *reinterpret_cast<uint32_t *>(&buf[0x1BE + 8]);
+                    kprintf("MBR detected. Partition 1 starts at LBA %d\n",
+                            start_lba);
                     usb_part_lba = start_lba;
                 }
                 else
@@ -244,7 +263,8 @@ nvme_found:
             }
             MemoryManager::Free(buf, 512);
 
-            FileSystem::FAT32Driver *usb_fs = new FileSystem::FAT32Driver(USB::g_mass_storage, usb_part_lba);
+            FileSystem::FAT32Driver *usb_fs =
+                new FileSystem::FAT32Driver(USB::g_mass_storage, usb_part_lba);
             usb_fs->Initialize();
 
             if (!already_installed)
@@ -254,18 +274,17 @@ nvme_found:
                 nvme_fs->EnsureDirectory("sys/bin");
                 nvme_fs->EnsureDirectory("home");
 
-                CopyFile(usb_fs, "EFI/BOOT/BOOTX64.EFI", nvme_fs, "EFI/BOOT/BOOTX64.EFI");
+                CopyFile(usb_fs, "EFI/BOOT/BOOTX64.EFI", nvme_fs,
+                         "EFI/BOOT/BOOTX64.EFI");
+                CopyFile(usb_fs, "apps/stdio.elf", nvme_fs,
+                         "sys/bin/stdio.elf");
                 CopyFile(usb_fs, "apps/test.elf", nvme_fs, "sys/bin/test.elf");
                 CopyFile(usb_fs, "kernel.elf", nvme_fs, "kernel.elf");
 
                 kprintf("Update process finished.\n");
 
                 const char *startup_script = "\\EFI\\BOOT\\BOOTX64.EFI";
-                nvme_fs->WriteFile(
-                    "STARTUP NSH",
-                    startup_script,
-                    21,
-                    0);
+                nvme_fs->WriteFile("STARTUP NSH", startup_script, 21, 0);
                 kprintf("[Installer] startup.nsh created.\n");
 
                 kprintf("[Installer] Installation Complete!\n");
@@ -286,6 +305,10 @@ nvme_found:
 
     IOAPIC::Enable(1, 0x40, g_lapic->GetID());
     // kprintf("I/O APIC: Keyboard (IRQ1) -> Vector 0x40\n");
+
+    uint64_t cr4;
+    __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
+    kprintf("[Init] CR4 = %lx (SMAP bit = %d)\n", cr4, (cr4 >> 21) & 1);
 
     g_shell->OnKey(0);
     kprintf("\nWelcome to Sylphia-OS!\n");

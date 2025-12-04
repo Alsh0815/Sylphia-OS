@@ -17,6 +17,7 @@ $SOURCES = @(
     "..\kernel\memory\memory_manager.cpp",
     "..\kernel\pci\pci.cpp",
     "..\kernel\shell\shell.cpp",
+    "..\kernel\sys\std\file_descriptor.cpp",
     "..\kernel\sys\syscall.cpp",
     "..\kernel\apic.cpp", "..\kernel\console.cpp", "..\kernel\font.cpp", "..\kernel\graphics.cpp",
     "..\kernel\interrupt.cpp", "..\kernel\ioapic.cpp", "..\kernel\keyboard_layout.cpp", "..\kernel\paging.cpp",
