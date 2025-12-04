@@ -120,20 +120,12 @@ KernelMain(const FrameBufferConfig &config, const MemoryMap &memmap)
     static Console console(config, 0xFFFFFFFF, kDesktopBG);
     g_console = &console;
 
-    kprintf("Sylphia-OS Kernel v0.5.5\n");
-    kprintf("----------------------\n");
-
     SetupSegments();
-    kprintf("Segments Setup complete.\n");
     SetupInterrupts();
-    kprintf("Interrupts Setup complete.\n");
     DisablePIC();
-    kprintf("PIC Disabled.\n");
     EnableSSE();
-    kprintf("SSE Enabled.\n");
 
     MemoryManager::Initialize(memmap);
-    kprintf("Memory Manager Initialized.\n");
 
     const size_t kKernelStackSize = 1024 * 16; // 16KB
     void *kernel_stack = MemoryManager::Allocate(kKernelStackSize);
@@ -305,22 +297,12 @@ nvme_found:
     g_lapic = &lapic;
     g_lapic->Enable();
     IOAPIC::Enable(1, 0x40, g_lapic->GetID());
-    // kprintf("I/O APIC: Keyboard (IRQ1) -> Vector 0x40\n");
     g_lapic->StartTimer(10, 0x20);
-    kprintf("[Init] LAPIC Timer started (10ms interval)\\n");
-
-    uint64_t cr4;
-    __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
-    kprintf("[Init] CR4 = %lx (SMAP bit = %d)\n", cr4, (cr4 >> 21) & 1);
 
     g_shell->OnKey(0);
     kprintf("\nWelcome to Sylphia-OS!\n");
     kprintf("Sylphia> ");
 
-    kprintf("[Main] Entering interrupt-driven mode. Waiting for events...\n");
-
-    // 割り込みベースに移行したため、hltで待機
-    // USB割り込み発生時にUsbInterruptHandler()が呼ばれる
     while (1)
         __asm__ volatile("hlt");
 }

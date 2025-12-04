@@ -6,6 +6,7 @@
 #include "memory/memory_manager.hpp"
 #include "printk.hpp"
 #include "sys/std/file_descriptor.hpp"
+#include "sys/sys.hpp"
 #include <std/string.hpp>
 
 Shell *g_shell = nullptr;
@@ -220,9 +221,15 @@ void Shell::ExecuteSingleCommand(char *cmd_line)
             kprintf("File System not initialized.\n");
         }
     }
-    else if (strcmp(argv[0], "whoami") == 0)
+    else if (strcmp(argv[0], "sys") == 0)
     {
-        kprintf("root\n");
+        kprintf("=============== Sylphia-OS ZERO ===============\n");
+        kprintf("Version: v%d.%d.%d-%s\n", System::Version.Major,
+                System::Version.Minor, System::Version.Patch,
+                System::ReleaseTypeToString());
+        kprintf("Build: %04d/%02d/%02d\n", System::BuildInfo.Date.Year,
+                System::BuildInfo.Date.Month, System::BuildInfo.Date.Day);
+        kprintf("===============================================\n");
     }
     else
     {

@@ -3,7 +3,8 @@
 // font.cpp で定義されている関数
 const uint8_t *GetFont(char c);
 
-void FillRectangle(const FrameBufferConfig &config, int x, int y, int w, int h, uint32_t color)
+void FillRectangle(const FrameBufferConfig &config, int x, int y, int w, int h,
+                   uint32_t color)
 {
     uint32_t *base = reinterpret_cast<uint32_t *>(config.FrameBufferBase);
 
@@ -25,7 +26,8 @@ void FillRectangle(const FrameBufferConfig &config, int x, int y, int w, int h, 
     }
 }
 
-void WriteAscii(const FrameBufferConfig &config, int x, int y, char c, uint32_t color)
+void WriteAscii(const FrameBufferConfig &config, int x, int y, char c,
+                uint32_t fg_color, uint32_t bg_color)
 {
     const uint8_t *font = GetFont(c);
     if (!font)
@@ -49,23 +51,29 @@ void WriteAscii(const FrameBufferConfig &config, int x, int y, char c, uint32_t 
             if (x + dx >= config.HorizontalResolution)
                 break;
 
+            uint32_t index = (y + dy) * config.PixelsPerScanLine + (x + dx);
             // 最上位ビット(左端)から順にチェック: (1 << (7-dx))
             if ((row_bitmap >> (7 - dx)) & 1)
             {
-                // ビットが立っていればピクセルを描画
-                uint32_t index = (y + dy) * config.PixelsPerScanLine + (x + dx);
-                base[index] = color;
+                // ビットが立っていれば前景色で描画
+                base[index] = fg_color;
+            }
+            else
+            {
+                // ビットが立っていなければ背景色で描画
+                base[index] = bg_color;
             }
         }
     }
 }
 
-void WriteString(const FrameBufferConfig &config, int x, int y, const char *s, uint32_t color)
+void WriteString(const FrameBufferConfig &config, int x, int y, const char *s,
+                 uint32_t fg_color, uint32_t bg_color)
 {
     int cursor_x = x;
     while (*s)
     {
-        WriteAscii(config, cursor_x, y, *s, color);
+        WriteAscii(config, cursor_x, y, *s, fg_color, bg_color);
         cursor_x += 8; // 1文字幅(8px)進める
         s++;
     }
