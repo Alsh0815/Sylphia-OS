@@ -35,8 +35,6 @@ Keyboard::Keyboard(XHCI::Controller *controller, uint8_t slot_id)
 
 bool Keyboard::Initialize()
 {
-    kprintf("[Keyboard] Initializing for Slot %d...\n", slot_id_);
-
     DeviceDescriptor dev_desc;
     if (!controller_->ControlIn(slot_id_,
                                 0x80,   // ReqType: Device, In
@@ -48,8 +46,6 @@ bool Keyboard::Initialize()
     {
         return false;
     }
-    kprintf("[Keyboard] Vendor: %x Product: %x\n", dev_desc.id_vendor,
-            dev_desc.id_product);
 
     uint8_t *buf = static_cast<uint8_t *>(MemoryManager::Allocate(256, 64));
     ConfigurationDescriptor *cd =
@@ -86,7 +82,6 @@ bool Keyboard::Initialize()
             if (id->interface_class == 3 && id->interface_sub_class == 1 &&
                 id->interface_protocol == 1)
             {
-                kprintf("[Keyboard] Found Boot Keyboard Interface!\n");
                 is_keyboard = true;
             }
             else
@@ -105,11 +100,9 @@ bool Keyboard::Initialize()
                     (ed->attributes & 0x03) == 3)
                 {
                     ep_interrupt_in_ = ed->endpoint_address;
-                    kprintf("[Keyboard] Found Interrupt Endpoint: %x\n",
-                            ep_interrupt_in_);
 
                     uint16_t max_pkt = 8; // Boot Protocol Keyboardは大抵8バイト
-                    uint8_t interval = 10; // 10ms (Descriptorの値を推奨)
+                    uint8_t interval = 10; // 10ms
 
                     if (!controller_->ConfigureEndpoint(
                             slot_id_, ep_interrupt_in_, max_pkt, interval, 3))
@@ -138,18 +131,14 @@ void Keyboard::ForceSendTRB()
     memcpy(prev_buf_, buf_, 8);
     memset(buf_, 0, 8);
     controller_->SendNormalTRB(slot_id_, ep_interrupt_in_, buf_, 8);
-    kprintf("[Keyboard] ForceSendTRB\n");
 }
 
 void Keyboard::Update()
 {
     int result = controller_->PollEndpoint(slot_id_, ep_interrupt_in_);
-    // kprintf("[Keyboard] PollEndpoint=%d\n", result);
 
     if (result == 1)
     {
-
-        // buf_[0]: Modifier (Bit1=LShift, Bit5=RShift)
         bool shift = (buf_[0] & 0x02) || (buf_[0] & 0x20);
 
         for (int i = 2; i < 8; ++i)

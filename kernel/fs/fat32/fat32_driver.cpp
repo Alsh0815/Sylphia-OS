@@ -4,7 +4,6 @@
 #include "printk.hpp"
 #include <std/string.hpp>
 
-
 #include "fat32_driver.hpp"
 
 namespace FileSystem
@@ -757,6 +756,187 @@ void FAT32Driver::WriteFile(const char *name, const void *data, uint32_t size,
 
     kprintf("[FAT32] File Written Successfully (Start Cluster %d)\n",
             first_cluster);
+}
+
+void FAT32Driver::AppendFile(const char *name, const void *data, uint32_t size,
+                             uint32_t parent_cluster)
+{
+    if (size == 0)
+        return;
+
+    // 1. ファイルが既に存在するか確認
+    DirectoryEntry entry;
+    uint32_t target_dir = (parent_cluster == 0) ? root_clus_ : parent_cluster;
+
+    if (!FindDirectoryEntry(name, target_dir, &entry))
+    {
+        // ファイルが存在しない場合は新規作成
+        WriteFile(name, data, size, parent_cluster);
+        return;
+    }
+
+    kprintf("[FAT32] Appending to file: %s (%d bytes)...\n", name, size);
+
+    // 2. 既存ファイルの最後のクラスタを探す
+    uint32_t first_cluster = (entry.fst_clus_hi << 16) | entry.fst_clus_lo;
+    uint32_t last_cluster = first_cluster;
+    uint32_t old_size = entry.file_size;
+
+    if (first_cluster == 0)
+    {
+        // ファイルサイズ0の場合、新しいクラスタを確保して開始
+        first_cluster = AllocateCluster();
+        if (first_cluster == 0)
+        {
+            kprintf("[FAT32] Error: Disk Full!\n");
+            return;
+        }
+        last_cluster = first_cluster;
+    }
+    else
+    {
+        // 最後のクラスタまで辿る
+        while (true)
+        {
+            uint32_t next = GetNextCluster(last_cluster);
+            if (next >= 0x0FFFFFF8)
+                break;
+            last_cluster = next;
+        }
+    }
+
+    // 3. 最後のクラスタの未使用領域を計算
+    uint32_t cluster_size_bytes = sec_per_clus_ * 512;
+    uint32_t used_in_last_cluster = old_size % cluster_size_bytes;
+    if (used_in_last_cluster == 0 && old_size > 0)
+        used_in_last_cluster = cluster_size_bytes; // 丁度埋まっている場合
+
+    uint32_t free_in_last_cluster =
+        (old_size == 0) ? cluster_size_bytes
+                        : cluster_size_bytes - used_in_last_cluster;
+
+    uint32_t bytes_remaining = size;
+    uint32_t current_offset = 0;
+    const uint8_t *src_ptr = static_cast<const uint8_t *>(data);
+
+    // 4. 最後のクラスタの空き領域に書き込み
+    if (free_in_last_cluster > 0 && old_size > 0)
+    {
+        uint64_t lba = ClusterToLBA(last_cluster);
+
+        // 既存データを読み込む
+        uint8_t *sector_buf = static_cast<uint8_t *>(
+            MemoryManager::Allocate(cluster_size_bytes, 4096));
+        dev_->Read(lba, sector_buf, sec_per_clus_);
+
+        // 追記するサイズ
+        uint32_t append_len = (bytes_remaining > free_in_last_cluster)
+                                  ? free_in_last_cluster
+                                  : bytes_remaining;
+
+        // データを追記
+        memcpy(sector_buf + used_in_last_cluster, src_ptr, append_len);
+
+        // 書き戻す
+        dev_->Write(lba, sector_buf, sec_per_clus_);
+        MemoryManager::Free(sector_buf, cluster_size_bytes);
+
+        bytes_remaining -= append_len;
+        current_offset += append_len;
+    }
+
+    // 5. 残りのデータを新しいクラスタに書き込む
+    uint32_t prev_cluster = last_cluster;
+
+    while (bytes_remaining > 0)
+    {
+        // 新しいクラスタを確保
+        uint32_t new_cluster = AllocateCluster();
+        if (new_cluster == 0)
+        {
+            kprintf("[FAT32] Error: Disk Full!\n");
+            break;
+        }
+
+        // 前のクラスタからリンク
+        LinkCluster(prev_cluster, new_cluster);
+
+        // データを書き込む
+        uint64_t target_lba = ClusterToLBA(new_cluster);
+        uint32_t write_len = (bytes_remaining > cluster_size_bytes)
+                                 ? cluster_size_bytes
+                                 : bytes_remaining;
+
+        uint8_t *sector_buf = static_cast<uint8_t *>(
+            MemoryManager::Allocate(cluster_size_bytes, 4096));
+        memset(sector_buf, 0, cluster_size_bytes);
+        memcpy(sector_buf, src_ptr + current_offset, write_len);
+
+        dev_->Write(target_lba, sector_buf, sec_per_clus_);
+        MemoryManager::Free(sector_buf, cluster_size_bytes);
+
+        prev_cluster = new_cluster;
+        bytes_remaining -= write_len;
+        current_offset += write_len;
+    }
+
+    // 最後のクラスタに終端マーク
+    LinkCluster(prev_cluster, 0x0FFFFFFF);
+
+    // 6. ディレクトリエントリのファイルサイズと開始クラスタを更新
+    uint32_t new_size = old_size + size;
+
+    // ディレクトリエントリを探して更新
+    uint32_t current_cluster = target_dir;
+    uint8_t *buf = static_cast<uint8_t *>(
+        MemoryManager::Allocate(sec_per_clus_ * 512, 4096));
+
+    while (current_cluster < 0x0FFFFFF8)
+    {
+        uint64_t lba = ClusterToLBA(current_cluster);
+        dev_->Read(lba, buf, sec_per_clus_);
+
+        DirectoryEntry *entries = reinterpret_cast<DirectoryEntry *>(buf);
+        int num_entries = (sec_per_clus_ * 512) / 32;
+
+        for (int i = 0; i < num_entries; ++i)
+        {
+            if (entries[i].name[0] == 0x00)
+                break;
+            if ((unsigned char)entries[i].name[0] == 0xE5)
+                continue;
+            if (entries[i].attr == 0x0F)
+                continue;
+
+            if (IsNameEqual(entries[i].name, name))
+            {
+                // ファイルサイズを更新
+                entries[i].file_size = new_size;
+
+                // 開始クラスタも更新 (サイズ0だった場合)
+                if (old_size == 0)
+                {
+                    entries[i].fst_clus_hi = (first_cluster >> 16) & 0xFFFF;
+                    entries[i].fst_clus_lo = first_cluster & 0xFFFF;
+                }
+
+                // 該当セクタを書き戻す
+                uint32_t sector_offset = i / 16;
+                uint8_t *sector_ptr = buf + (sector_offset * 512);
+                dev_->Write(lba + sector_offset, sector_ptr, 1);
+
+                MemoryManager::Free(buf, sec_per_clus_ * 512);
+                kprintf("[FAT32] File Appended Successfully (New Size: %d)\n",
+                        new_size);
+                return;
+            }
+        }
+
+        current_cluster = GetNextCluster(current_cluster);
+    }
+
+    MemoryManager::Free(buf, sec_per_clus_ * 512);
+    kprintf("[FAT32] Error: Could not update directory entry.\n");
 }
 
 void FAT32Driver::To83Format(const char *src, char *dst)

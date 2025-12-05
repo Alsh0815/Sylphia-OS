@@ -17,6 +17,7 @@ $SOURCES = @(
     "..\kernel\memory\memory_manager.cpp",
     "..\kernel\pci\pci.cpp",
     "..\kernel\shell\shell.cpp",
+    "..\kernel\sys\logger\logger.cpp",
     "..\kernel\sys\std\file_descriptor.cpp",
     "..\kernel\sys\sys.cpp",
     "..\kernel\sys\syscall.cpp",

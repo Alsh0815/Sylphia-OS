@@ -24,6 +24,7 @@
 #include "printk.hpp"
 #include "segmentation.hpp"
 #include "shell/shell.hpp"
+#include "sys/logger/logger.hpp"
 #include "sys/std/file_descriptor.hpp"
 #include "sys/syscall.hpp"
 
@@ -144,9 +145,10 @@ KernelMain(const FrameBufferConfig &config, const MemoryMap &memmap)
     g_fds[2] = new ConsoleFD();  // Stderr
     kprintf("Standard I/O Initialized (FD 0, 1, 2).\n");
 
-    kprintf("Searching for NVMe Controller...\n");
+    // Initialize Event Logger
+    Sys::Logger::InitializeLogger();
+    kprintf("Event Logger Initialized.\n");
 
-    // PCIバスを探索してNVMeを探す (簡易実装)
     PCI::Device *nvme_dev = nullptr;
     PCI::Device found_dev; // コピー用
 
@@ -296,10 +298,14 @@ nvme_found:
     static LocalAPIC lapic;
     g_lapic = &lapic;
     g_lapic->Enable();
+    Sys::Logger::g_event_logger->Info(Sys::Logger::LogType::Kernel,
+                                      "Local APIC enabled.");
     IOAPIC::Enable(1, 0x40, g_lapic->GetID());
     g_lapic->StartTimer(10, 0x20);
 
     g_shell->OnKey(0);
+    Sys::Logger::g_event_logger->Info(Sys::Logger::LogType::Kernel,
+                                      "Shell initialized.");
     kprintf("\nWelcome to Sylphia-OS!\n");
     kprintf("Sylphia> ");
 
