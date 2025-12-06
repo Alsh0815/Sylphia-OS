@@ -147,11 +147,49 @@ void FAT32Driver::FreeChain(uint32_t start_cluster)
 bool FAT32Driver::IsNameEqual(const char *entry_name, const char *target_name)
 {
     // entry_name: "KERNEL  ELF" (11文字固定, スペース埋め)
-    // target_name: "kernel.elf" (ユーザ入力)
+    // target_name: "kernel.elf" (ユーザ入力) または "SYSTEM  LOG" (8.3形式)
 
     char converted[11];
     memset(converted, ' ', 11);
 
+    // target_name の長さを計算
+    int len = 0;
+    while (target_name[len])
+        len++;
+
+    // 11文字でドットがない場合は既に8.3形式と判断
+    if (len == 11)
+    {
+        bool has_dot = false;
+        for (int k = 0; k < 11; k++)
+        {
+            if (target_name[k] == '.')
+            {
+                has_dot = true;
+                break;
+            }
+        }
+        if (!has_dot)
+        {
+            // 大文字変換しながらコピー
+            for (int k = 0; k < 11; k++)
+            {
+                char c = target_name[k];
+                if (c >= 'a' && c <= 'z')
+                    c -= 32;
+                converted[k] = c;
+            }
+            // 比較
+            for (int k = 0; k < 11; ++k)
+            {
+                if (entry_name[k] != converted[k])
+                    return false;
+            }
+            return true;
+        }
+    }
+
+    // 従来のドット区切り形式の処理
     int i = 0; // target_name index
     int j = 0; // converted index
 
