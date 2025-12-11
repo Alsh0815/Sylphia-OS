@@ -1,8 +1,8 @@
 #include "pci/pci.hpp"
+#include "driver/nvme/nvme_driver.hpp"
 #include "driver/usb/xhci.hpp"
 #include "io.hpp"
 #include "printk.hpp"
-
 
 namespace PCI
 {
@@ -254,13 +254,27 @@ void SetupPCI()
                 // Base=0x0C (Serial Bus), Sub=0x03 (USB), Prog_IF=0x30 (xHCI)
                 if (base == 0x0C && sub == 0x03 && prog_if == 0x30)
                 {
-                    kprintf("Found xHCI Controller!\n");
+                    kprintf("Found xHCI Controller at %d:%d.%d\n", bus, dev,
+                            func);
                     PCI::Device *xhci_dev = nullptr;
                     PCI::Device found_dev;
                     found_dev = d;
                     xhci_dev = &found_dev;
                     g_xhci = new USB::XHCI::Controller(*xhci_dev);
                     g_xhci->Initialize();
+                }
+
+                // NVMe Controller
+                // Base=0x01 (Mass Storage), Sub=0x08 (Non-Volatile Memory)
+                if (base == 0x01 && sub == 0x08)
+                {
+                    kprintf("Found NVMe Controller at %d:%d.%d\n", bus, dev,
+                            func);
+                    uintptr_t bar0 = PCI::ReadBar0(d);
+                    NVMe::g_nvme = new NVMe::Driver(bar0);
+                    NVMe::g_nvme->Initialize();
+                    NVMe::g_nvme->IdentifyController();
+                    NVMe::g_nvme->CreateIOQueues();
                 }
             }
         }

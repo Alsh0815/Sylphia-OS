@@ -1007,4 +1007,81 @@ void FAT32Driver::To83Format(const char *src, char *dst)
         }
     }
 }
+
+bool FAT32Driver::CopyFileFrom(FAT32Driver *src_fs, const char *src_path,
+                               const char *dst_path)
+{
+    // ソースファイルのサイズを取得
+    uint32_t size = src_fs->GetFileSize(src_path);
+    if (size == 0)
+    {
+        kprintf("[FAT32] File not found or empty: %s\n", src_path);
+        return false;
+    }
+
+    kprintf("[FAT32] Copying file from %s to %s... (%d bytes)\n", src_path,
+            dst_path, size);
+
+    // バッファを確保
+    uint8_t *buf = static_cast<uint8_t *>(MemoryManager::Allocate(size));
+    if (!buf)
+    {
+        kprintf("[FAT32] Failed to allocate buffer for file copy.\n");
+        return false;
+    }
+
+    // ソースファイルを読み込み
+    if (src_fs->ReadFile(src_path, buf, size) != size)
+    {
+        kprintf("[FAT32] Read failed.\n");
+        MemoryManager::Free(buf, size);
+        return false;
+    }
+
+    // コピー先のディレクトリパスとファイル名を分離
+    char dir_part[64];
+    const char *filename_part = dst_path;
+    const char *last_slash = nullptr;
+
+    for (const char *p = dst_path; *p; ++p)
+    {
+        if (*p == '/')
+            last_slash = p;
+    }
+
+    uint32_t parent_cluster = 0;
+
+    if (last_slash)
+    {
+        int len = last_slash - dst_path;
+        if (len > 63)
+            len = 63;
+        for (int i = 0; i < len; ++i)
+            dir_part[i] = dst_path[i];
+        dir_part[len] = '\0';
+
+        filename_part = last_slash + 1;
+
+        if (len > 0)
+        {
+            parent_cluster = EnsureDirectory(dir_part);
+            if (parent_cluster == 0)
+            {
+                kprintf("[FAT32] Failed to ensure directory: %s\n", dir_part);
+                MemoryManager::Free(buf, size);
+                return false;
+            }
+        }
+    }
+
+    // 8.3形式に変換してファイルを書き込み
+    char name83[11];
+    To83Format(filename_part, name83);
+
+    WriteFile(name83, buf, size, parent_cluster);
+
+    MemoryManager::Free(buf, size);
+    return true;
+}
+
 } // namespace FileSystem

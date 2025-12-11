@@ -4,7 +4,6 @@
 #include "block_device.hpp"
 #include "fat32_defs.hpp"
 
-
 namespace FileSystem
 {
 
@@ -31,6 +30,14 @@ class FAT32Driver
                     uint32_t parent_cluster = 0);
 
     static void To83Format(const char *src, char *dst);
+
+    // 別のFAT32ファイルシステムからファイルをコピー
+    // src_fs: コピー元ファイルシステム
+    // src_path: コピー元パス
+    // dst_path: コピー先パス
+    // 戻り値: 成功時true
+    bool CopyFileFrom(FAT32Driver *src_fs, const char *src_path,
+                      const char *dst_path);
 
   private:
     BlockDevice *dev_;

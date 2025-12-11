@@ -17,7 +17,7 @@ class System
     {
         static constexpr int Major = 0;
         static constexpr int Minor = 5;
-        static constexpr int Patch = 6;
+        static constexpr int Patch = 7;
         static constexpr int Revision = 0;
     } Version;
     const static struct BuildInfo
@@ -26,7 +26,7 @@ class System
         {
             static constexpr int Year = 2025;
             static constexpr int Month = 12;
-            static constexpr int Day = 5;
+            static constexpr int Day = 11;
         } Date;
         const static int ReleaseType = RELEASE_TYPE__ALPHA;
     } BuildInfo;
