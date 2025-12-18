@@ -6,6 +6,7 @@
 #include "keyboard_layout.hpp"
 #include "printk.hpp"
 #include "shell/shell.hpp"
+#include "task/scheduler.hpp"
 #include <stdint.h>
 
 // IDTの実体 (256個の割り込みに対応)
@@ -209,17 +210,21 @@ __attribute__((interrupt)) void UsbInterruptHandler(InterruptFrame *frame)
 
 __attribute__((interrupt)) void TimerHandler(InterruptFrame *frame)
 {
+    // EOIを先に送信（コンテキストスイッチ前に送信することが重要）
+    if (g_lapic)
+    {
+        g_lapic->EndOfInterrupt();
+    }
+
     // USB処理を実行
     extern USB::Keyboard *g_usb_keyboard;
     if (g_usb_keyboard)
     {
         g_usb_keyboard->Update();
     }
-    // EOI送信
-    if (g_lapic)
-    {
-        g_lapic->EndOfInterrupt();
-    }
+
+    // スケジューラでタスク切り替え（プリエンプション）
+    Scheduler::Schedule();
 }
 
 void SetupInterrupts()

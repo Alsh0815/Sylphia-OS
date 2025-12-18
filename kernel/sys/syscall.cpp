@@ -5,6 +5,8 @@
 #include "memory/memory_manager.hpp"
 #include "printk.hpp"
 #include "sys/std/file_descriptor.hpp"
+#include "task/scheduler.hpp"
+#include "task/task_manager.hpp"
 #include <stdint.h>
 
 // アプリ実行状態（elf_loader.cppで定義）
@@ -39,18 +41,33 @@ extern "C" uint64_t SyscallHandler(uint64_t syscall_number, uint64_t arg1,
             return 0;
 
         case 2: // Exit
+        {
             kprintf("\n[Kernel] App Exited via Syscall.\n");
 
             // アプリ実行状態をリセット
             g_app_running = false;
 
-            // ★ 修正: 安全にコンテキストを復元して戻る関数を呼ぶ
-            ExitApp();
+            // マルチタスク環境かどうかを確認
+            Task *current = TaskManager::GetCurrentTask();
+            if (current && current->is_app)
+            {
+                // マルチタスク環境: タスクを終了
+                TaskManager::TerminateTask(current);
+                TaskManager::SetCurrentTask(nullptr);
+                Scheduler::Schedule(); // 次のタスクへ
+                // ここには戻ってこない
+            }
+            else
+            {
+                // レガシー: 旧式のExitApp()を呼ぶ
+                ExitApp();
+            }
 
             // ここには戻ってこない
             while (1)
                 __asm__ volatile("hlt");
             return 0;
+        }
 
         case 3: // ListDirectory (ls)
             // arg1: cluster (0=Root)
@@ -108,6 +125,23 @@ extern "C" uint64_t SyscallHandler(uint64_t syscall_number, uint64_t arg1,
                 return ret;
             }
             return -1;
+        }
+
+        case 10: // Yield (自発的にCPUを手放す)
+            Scheduler::Yield();
+            return 0;
+
+        case 11: // TaskExit (タスク終了)
+        {
+            Task *current = TaskManager::GetCurrentTask();
+            if (current)
+            {
+                TaskManager::TerminateTask(current);
+                TaskManager::SetCurrentTask(nullptr);
+                Scheduler::Schedule(); // 次のタスクへ
+            }
+            // ここには戻ってこない
+            return 0;
         }
 
         default:

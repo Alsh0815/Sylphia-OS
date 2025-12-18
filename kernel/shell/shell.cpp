@@ -8,6 +8,7 @@
 #include "sys/logger/logger.hpp"
 #include "sys/std/file_descriptor.hpp"
 #include "sys/sys.hpp"
+#include "task/task.hpp"
 #include <std/string.hpp>
 
 Shell *g_shell = nullptr;
@@ -476,9 +477,17 @@ void Shell::ExecuteSingleCommand(char *cmd_line)
         char path[64];
         strcpy(path, "/sys/bin/");
         strcat(path, argv[0]);
-        if (!ElfLoader::LoadAndRun(path, argc, argv))
+
+        // 新しい非同期実行API（マルチタスク対応）
+        Task *task = ElfLoader::CreateProcess(path, argc, argv);
+        if (!task)
         {
-            kprintf("Unknown command: %s\n", argv[0]);
+            // CreateProcessが失敗した場合、レガシーAPIを試す
+            if (!ElfLoader::LoadAndRun(path, argc, argv))
+            {
+                kprintf("Unknown command: %s\n", argv[0]);
+            }
         }
+        // CreateProcessが成功した場合、即座にシェルに戻る
     }
 }

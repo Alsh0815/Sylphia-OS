@@ -15,6 +15,10 @@
 #include "sys/init/init.hpp"
 #include "sys/logger/logger.hpp"
 #include "sys/std/file_descriptor.hpp"
+#include "task/idle_task.hpp"
+#include "task/scheduler.hpp"
+#include "task/task_manager.hpp"
+#include "task/test_task.hpp"
 
 FileDescriptor *g_fds[16];
 
@@ -100,6 +104,18 @@ KernelMain(const FrameBufferConfig &config, const MemoryMap &memmap)
     Sys::Logger::g_event_logger->Info(Sys::Logger::LogType::Kernel,
                                       "Local APIC enabled.");
     IOAPIC::Enable(1, 0x40, g_lapic->GetID());
+
+    // 7.5. タスクマネージャとスケジューラの初期化
+    TaskManager::Initialize();
+    Scheduler::Initialize();
+    InitializeIdleTask();
+    InitializeTestTasks();
+    kprintf("[Kernel] Multitasking initialized.\n");
+
+    // スケジューラを有効化
+    Scheduler::Enable();
+
+    // タイマー開始（スケジューラ有効化後）
     g_lapic->StartTimer(10, 0x20);
 
     // 8. シェル表示
@@ -109,7 +125,7 @@ KernelMain(const FrameBufferConfig &config, const MemoryMap &memmap)
     kprintf("\nWelcome to Sylphia-OS!\n");
     kprintf("Sylphia> ");
 
-    // 9. メインループ
+    // 9. メインループ（アイドルタスクとして動作）
     while (1)
         __asm__ volatile("hlt");
 }

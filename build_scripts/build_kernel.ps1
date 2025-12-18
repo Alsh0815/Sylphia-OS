@@ -7,10 +7,13 @@ $NASM = "nasm"
 
 New-Item -ItemType Directory -Force -Path "..\build" | Out-Null
 
-$ASM_SOURCES = @("..\kernel\asmfunc.asm")
+$ASM_SOURCES = @(
+    "..\kernel\task\context_switch.asm",
+    "..\kernel\asmfunc.asm"
+)
 $SOURCES = @(
     "..\kernel\main.cpp", "..\kernel\cxx.cpp", "..\kernel\new.cpp",
-    "..\kernel\app\elf\elf_loader.cpp",
+    "..\kernel\app\elf\app_wrapper.cpp", "..\kernel\app\elf\elf_loader.cpp",
     "..\kernel\driver\nvme\nvme_driver.cpp",
     "..\kernel\driver\usb\keyboard\keyboard.cpp", "..\kernel\driver\usb\mass_storage\mass_storage.cpp", "..\kernel\driver\usb\xhci.cpp",
     "..\kernel\fs\fat32\fat32_driver.cpp", "..\kernel\fs\fat32\fat32.cpp", "..\kernel\fs\gpt.cpp", "..\kernel\fs\installer.cpp",
@@ -22,6 +25,7 @@ $SOURCES = @(
     "..\kernel\sys\std\file_descriptor.cpp",
     "..\kernel\sys\sys.cpp",
     "..\kernel\sys\syscall.cpp",
+    "..\kernel\task\idle_task.cpp", "..\kernel\task\scheduler.cpp", "..\kernel\task\task_manager.cpp", "..\kernel\task\test_task.cpp",
     "..\kernel\apic.cpp", "..\kernel\console.cpp", "..\kernel\font.cpp", "..\kernel\graphics.cpp",
     "..\kernel\interrupt.cpp", "..\kernel\ioapic.cpp", "..\kernel\keyboard_layout.cpp", "..\kernel\paging.cpp",
     "..\kernel\pic.cpp", "..\kernel\printk.cpp", "..\kernel\segmentation.cpp"
