@@ -83,8 +83,8 @@ ExitApp:
     pop r12
     pop rbx
     pop rbp
-    cli
     swapgs
+    sti                 ; 割り込みを有効化
     ret
 
 ; void LoadCR3(uint64_t pml4_addr);

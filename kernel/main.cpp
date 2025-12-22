@@ -109,7 +109,7 @@ KernelMain(const FrameBufferConfig &config, const MemoryMap &memmap)
     TaskManager::Initialize();
     Scheduler::Initialize();
     InitializeIdleTask();
-    InitializeTestTasks();
+    // InitializeTestTasks();  // テスト用タスクは無効化
     kprintf("[Kernel] Multitasking initialized.\n");
 
     // スケジューラを有効化

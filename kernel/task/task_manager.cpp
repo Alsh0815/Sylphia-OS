@@ -3,6 +3,7 @@
 #include "../memory/memory_manager.hpp"
 #include "../paging.hpp"
 #include "../printk.hpp"
+#include <std/string.hpp>
 
 // 静的メンバ変数の定義
 Task *TaskManager::current_task_ = nullptr;
@@ -94,6 +95,58 @@ Task *TaskManager::CreateTask(uint64_t entry_point)
     return task;
 }
 
+// アプリタスク作成（Ring 3対応: 専用ページテーブル付き）
+Task *TaskManager::CreateAppTask(uint64_t wrapper_entry, uint64_t app_entry)
+{
+    // 基本のタスクを作成
+    Task *task = CreateTask(wrapper_entry);
+    if (!task)
+    {
+        return nullptr;
+    }
+
+    // アプリとしてマーク
+    task->is_app = true;
+    task->entry_point = app_entry;
+
+    // プロセス専用のページテーブルを作成
+    uint64_t process_cr3 = PageManager::CreateProcessPageTable();
+    if (process_cr3 == 0)
+    {
+        kprintf("[TaskManager] Failed to create process page table\n");
+        TerminateTask(task);
+        return nullptr;
+    }
+    task->context.cr3 = process_cr3;
+
+    // ユーザースタックを確保（プロセス専用ページテーブル内）
+    // スタックアドレス: 0x70000000 (仮想アドレス)
+    // スタックサイズ: 64KB
+    const uint64_t kUserStackTop = 0x70000000;
+    const uint64_t kUserStackSize = 64 * 1024;
+    const uint64_t kUserStackBase = kUserStackTop - kUserStackSize;
+
+    if (!PageManager::AllocateVirtualForProcess(
+            process_cr3, kUserStackBase, kUserStackSize,
+            PageManager::kPresent | PageManager::kWritable |
+                PageManager::kUser))
+    {
+        kprintf("[TaskManager] Failed to allocate user stack\n");
+        PageManager::FreeProcessPageTable(process_cr3);
+        TerminateTask(task);
+        return nullptr;
+    }
+
+    task->user_stack = reinterpret_cast<void *>(kUserStackBase);
+    task->user_stack_size = kUserStackSize;
+    task->user_stack_top = kUserStackTop;
+
+    kprintf("[TaskManager] Created AppTask ID=%lu, AppEntry=%lx, CR3=%lx\n",
+            task->task_id, app_entry, process_cr3);
+
+    return task;
+}
+
 void TaskManager::TerminateTask(Task *task)
 {
     if (!task)
@@ -105,7 +158,32 @@ void TaskManager::TerminateTask(Task *task)
     // 状態を終了済みに変更
     task->state = TaskState::TERMINATED;
 
-    // スタックを解放
+    // アプリタスクの場合、プロセス専用リソースを解放
+    if (task->is_app)
+    {
+        // プロセス専用ページテーブルを解放
+        if (task->context.cr3 != 0 &&
+            task->context.cr3 != PageManager::GetKernelCR3())
+        {
+            PageManager::FreeProcessPageTable(task->context.cr3);
+        }
+
+        // argv配列を解放
+        if (task->argv)
+        {
+            for (int i = 0; i < task->argc; ++i)
+            {
+                if (task->argv[i])
+                {
+                    MemoryManager::Free(task->argv[i],
+                                        strlen(task->argv[i]) + 1);
+                }
+            }
+            MemoryManager::Free(task->argv, sizeof(char *) * (task->argc + 1));
+        }
+    }
+
+    // カーネルスタックを解放
     if (task->kernel_stack)
     {
         MemoryManager::Free(task->kernel_stack, task->kernel_stack_size);

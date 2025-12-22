@@ -3,10 +3,12 @@
 #include "driver/usb/xhci.hpp"
 #include "fs/fat32/fat32_driver.hpp"
 #include "memory/memory_manager.hpp"
+#include "paging.hpp"
 #include "printk.hpp"
 #include "sys/std/file_descriptor.hpp"
 #include "task/scheduler.hpp"
 #include "task/task_manager.hpp"
+#include <std/string.hpp>
 #include <stdint.h>
 
 // アプリ実行状態（elf_loader.cppで定義）
@@ -47,15 +49,60 @@ extern "C" uint64_t SyscallHandler(uint64_t syscall_number, uint64_t arg1,
             // アプリ実行状態をリセット
             g_app_running = false;
 
+            // キーボードバッファをフラッシュ（残りの入力がシェルに渡されないように）
+            if (g_fds[0] && g_fds[0]->GetType() == FDType::FD_KEYBOARD)
+            {
+                g_fds[0]->Flush();
+            }
+
             // マルチタスク環境かどうかを確認
             Task *current = TaskManager::GetCurrentTask();
             if (current && current->is_app)
             {
-                // マルチタスク環境: タスクを終了
-                TaskManager::TerminateTask(current);
+                // 重要: Exit処理中は割り込みを無効化
+                // (タイマー割り込みでIdleTaskに切り替わるのを防ぐ)
+                __asm__ volatile("cli");
+
+                // 重要: タスク情報を先にローカル変数に保存
+                // (キューから削除後にcurrentが無効になる可能性があるため)
+                uint64_t task_cr3 = current->context.cr3;
+                char **task_argv = current->argv;
+                int task_argc = current->argc;
+
+                // カーネルのページテーブルに戻す
+                PageManager::SwitchPageTable(PageManager::GetKernelCR3());
+
+                // タスクをキューから削除
+                TaskManager::RemoveFromReadyQueue(current);
+                current->state = TaskState::TERMINATED;
                 TaskManager::SetCurrentTask(nullptr);
-                Scheduler::Schedule(); // 次のタスクへ
-                // ここには戻ってこない
+
+                // プロセス専用ページテーブルを解放
+                uint64_t kernel_cr3 = PageManager::GetKernelCR3();
+                bool should_free = (task_cr3 != 0 && task_cr3 != kernel_cr3);
+                if (should_free)
+                {
+                    PageManager::FreeProcessPageTable(task_cr3);
+                }
+
+                // argv配列を解放
+                if (task_argv)
+                {
+                    for (int i = 0; i < task_argc; ++i)
+                    {
+                        if (task_argv[i])
+                        {
+                            MemoryManager::Free(task_argv[i],
+                                                strlen(task_argv[i]) + 1);
+                        }
+                    }
+                    MemoryManager::Free(task_argv,
+                                        sizeof(char *) * (task_argc + 1));
+                }
+
+                // レガシー方式でカーネルに戻る（スタック解放はしない）
+                // ExitAppはg_kernel_rsp_saveに保存されたカーネルスタックに戻る
+                ExitApp();
             }
             else
             {

@@ -78,27 +78,16 @@ bool ElfLoader::LoadElf(const char *filename, uint64_t *entry_point_out)
             uint64_t end_page = (vaddr_start + mem_size + 0xFFF) & ~0xFFF;
             uint64_t alloc_size = end_page - start_page;
 
-            static uint64_t last_allocated_start = 0;
-            static uint64_t last_allocated_end = 0;
-
-            if (start_page < last_allocated_end &&
-                end_page > last_allocated_start)
+            // 注意: 各プロセスは独自のページテーブルを持つため、
+            // 毎回メモリを確保する必要がある
+            if (!PageManager::AllocateVirtual(start_page, alloc_size,
+                                              PageManager::kPresent |
+                                                  PageManager::kWritable |
+                                                  PageManager::kUser))
             {
-                // 既に確保済み
-            }
-            else
-            {
-                if (!PageManager::AllocateVirtual(start_page, alloc_size,
-                                                  PageManager::kPresent |
-                                                      PageManager::kWritable |
-                                                      PageManager::kUser))
-                {
-                    kprintf("Memory allocation failed at %lx\n", vaddr_start);
-                    MemoryManager::Free(file_buf, buf_size);
-                    return false;
-                }
-                last_allocated_start = start_page;
-                last_allocated_end = end_page;
+                kprintf("Memory allocation failed at %lx\n", vaddr_start);
+                MemoryManager::Free(file_buf, buf_size);
+                return false;
             }
 
             uint8_t *src = static_cast<uint8_t *>(file_buf) + ph->p_offset;
@@ -122,25 +111,36 @@ bool ElfLoader::LoadElf(const char *filename, uint64_t *entry_point_out)
 // 新API: ELFをロードしてタスクを作成（非同期）
 Task *ElfLoader::CreateProcess(const char *filename, int argc, char **argv)
 {
-    uint64_t entry_point = 0;
-
-    // ELFファイルをロード
-    if (!LoadElf(filename, &entry_point))
-    {
-        return nullptr;
-    }
-
-    // アプリタスクを作成
+    // アプリタスクを作成（専用ページテーブル付き）
     Task *task =
-        TaskManager::CreateTask(reinterpret_cast<uint64_t>(AppTaskEntry));
+        TaskManager::CreateAppTask(reinterpret_cast<uint64_t>(AppTaskEntry), 0);
     if (!task)
     {
-        kprintf("[ElfLoader] Failed to create task\n");
+        kprintf("[ElfLoader] Failed to create app task\n");
         return nullptr;
     }
 
-    // タスクにアプリ情報を設定
-    task->is_app = true;
+    // プロセス専用ページテーブルにELFをロード
+    uint64_t entry_point = 0;
+
+    // ELFファイルをロード（プロセスのページテーブルにロード）
+    // 一時的にプロセスのページテーブルに切り替え
+    uint64_t kernel_cr3 = PageManager::GetKernelCR3();
+    PageManager::SwitchPageTable(task->context.cr3);
+
+    bool load_success = LoadElf(filename, &entry_point);
+
+    // カーネルのページテーブルに戻す
+    PageManager::SwitchPageTable(kernel_cr3);
+
+    if (!load_success)
+    {
+        kprintf("[ElfLoader] Failed to load ELF: %s\n", filename);
+        TaskManager::TerminateTask(task);
+        return nullptr;
+    }
+
+    // エントリーポイントを設定
     task->entry_point = entry_point;
     task->argc = argc;
 
@@ -172,8 +172,8 @@ Task *ElfLoader::CreateProcess(const char *filename, int argc, char **argv)
     // タスクをレディキューに追加
     TaskManager::AddToReadyQueue(task);
 
-    kprintf("[ElfLoader] Created process '%s' (ID=%lu, Entry=%lx)\n", filename,
-            task->task_id, entry_point);
+    kprintf("[ElfLoader] Created process '%s' (ID=%lu, Entry=%lx, CR3=%lx)\n",
+            filename, task->task_id, entry_point, task->context.cr3);
 
     return task;
 }
@@ -241,27 +241,15 @@ bool ElfLoader::LoadAndRun(const char *filename, int argc, char **argv)
             uint64_t end_page = (vaddr_start + mem_size + 0xFFF) & ~0xFFF;
             uint64_t alloc_size = end_page - start_page;
 
-            static uint64_t last_allocated_start = 0;
-            static uint64_t last_allocated_end = 0;
-
-            if (start_page < last_allocated_end &&
-                end_page > last_allocated_start)
+            // 注意: レガシーモードでも毎回メモリを確保
+            if (!PageManager::AllocateVirtual(start_page, alloc_size,
+                                              PageManager::kPresent |
+                                                  PageManager::kWritable |
+                                                  PageManager::kUser))
             {
-                // skip
-            }
-            else
-            {
-                if (!PageManager::AllocateVirtual(start_page, alloc_size,
-                                                  PageManager::kPresent |
-                                                      PageManager::kWritable |
-                                                      PageManager::kUser))
-                {
-                    kprintf("Memory allocation failed at %lx\n", vaddr_start);
-                    MemoryManager::Free(file_buf, buf_size);
-                    return false;
-                }
-                last_allocated_start = start_page;
-                last_allocated_end = end_page;
+                kprintf("Memory allocation failed at %lx\n", vaddr_start);
+                MemoryManager::Free(file_buf, buf_size);
+                return false;
             }
 
             uint8_t *src = static_cast<uint8_t *>(file_buf) + ph->p_offset;

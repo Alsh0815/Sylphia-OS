@@ -65,4 +65,9 @@ struct Task
     int argc;             // 引数の数
     char **argv;          // 引数配列
     bool is_app;          // アプリタスクかどうか
+
+    // Ring 3プロセス用フィールド
+    void *user_stack;         // ユーザースタックの仮想アドレス
+    uint64_t user_stack_size; // ユーザースタックのサイズ
+    uint64_t user_stack_top;  // ユーザースタックのトップ（SPの初期値）
 };

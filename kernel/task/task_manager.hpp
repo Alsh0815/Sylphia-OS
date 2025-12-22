@@ -12,6 +12,12 @@ class TaskManager
     // 戻り値: 作成されたタスクへのポインタ
     static Task *CreateTask(uint64_t entry_point);
 
+    // アプリタスク作成（Ring 3対応: 専用ページテーブル付き）
+    // wrapper_entry: カーネル側のラッパー関数アドレス
+    // app_entry: アプリのエントリーポイント
+    // 戻り値: 作成されたタスクへのポインタ
+    static Task *CreateAppTask(uint64_t wrapper_entry, uint64_t app_entry);
+
     // タスク終了
     static void TerminateTask(Task *task);
 
