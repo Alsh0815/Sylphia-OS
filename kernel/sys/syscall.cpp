@@ -1,6 +1,5 @@
 #include "syscall.hpp"
 #include "app/elf/elf_loader.hpp"
-#include "driver/usb/xhci.hpp"
 #include "fs/fat32/fat32_driver.hpp"
 #include "memory/memory_manager.hpp"
 #include "paging.hpp"
@@ -189,6 +188,79 @@ extern "C" uint64_t SyscallHandler(uint64_t syscall_number, uint64_t arg1,
             }
             // ここには戻ってこない
             return 0;
+        }
+
+        case 20: // Spawn (プロセス起動)
+        {
+            // arg1: path (char*)
+            // arg2: argc (int)
+            // arg3: argv (char**)
+            // 戻り値: タスクID (成功) または 0 (失敗)
+            const char *path = reinterpret_cast<const char *>(arg1);
+            int argc = static_cast<int>(arg2);
+            char **argv = reinterpret_cast<char **>(arg3);
+
+            Task *task = ElfLoader::CreateProcess(path, argc, argv);
+            if (task)
+            {
+                return task->task_id;
+            }
+            return 0;
+        }
+
+        case 21: // Open (ファイルオープン)
+        {
+            // arg1: path (char*)
+            // arg2: flags (int) - 現在は未使用
+            // 戻り値: fd (成功) または -1 (失敗)
+            const char *path = reinterpret_cast<const char *>(arg1);
+
+            // 空きfdを探す (3以降を使用、0-2は標準I/O)
+            for (int fd = 3; fd < 16; ++fd)
+            {
+                if (g_fds[fd] == nullptr)
+                {
+                    // FileFDを作成
+                    FileFD *file_fd = new FileFD(path);
+                    if (file_fd->IsValid())
+                    {
+                        g_fds[fd] = file_fd;
+                        return fd;
+                    }
+                    delete file_fd;
+                    return -1;
+                }
+            }
+            return -1; // fdが足りない
+        }
+
+        case 22: // Close (ファイルクローズ)
+        {
+            // arg1: fd (int)
+            // 戻り値: 0 (成功) または -1 (失敗)
+            int fd = static_cast<int>(arg1);
+            if (fd >= 3 && fd < 16 && g_fds[fd])
+            {
+                delete g_fds[fd];
+                g_fds[fd] = nullptr;
+                return 0;
+            }
+            return -1;
+        }
+
+        case 23: // DeleteFile (ファイル削除)
+        {
+            // arg1: path (char*)
+            // 戻り値: 0 (成功) または -1 (失敗)
+            const char *path = reinterpret_cast<const char *>(arg1);
+            if (FileSystem::g_fat32_driver)
+            {
+                if (FileSystem::g_fat32_driver->DeleteFile(path))
+                {
+                    return 0;
+                }
+            }
+            return -1;
         }
 
         default:

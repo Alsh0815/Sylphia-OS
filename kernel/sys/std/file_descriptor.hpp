@@ -189,6 +189,48 @@ class PipeFD : public FileDescriptor
     }
 };
 
+// ---------------------------------------------------------
+// File Descriptor (FAT32 File)
+// ---------------------------------------------------------
+namespace FileSystem
+{
+class FAT32Driver;
+extern FAT32Driver *g_fat32_driver;
+} // namespace FileSystem
+
+class FileFD : public FileDescriptor
+{
+  private:
+    static const uint32_t kMaxFileSize = 64 * 1024; // 最大64KB
+    char *buffer_;
+    uint32_t file_size_;
+    uint32_t read_pos_;
+    bool valid_;
+    char path_[128];
+
+  public:
+    FileFD(const char *path);
+    ~FileFD();
+
+    bool IsValid() const
+    {
+        return valid_;
+    }
+
+    int Read(void *buf, size_t len) override;
+
+    int Write(const void *buf, size_t len) override
+    {
+        // 現在は読み取り専用
+        return -1;
+    }
+
+    FDType GetType() const override
+    {
+        return FD_FILE;
+    }
+};
+
 // Global File Descriptor Table
 // 0: Stdin, 1: Stdout, 2: Stderr
 extern FileDescriptor *g_fds[16];

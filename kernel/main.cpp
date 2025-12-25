@@ -11,14 +11,12 @@
 #include "memory/memory_manager.hpp"
 #include "pci/pci.hpp"
 #include "printk.hpp"
-#include "shell/shell.hpp"
 #include "sys/init/init.hpp"
 #include "sys/logger/logger.hpp"
 #include "sys/std/file_descriptor.hpp"
 #include "task/idle_task.hpp"
 #include "task/scheduler.hpp"
 #include "task/task_manager.hpp"
-#include "task/test_task.hpp"
 
 FileDescriptor *g_fds[16];
 
@@ -93,11 +91,7 @@ KernelMain(const FrameBufferConfig &config, const MemoryMap &memmap)
         kprintf("NVMe Controller not found.\n");
     }
 
-    // 6. シェル起動
-    static Shell shell;
-    g_shell = &shell;
-
-    // 7. APIC設定
+    // 6. APIC設定
     static LocalAPIC lapic;
     g_lapic = &lapic;
     g_lapic->Enable();
@@ -105,27 +99,25 @@ KernelMain(const FrameBufferConfig &config, const MemoryMap &memmap)
                                       "Local APIC enabled.");
     IOAPIC::Enable(1, 0x40, g_lapic->GetID());
 
-    // 7.5. タスクマネージャとスケジューラの初期化
+    // 7. タスクマネージャとスケジューラの初期化
     TaskManager::Initialize();
     Scheduler::Initialize();
     InitializeIdleTask();
-    // InitializeTestTasks();  // テスト用タスクは無効化
     kprintf("[Kernel] Multitasking initialized.\n");
+
+    kprintf("\nWelcome to Sylphia-OS!\n");
+    kprintf("[Kernel] Starting scheduler... Shell will be auto-started.\n");
 
     // スケジューラを有効化
     Scheduler::Enable();
 
     // タイマー開始（スケジューラ有効化後）
+    // スケジューラが有効になるとIdleTaskに切り替わり、
+    // IdleTaskが必須プロセス（シェル等）を自動起動する
     g_lapic->StartTimer(10, 0x20);
 
-    // 8. シェル表示
-    g_shell->OnKey(0);
-    Sys::Logger::g_event_logger->Info(Sys::Logger::LogType::Kernel,
-                                      "Shell initialized.");
-    kprintf("\nWelcome to Sylphia-OS!\n");
-    kprintf("Sylphia> ");
-
-    // 9. メインループ（アイドルタスクとして動作）
+    // 8. メインループ（ここには到達しないはず）
+    // IdleTaskがスケジュールされ、以降の実行はそちらで行われる
     while (1)
         __asm__ volatile("hlt");
 }

@@ -5,7 +5,6 @@
 #include "io.hpp"
 #include "keyboard_layout.hpp"
 #include "printk.hpp"
-#include "shell/shell.hpp"
 #include "task/scheduler.hpp"
 #include <stdint.h>
 

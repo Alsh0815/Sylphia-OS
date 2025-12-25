@@ -70,4 +70,14 @@ struct Task
     void *user_stack;         // ユーザースタックの仮想アドレス
     uint64_t user_stack_size; // ユーザースタックのサイズ
     uint64_t user_stack_top;  // ユーザースタックのトップ（SPの初期値）
+
+    // プロセスごとのファイルディスクリプタテーブル
+    // nullptr の場合はグローバルな g_fds を使用（後方互換性）
+    // 0: stdin, 1: stdout, 2: stderr, 3-15: その他
+    static const int kMaxFDs = 16;
+    void *process_fds[kMaxFDs]; // FileDescriptor*
+                                // の配列（循環参照回避のためvoid*）
+
+    // 親プロセスのタスクID（0 = カーネルから直接起動）
+    uint64_t parent_task_id;
 };

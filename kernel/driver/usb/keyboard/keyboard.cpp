@@ -3,7 +3,6 @@
 #include "cxx.hpp"
 #include "memory/memory_manager.hpp"
 #include "printk.hpp"
-#include "shell/shell.hpp"
 #include "sys/std/file_descriptor.hpp"
 
 USB::Keyboard *g_usb_keyboard = nullptr;
@@ -166,13 +165,11 @@ void Keyboard::Update()
 
                 if (ascii != 0)
                 {
-                    if (g_fds[0]->GetType() == FDType::FD_KEYBOARD)
+                    // キーボード入力はKeyboardFD経由で配送
+                    // シェル等のアプリはRead()で受け取る
+                    if (g_fds[0] && g_fds[0]->GetType() == FDType::FD_KEYBOARD)
                     {
                         ((KeyboardFD *)g_fds[0])->OnInput(ascii);
-                    }
-                    if (g_shell && !g_app_running)
-                    {
-                        g_shell->OnKey(ascii);
                     }
                 }
             }

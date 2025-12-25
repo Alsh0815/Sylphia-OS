@@ -194,6 +194,7 @@ void RunInstaller(FAT32Driver *nvme_fs, bool already_installed)
         // ファイルコピー
         nvme_fs->CopyFileFrom(usb_fs, "EFI/BOOT/BOOTX64.EFI",
                               "EFI/BOOT/BOOTX64.EFI");
+        nvme_fs->CopyFileFrom(usb_fs, "apps/shell.elf", "sys/bin/shell.elf");
         nvme_fs->CopyFileFrom(usb_fs, "apps/stdio.elf", "sys/bin/stdio.elf");
         nvme_fs->CopyFileFrom(usb_fs, "apps/test.elf", "sys/bin/test.elf");
         nvme_fs->CopyFileFrom(usb_fs, "kernel.elf", "kernel.elf");

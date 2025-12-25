@@ -25,11 +25,13 @@ void Scheduler::Schedule()
     Task *next = TaskManager::GetNextTask();
 
     // デバッグ: 最初の10回だけ出力
+    /*
     if (schedule_count_ < 10)
     {
         kprintf("[Sched] cur=%lx next=%lx\n", (uint64_t)current,
                 (uint64_t)next);
     }
+    */
 
     // 次のタスクがなければ何もしない
     if (!next)
