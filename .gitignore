@@ -18,3 +18,4 @@ build/*
 
 compile_flags.txt
 kernel_dump.txt
+setup_cmake.ps1

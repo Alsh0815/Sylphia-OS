@@ -1,0 +1,4 @@
+select vdisk file="D:\UserData\Developer Studio\source code\Sylphia-OS\usb.vhd"
+attach vdisk
+assign letter=V
+exit

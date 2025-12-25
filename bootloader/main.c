@@ -1,9 +1,23 @@
 #include "../uefi/uefi.h"
+#include <stddef.h>
+
+
+void *memset(void *s, int c, size_t n)
+{
+    unsigned char *p = (unsigned char *)s;
+    while (n--)
+        *p++ = (unsigned char)c;
+    return s;
+}
 
 EFI_GUID gEfiGraphicsOutputProtocolGuid = {
-    0x9042A9DE, 0x23DC, 0x4A38, {0x96, 0xFB, 0x7A, 0xDE, 0xD0, 0x80, 0x51, 0x6A}};
+    0x9042A9DE,
+    0x23DC,
+    0x4A38,
+    {0x96, 0xFB, 0x7A, 0xDE, 0xD0, 0x80, 0x51, 0x6A}};
 EFI_GUID gEfiLoadedImageProtocolGuid = EFI_LOADED_IMAGE_PROTOCOL_GUID;
-EFI_GUID gEfiSimpleFileSystemProtocolGuid = EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID;
+EFI_GUID gEfiSimpleFileSystemProtocolGuid =
+    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID;
 EFI_GUID gEfiFileInfoGuid = EFI_FILE_INFO_ID;
 
 EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
@@ -12,13 +26,12 @@ EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     EFI_GRAPHICS_OUTPUT_PROTOCOL *Gop;
 
     Status = SystemTable->BootServices->LocateProtocol(
-        &gEfiGraphicsOutputProtocolGuid,
-        (VOID *)0,
-        (VOID **)&Gop);
+        &gEfiGraphicsOutputProtocolGuid, (VOID *)0, (VOID **)&Gop);
 
     if (Status != EFI_SUCCESS)
     {
-        SystemTable->ConOut->OutputString(SystemTable->ConOut, (CHAR16 *)L"Error: GOP not found!\r\n");
+        SystemTable->ConOut->OutputString(
+            SystemTable->ConOut, (CHAR16 *)L"Error: GOP not found!\r\n");
         while (1)
             __asm__ volatile("hlt");
     }
@@ -33,7 +46,9 @@ EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
         FrameBuffer[i] = 0xFFFF8000;
     }
 
-    SystemTable->ConOut->OutputString(SystemTable->ConOut, (CHAR16 *)L"\r\nGetting Memory Map (Dynamic)...\r\n");
+    SystemTable->ConOut->OutputString(
+        SystemTable->ConOut,
+        (CHAR16 *)L"\r\nGetting Memory Map (Dynamic)...\r\n");
 
     UINTN MemoryMapSize = 0;
     EFI_MEMORY_DESCRIPTOR *MemoryMap = (void *)0;
@@ -41,12 +56,9 @@ EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     UINTN DescriptorSize;
     UINT32 DescriptorVersion;
 
-    Status = SystemTable->BootServices->GetMemoryMap(
-        &MemoryMapSize,
-        (void *)0,
-        &MapKey,
-        &DescriptorSize,
-        &DescriptorVersion);
+    Status = SystemTable->BootServices->GetMemoryMap(&MemoryMapSize, (void *)0,
+                                                     &MapKey, &DescriptorSize,
+                                                     &DescriptorVersion);
 
     if (Status != 0x80000005)
     {
@@ -57,22 +69,18 @@ EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
         MemoryMapSize += 4096;
 
         Status = SystemTable->BootServices->AllocatePool(
-            EfiLoaderData,
-            MemoryMapSize,
-            (VOID **)&MemoryMap);
+            EfiLoaderData, MemoryMapSize, (VOID **)&MemoryMap);
 
         if (Status != EFI_SUCCESS)
         {
-            SystemTable->ConOut->OutputString(SystemTable->ConOut, (CHAR16 *)L"AllocatePool Failed!\r\n");
+            SystemTable->ConOut->OutputString(
+                SystemTable->ConOut, (CHAR16 *)L"AllocatePool Failed!\r\n");
             while (1)
                 __asm__ volatile("hlt");
         }
 
         Status = SystemTable->BootServices->GetMemoryMap(
-            &MemoryMapSize,
-            MemoryMap,
-            &MapKey,
-            &DescriptorSize,
+            &MemoryMapSize, MemoryMap, &MapKey, &DescriptorSize,
             &DescriptorVersion);
 
         if (Status == EFI_SUCCESS)
@@ -85,38 +93,41 @@ EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
         }
         else
         {
-            SystemTable->ConOut->OutputString(SystemTable->ConOut, (CHAR16 *)L"GetMemoryMap Failed!\r\n");
+            SystemTable->ConOut->OutputString(
+                SystemTable->ConOut, (CHAR16 *)L"GetMemoryMap Failed!\r\n");
             while (1)
                 __asm__ volatile("hlt");
         }
     }
 
-    SystemTable->ConOut->OutputString(SystemTable->ConOut, (CHAR16 *)L"Memory Map Get: SUCCESS with AllocatePool!\r\n");
+    SystemTable->ConOut->OutputString(
+        SystemTable->ConOut,
+        (CHAR16 *)L"Memory Map Get: SUCCESS with AllocatePool!\r\n");
 
-    SystemTable->ConOut->OutputString(SystemTable->ConOut, (CHAR16 *)L"\r\nLoading kernel.elf...\r\n");
+    SystemTable->ConOut->OutputString(
+        SystemTable->ConOut, (CHAR16 *)L"\r\nLoading kernel.elf...\r\n");
 
     EFI_LOADED_IMAGE_PROTOCOL *LoadedImage;
     Status = SystemTable->BootServices->HandleProtocol(
-        ImageHandle,
-        &gEfiLoadedImageProtocolGuid,
-        (VOID **)&LoadedImage);
+        ImageHandle, &gEfiLoadedImageProtocolGuid, (VOID **)&LoadedImage);
 
     if (Status != EFI_SUCCESS)
     {
-        SystemTable->ConOut->OutputString(SystemTable->ConOut, (CHAR16 *)L"Error: LoadedImage not found\r\n");
+        SystemTable->ConOut->OutputString(
+            SystemTable->ConOut, (CHAR16 *)L"Error: LoadedImage not found\r\n");
         while (1)
             __asm__ volatile("hlt");
     }
 
     EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *FileSystem;
     Status = SystemTable->BootServices->HandleProtocol(
-        LoadedImage->DeviceHandle,
-        &gEfiSimpleFileSystemProtocolGuid,
+        LoadedImage->DeviceHandle, &gEfiSimpleFileSystemProtocolGuid,
         (VOID **)&FileSystem);
 
     if (Status != EFI_SUCCESS)
     {
-        SystemTable->ConOut->OutputString(SystemTable->ConOut, (CHAR16 *)L"Error: FileSystem not found\r\n");
+        SystemTable->ConOut->OutputString(
+            SystemTable->ConOut, (CHAR16 *)L"Error: FileSystem not found\r\n");
         while (1)
             __asm__ volatile("hlt");
     }
@@ -125,23 +136,21 @@ EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     Status = FileSystem->OpenVolume(FileSystem, &Root);
 
     EFI_FILE_PROTOCOL *KernelFile;
-    Status = Root->Open(
-        Root,
-        &KernelFile,
-        (CHAR16 *)L"kernel.elf",
-        EFI_FILE_MODE_READ,
-        0);
+    Status = Root->Open(Root, &KernelFile, (CHAR16 *)L"kernel.elf",
+                        EFI_FILE_MODE_READ, 0);
 
     if (Status != EFI_SUCCESS)
     {
-        SystemTable->ConOut->OutputString(SystemTable->ConOut, (CHAR16 *)L"Error: kernel.elf not found!\r\n");
+        SystemTable->ConOut->OutputString(
+            SystemTable->ConOut, (CHAR16 *)L"Error: kernel.elf not found!\r\n");
         while (1)
             __asm__ volatile("hlt");
     }
 
     VOID *HeaderBuffer;
     UINTN HeaderBufferSize = 4096;
-    Status = SystemTable->BootServices->AllocatePool(EfiLoaderData, HeaderBufferSize, &HeaderBuffer);
+    Status = SystemTable->BootServices->AllocatePool(
+        EfiLoaderData, HeaderBufferSize, &HeaderBuffer);
 
     UINTN ReadSizeHeader = HeaderBufferSize;
     KernelFile->Read(KernelFile, &ReadSizeHeader, HeaderBuffer);
@@ -151,7 +160,8 @@ EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     if (Ehdr->e_ident[0] != 0x7F || Ehdr->e_ident[1] != 'E' ||
         Ehdr->e_ident[2] != 'L' || Ehdr->e_ident[3] != 'F')
     {
-        SystemTable->ConOut->OutputString(SystemTable->ConOut, (CHAR16 *)L"Error: Not a valid ELF file!\r\n");
+        SystemTable->ConOut->OutputString(
+            SystemTable->ConOut, (CHAR16 *)L"Error: Not a valid ELF file!\r\n");
         while (1)
             __asm__ volatile("hlt");
     }
@@ -176,14 +186,14 @@ EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     EFI_PHYSICAL_ADDRESS KernelBaseAddr = KernelFirst; // 0x100000
 
     Status = SystemTable->BootServices->AllocatePages(
-        AllocateAddress,
-        EfiLoaderData,
-        NumPages,
-        &KernelBaseAddr);
+        AllocateAddress, EfiLoaderData, NumPages, &KernelBaseAddr);
 
     if (Status != EFI_SUCCESS)
     {
-        SystemTable->ConOut->OutputString(SystemTable->ConOut, (CHAR16 *)L"Error: Failed to allocate kernel memory at 0x100000.\r\n");
+        SystemTable->ConOut->OutputString(
+            SystemTable->ConOut,
+            (CHAR16
+                 *)L"Error: Failed to allocate kernel memory at 0x100000.\r\n");
         while (1)
             __asm__ volatile("hlt");
     }
@@ -194,21 +204,18 @@ EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     UINT8 FileInfoBuffer[256];
     EFI_FILE_INFO *FileInfo = (EFI_FILE_INFO *)FileInfoBuffer;
 
-    Status = KernelFile->GetInfo(
-        KernelFile,
-        &gEfiFileInfoGuid,
-        &FileInfoSize,
-        FileInfo);
+    Status = KernelFile->GetInfo(KernelFile, &gEfiFileInfoGuid, &FileInfoSize,
+                                 FileInfo);
 
     VOID *KernelBuffer;
     Status = SystemTable->BootServices->AllocatePool(
-        EfiLoaderData,
-        FileInfo->FileSize,
-        &KernelBuffer);
+        EfiLoaderData, FileInfo->FileSize, &KernelBuffer);
 
     if (Status != EFI_SUCCESS)
     {
-        SystemTable->ConOut->OutputString(SystemTable->ConOut, (CHAR16 *)L"Error: Failed to allocate file buffer.\r\n");
+        SystemTable->ConOut->OutputString(
+            SystemTable->ConOut,
+            (CHAR16 *)L"Error: Failed to allocate file buffer.\r\n");
         while (1)
             __asm__ volatile("hlt");
     }
@@ -219,12 +226,15 @@ EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 
     if (Status != EFI_SUCCESS)
     {
-        SystemTable->ConOut->OutputString(SystemTable->ConOut, (CHAR16 *)L"Error: Read failed\r\n");
+        SystemTable->ConOut->OutputString(SystemTable->ConOut,
+                                          (CHAR16 *)L"Error: Read failed\r\n");
         while (1)
             __asm__ volatile("hlt");
     }
 
-    SystemTable->ConOut->OutputString(SystemTable->ConOut, (CHAR16 *)L"Kernel Read Success. Loading Segments...\r\n");
+    SystemTable->ConOut->OutputString(
+        SystemTable->ConOut,
+        (CHAR16 *)L"Kernel Read Success. Loading Segments...\r\n");
 
     Ehdr = (Elf64_Ehdr *)KernelBuffer;
     Phdr = (Elf64_Phdr *)((UINT64)Ehdr + Ehdr->e_phoff);
@@ -240,12 +250,15 @@ EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
             UINTN RemainBytes = Phdr[i].p_memsz - Phdr[i].p_filesz;
             if (RemainBytes > 0)
             {
-                SetMem((VOID *)(Phdr[i].p_vaddr + Phdr[i].p_filesz), RemainBytes, 0);
+                SetMem((VOID *)(Phdr[i].p_vaddr + Phdr[i].p_filesz),
+                       RemainBytes, 0);
             }
         }
     }
 
-    SystemTable->ConOut->OutputString(SystemTable->ConOut, (CHAR16 *)L"Segments Loaded. Exiting Boot Services...\r\n");
+    SystemTable->ConOut->OutputString(
+        SystemTable->ConOut,
+        (CHAR16 *)L"Segments Loaded. Exiting Boot Services...\r\n");
 
     FrameBufferConfig Config;
     Config.FrameBufferBase = Gop->Mode->FrameBufferBase;
@@ -261,12 +274,9 @@ EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     }
     MemoryMapSize = 0;
 
-    Status = SystemTable->BootServices->GetMemoryMap(
-        &MemoryMapSize,
-        (void *)0,
-        &MapKey,
-        &DescriptorSize,
-        &DescriptorVersion);
+    Status = SystemTable->BootServices->GetMemoryMap(&MemoryMapSize, (void *)0,
+                                                     &MapKey, &DescriptorSize,
+                                                     &DescriptorVersion);
 
     UINTN BufferSize = MemoryMapSize + 4096;
 
@@ -275,13 +285,13 @@ EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
         BufferSize += 4096;
 
         Status = SystemTable->BootServices->AllocatePool(
-            EfiLoaderData,
-            BufferSize,
-            (VOID **)&MemoryMap);
+            EfiLoaderData, BufferSize, (VOID **)&MemoryMap);
 
         if (Status != EFI_SUCCESS)
         {
-            SystemTable->ConOut->OutputString(SystemTable->ConOut, (CHAR16 *)L"AllocatePool Failed at Exit\r\n");
+            SystemTable->ConOut->OutputString(
+                SystemTable->ConOut,
+                (CHAR16 *)L"AllocatePool Failed at Exit\r\n");
             while (1)
                 __asm__ volatile("hlt");
         }
@@ -289,10 +299,7 @@ EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
         MemoryMapSize = BufferSize;
 
         Status = SystemTable->BootServices->GetMemoryMap(
-            &MemoryMapSize,
-            MemoryMap,
-            &MapKey,
-            &DescriptorSize,
+            &MemoryMapSize, MemoryMap, &MapKey, &DescriptorSize,
             &DescriptorVersion);
 
         if (Status == EFI_SUCCESS)
@@ -311,15 +318,14 @@ EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     {
         MemoryMapSize = BufferSize;
         Status = SystemTable->BootServices->GetMemoryMap(
-            &MemoryMapSize,
-            MemoryMap,
-            &MapKey,
-            &DescriptorSize,
+            &MemoryMapSize, MemoryMap, &MapKey, &DescriptorSize,
             &DescriptorVersion);
 
         if (Status != EFI_SUCCESS)
         {
-            SystemTable->ConOut->OutputString(SystemTable->ConOut, (CHAR16 *)L"Final GetMemoryMap Failed!\r\n");
+            SystemTable->ConOut->OutputString(
+                SystemTable->ConOut,
+                (CHAR16 *)L"Final GetMemoryMap Failed!\r\n");
             while (1)
                 __asm__ volatile("hlt");
         }
