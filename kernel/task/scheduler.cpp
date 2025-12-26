@@ -13,7 +13,7 @@ void Scheduler::Initialize()
     kprintf("[Scheduler] Initialized.\n");
 }
 
-void Scheduler::Schedule()
+void Scheduler::Schedule(bool voluntary)
 {
     // スケジューラが無効なら何もしない
     if (!enabled_)
@@ -45,6 +45,17 @@ void Scheduler::Schedule()
         return;
     }
 
+    // 一時的な制限: ユーザーモードアプリ(is_app=true)がRUNNING中の場合、
+    // タイマーによる強制プリエンプションをスキップ。
+    // ただし、自発的なYieldの場合はスキップしない。
+    // これは、interrupt属性ハンドラーからのSwitchContextでスタックが
+    // 破損する問題を回避するため。
+    if (!voluntary && current && current->is_app &&
+        current->state == TaskState::RUNNING)
+    {
+        return;
+    }
+
     // 現在のタスクをレディキューの末尾に移動
     if (current && current->state == TaskState::RUNNING)
     {
@@ -61,10 +72,12 @@ void Scheduler::Schedule()
     schedule_count_++;
 
     // デバッグ: コンテキストスイッチ前
-    if (schedule_count_ <= 10)
-    {
-        kprintf("[Sched] Switching to Task ID=%lu\n", next->task_id);
-    }
+    /*
+    kprintf("[Sched] #%u: cur=%lx next=%lx(ID=%lu,is_app=%d)\n",
+            schedule_count_, reinterpret_cast<uint64_t>(current),
+            reinterpret_cast<uint64_t>(next), next->task_id,
+            next->is_app ? 1 : 0);
+    */
 
     // コンテキストスイッチを実行
     if (current)
@@ -84,7 +97,7 @@ void Scheduler::Yield()
 {
     // 割り込みを禁止してスケジュール
     __asm__ volatile("cli");
-    Schedule();
+    Schedule(true); // 自発的なYield
     __asm__ volatile("sti");
 }
 

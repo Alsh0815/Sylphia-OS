@@ -12,7 +12,9 @@ class Scheduler
 
     // タイマー割り込みから呼ばれるスケジュール関数
     // 現在のタスクのコンテキストを保存し、次のタスクへ切り替え
-    static void Schedule();
+    // voluntary: true=Yieldから呼ばれた(自発的),
+    // false=タイマーから呼ばれた(強制)
+    static void Schedule(bool voluntary = false);
 
     // 現在のタスクを終了して次へ
     static void Yield();

@@ -34,37 +34,28 @@ EnterUserMode:
     push r14
     push r15
     mov [g_kernel_rsp_save], rsp
-    ; 引数: RDI = entry_point, RSI = user_stack_tops
+    ; System V ABI: RDI = entry_point, RSI = user_stack_top, RDX = argc, RCX = argv
     cli                 ; 割り込み禁止（コンテキストスイッチ中）
     ; 1. SS (User Data Segment)
-    ; syscall.cpp の STAR設定 (0x18<<48) より、
-    ; Sysret CS = 0x18+16 = 0x28, Sysret SS = 0x18+8 = 0x20 と想定されます。
-    ; これに RPL=3 を付与 -> 0x23
     mov rax, 0x23
     push rax
     ; 2. RSP (User Stack Pointer)
     push rsi
     ; 3. RFLAGS
-    ; IF(Interrupt Enable)=1 (0x200) をセットして、ユーザーモードで割り込み許可
     pushf
     pop rax
     or rax, 0x200 
     push rax
     ; 4. CS (User Code Segment)
-    ; Sysret CS = 0x28, RPL=3 -> 0x2B
     mov rax, 0x2B
     push rax
     ; 5. RIP (Entry Point)
     push rdi
 
-    ; Setup Arguments for User Mode
-    ; Kernel (SysV): RDX=argc, RCX=argv
+    ; Setup Arguments for User Mode (ELF expects System V ABI)
     ; User (SysV):   RDI=argc, RSI=argv
-    
     mov rdi, rdx ; argc
     mov rsi, rcx ; argv
-
-    mov r12, rdx ; Preserve argc in R12 just in case
     
     ; セグメントレジスタの初期化 (DS, ES, FS, GS)
     mov ax, 0x23  ; User Data Segment
@@ -72,6 +63,8 @@ EnterUserMode:
     mov es, ax
     mov fs, ax
     mov gs, ax
+    ; swapgsでGS_BASEとKERNEL_GS_BASEを入れ替える
+    ; syscall時に再度swapgsすると、GS_BASEがg_syscall_contextを指すようになる
     iretq
 
 global ExitApp
@@ -83,7 +76,7 @@ ExitApp:
     pop r12
     pop rbx
     pop rbp
-    swapgs
+    ;swapgs
     sti                 ; 割り込みを有効化
     ret
 

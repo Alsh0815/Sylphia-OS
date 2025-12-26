@@ -222,7 +222,6 @@ __attribute__((interrupt)) void TimerHandler(InterruptFrame *frame)
         g_usb_keyboard->Update();
     }
 
-    // スケジューラでタスク切り替え（プリエンプション）
     Scheduler::Schedule();
 }
 

@@ -62,51 +62,14 @@ void print_hex(uint64_t n)
 
 extern "C" int main(int argc, char **argv)
 {
-    print("\n--- Argument Test App ---\n");
+    // 文字列リテラルを一切使わない最小テスト
+    // 'H', 'i', '!', '\n' を直接出力
+    PutChar('H');
+    PutChar('i');
+    PutChar('!');
+    PutChar('\n');
 
-    print("argc (dec): ");
-    print_int(argc);
-    print("\n");
-
-    print("argc (hex): ");
-    print_hex((uint64_t)argc);
-    print("\n");
-
-    print("argv: ");
-    print_hex((uint64_t)argv);
-    print("\n");
-
-    // Safety check before dereferencing argv
-    if (argv == 0)
-    {
-        print("argv is NULL!\n");
-    }
-    else
-    {
-        // Limit loop to avoid infinite printing if argc is huge garbage
-        int limit = argc;
-        if (limit > 10)
-            limit = 10;
-
-        for (int i = 0; i < limit; i++)
-        {
-            print("argv[");
-            print_int(i);
-            print("] = ");
-            print_hex((uint64_t)argv[i]);
-            print(" (");
-            if (argv[i])
-            {
-                print(argv[i]);
-            }
-            else
-            {
-                print("NULL");
-            }
-            print(")\n");
-        }
-    }
-
+    // Exitを呼ぶ
     Exit();
     return 0;
 }

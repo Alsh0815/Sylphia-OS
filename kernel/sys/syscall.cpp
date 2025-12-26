@@ -192,15 +192,48 @@ extern "C" uint64_t SyscallHandler(uint64_t syscall_number, uint64_t arg1,
 
         case 20: // Spawn (プロセス起動)
         {
-            // arg1: path (char*)
+            // arg1: path (char*) - ユーザー空間
             // arg2: argc (int)
-            // arg3: argv (char**)
+            // arg3: argv (char**) - ユーザー空間
             // 戻り値: タスクID (成功) または 0 (失敗)
-            const char *path = reinterpret_cast<const char *>(arg1);
-            int argc = static_cast<int>(arg2);
-            char **argv = reinterpret_cast<char **>(arg3);
 
-            Task *task = ElfLoader::CreateProcess(path, argc, argv);
+            // 重要: CreateProcess内でページテーブルが切り替わるため、
+            // ユーザー空間のポインタは無効になる。
+            // そのため、ここでカーネル空間にコピーする。
+
+            const char *user_path = reinterpret_cast<const char *>(arg1);
+            int argc = static_cast<int>(arg2);
+            char **user_argv = reinterpret_cast<char **>(arg3);
+
+            // pathをカーネル空間にコピー
+            char kernel_path[256];
+            strcpy(kernel_path, user_path);
+
+            // argvをカーネル空間にコピー
+            char *kernel_argv[32];
+            static char argv_buffer[32][256]; // 静的バッファ（簡易実装）
+
+            if (argc > 32)
+                argc = 32;
+
+            for (int i = 0; i < argc; ++i)
+            {
+                if (user_argv[i])
+                {
+                    strcpy(argv_buffer[i], user_argv[i]);
+                    kernel_argv[i] = argv_buffer[i];
+                }
+                else
+                {
+                    kernel_argv[i] = nullptr;
+                }
+            }
+
+            kprintf("[Syscall] Spawn: %s %d %p\n", kernel_path, argc,
+                    kernel_argv);
+
+            Task *task =
+                ElfLoader::CreateProcess(kernel_path, argc, kernel_argv);
             if (task)
             {
                 return task->task_id;
@@ -305,9 +338,16 @@ void InitializeSyscall()
     // 割り込み禁止(IF=0x200)をマスクして、syscall中は割り込み禁止にする
     WriteMSR(kMSR_FMASK, 0x200);
 
-    // KERNEL_GS_BASE: コンテキスト構造体のアドレス
-    WriteMSR(kMSR_KERNEL_GS_BASE,
-             reinterpret_cast<uint64_t>(g_syscall_context));
+    // GS_BASE設定:
+    // カーネルモードでは GS_BASE = g_syscall_context を使う
+    // EnterUserModeでのswapgsで: GS_BASE↔KERNEL_GS_BASE
+    //   → ユーザー: GS_BASE = 0, KERNEL_GS_BASE = g_syscall_context
+    // syscallでのswapgsで: GS_BASE↔KERNEL_GS_BASE
+    //   → カーネル: GS_BASE = g_syscall_context, KERNEL_GS_BASE = 0
+    // つまり、カーネル状態ではGS_BASEにg_syscall_contextがある必要がある
+    const uint32_t kMSR_GS_BASE = 0xC0000101;
+    WriteMSR(kMSR_GS_BASE, reinterpret_cast<uint64_t>(g_syscall_context));
+    WriteMSR(kMSR_KERNEL_GS_BASE, 0);
 
     kprintf("[Syscall] Initialized. Context at %lx\n", g_syscall_context);
 

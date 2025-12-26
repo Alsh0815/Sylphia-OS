@@ -18,7 +18,7 @@ class System
         static constexpr int Major = 0;
         static constexpr int Minor = 5;
         static constexpr int Patch = 8;
-        static constexpr int Revision = 1;
+        static constexpr int Revision = 2;
     } Version;
     const static struct BuildInfo
     {

@@ -55,9 +55,10 @@ class Shell
     static const int kMaxCommandLen = 256;
     char buffer_[kMaxCommandLen];
     int cursor_pos_;
+    bool prompt_shown_; // プロンプトが表示されているか
 
   public:
-    Shell() : cursor_pos_(0)
+    Shell() : cursor_pos_(0), prompt_shown_(false)
     {
         memset(buffer_, 0, kMaxCommandLen);
     }
@@ -65,6 +66,7 @@ class Shell
     void PrintPrompt()
     {
         Print("Sylphia:/$ ");
+        prompt_shown_ = true;
     }
 
     void Run()
@@ -92,6 +94,12 @@ class Shell
         if (c == 0)
             return;
 
+        // プロンプトが未表示なら表示（外部コマンド実行後の復帰時）
+        if (!prompt_shown_)
+        {
+            PrintPrompt();
+        }
+
         if (c == '\n')
         {
             // エンターキー: コマンド実行
@@ -101,7 +109,12 @@ class Shell
             // バッファクリアしてプロンプト再表示
             cursor_pos_ = 0;
             memset(buffer_, 0, kMaxCommandLen);
-            PrintPrompt();
+            // 外部コマンドでない場合はプロンプトを表示
+            // 外部コマンドの場合はアプリ終了後にOnKeyで表示
+            if (prompt_shown_)
+            {
+                PrintPrompt();
+            }
         }
         else if (c == '\b')
         {
@@ -217,6 +230,7 @@ class Shell
         {
             Print("=============== Sylphia-OS ZERO ===============\n");
             Print("Shell running in user mode!\n");
+            Print("Rust\n");
             Print("===============================================\n");
         }
         else if (strcmp(argv[0], "exit") == 0)
@@ -238,7 +252,11 @@ class Shell
                 Print(argv[0]);
                 Print("\n");
             }
-            // Spawnはすぐに戻るので、プロセスの終了は待たない
+            else
+            {
+                // アプリが起動したので、プロンプトはアプリ終了後に表示
+                prompt_shown_ = false;
+            }
         }
     }
 };
