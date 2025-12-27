@@ -9,13 +9,14 @@
 # Built Visual Studio Code Extensions
 *.vsix
 
-build/*
+build
+kernel/rust/target
+scripts/__pycache__
+sylphia_build_tool.egg-info
 *.code-workspace
 *.img
 *.log
 *.o
+*.obj
+*.txt
 *.vhd
-
-compile_flags.txt
-kernel_dump.txt
-setup_cmake.ps1

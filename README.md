@@ -29,19 +29,19 @@ C++ベースで実装されており、UEFIブート、xHCI (USB 3.0)、NVMeド�
     ```powershell
     git clone https://github.com/Alsh0815/Sylphia-OS.git
     cd Sylphia-OS
+    pip install -e .
     ```
 
 2. プロジェクトをビルドします。
 
     ```powershell
-    make
+    sylphia build
     ```
 
 ## QEMUでの実行方法
 
 ```powershell
-cd build_scripts
-.\run_qemu.ps1
+sylphia run
 ```
 
 ## ライセンス

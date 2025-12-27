@@ -1,5 +1,5 @@
 param (
-    [string]$BuildDir = "../build",
+    [string]$BuildDir = "../build/output",
     [string]$VhdPath = "../usb.vhd",
     [string]$DiskLetter = "V"
 )

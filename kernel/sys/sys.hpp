@@ -1,5 +1,11 @@
 #pragma once
 
+#ifdef DEBUG_BUILD
+#define SYLPHIA_DEBUG_ENABLED 1
+#else
+#define SYLPHIA_DEBUG_ENABLED 0
+#endif
+
 #ifndef __SYLPHIAOS_SYS_PRE_CONSTANTS__
 #define __SYLPHIAOS_SYS_PRE_CONSTANTS__
 
@@ -18,7 +24,7 @@ class System
         static constexpr int Major = 0;
         static constexpr int Minor = 5;
         static constexpr int Patch = 8;
-        static constexpr int Revision = 2;
+        static constexpr int Revision = 3;
     } Version;
     const static struct BuildInfo
     {
@@ -26,7 +32,7 @@ class System
         {
             static constexpr int Year = 2025;
             static constexpr int Month = 12;
-            static constexpr int Day = 25;
+            static constexpr int Day = 28;
         } Date;
         const static int ReleaseType = RELEASE_TYPE__ALPHA;
     } BuildInfo;
