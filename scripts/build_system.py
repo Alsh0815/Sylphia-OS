@@ -30,7 +30,9 @@ class BuildPackage(Enum):
     KERNEL = auto()
 
 class BuildTarget(Enum):
+    AARCH64 = auto()
     X86_64 = auto()
+    RISCV64 = auto()
 
 class SylphiaBuildSystem:
     def __init__(self):
@@ -45,20 +47,36 @@ class SylphiaBuildSystem:
         self.bootloader_src_dir = os.path.join(self.root_dir, "bootloader")
         self.kernel_src_dir = os.path.join(self.root_dir, "kernel")
         self.std_dir = os.path.join(self.root_dir, "std")
+        self.build_scripts_dir = os.path.join(self.root_dir, "build_scripts")
         self.os_type = platform.system()
+
+    def _get_arch_key(self, target: BuildTarget) -> str:
+        """BuildTarget を config の辞書キーに変換"""
+        mapping = {
+            BuildTarget.AARCH64: "aarch64",
+            BuildTarget.X86_64: "x86_64",
+            BuildTarget.RISCV64: "riscv64",
+        }
+        return mapping.get(target, "x86_64")
+
+    def _get_arch_config(self, target: BuildTarget) -> dict:
+        """アーキテクチャ別設定を取得"""
+        key = self._get_arch_key(target)
+        return Config.ARCH_CONFIG.get(key, Config.ARCH_CONFIG["x86_64"])
 
     def __clean(self):
         if os.path.exists(self.build_dir):
             shutil.rmtree(self.build_dir)
         os.makedirs(self.build_dir)
     
-    def __build_app(self, app: str, pbar: tqdm) -> list[str]:
+    def __build_app(self, app: str, pbar: tqdm, target: BuildTarget = BuildTarget.X86_64) -> list[str]:
+        arch_config = self._get_arch_config(target)
         pbar.set_description(app)
         files = []
         ret_files = []
         for root, dirs, _files in os.walk(os.path.join(self.apps_dir, app)):
             for file in _files:
-                if file.endswith(".asm") or file.endswith(".cpp"):
+                if file.endswith(".asm") or file.endswith(".s") or file.endswith(".cpp"):
                     files.append(os.path.join(root, file))
         os.makedirs(os.path.join(self.bin_apps_dir, app), exist_ok=True)
         for file in files:
@@ -66,27 +84,46 @@ class SylphiaBuildSystem:
             result = 0
             _o_file = file.replace(self.apps_dir, self.bin_apps_dir)+".o"
             if file.endswith(".asm"):
+                if arch_config["use_nasm"]:
+                    result = subprocess.run(
+                        [
+                            Config.Compiler.NASM_PATH,
+                            "-f", arch_config["nasm_format"],
+                            str(file),
+                            "-o", _o_file
+                        ],
+                        cwd=self.root_dir,
+                        capture_output=True,
+                        text=True
+                    )
+                else:
+                    click.echo(Fore.YELLOW + f"[WARNING] Skipping .asm file for non-x86 target: {file}")
+                    pbar.update(1)
+                    continue
+            elif file.endswith(".s"):
+                clang_cmd = [
+                    Config.Compiler.CLANG_PATH,
+                    "-target", arch_config["clang_target"],
+                    "-c", str(file),
+                    "-o", _o_file
+                ]
                 result = subprocess.run(
-                    [
-                        Config.Compiler.NASM_PATH,
-                        "-f", "elf64",
-                        str(file),
-                        "-o", _o_file
-                    ],
+                    clang_cmd,
                     cwd=self.root_dir,
                     capture_output=True,
                     text=True
                 )
             elif file.endswith(".cpp"):
+                clang_cmd = [
+                    Config.Compiler.CLANGXX_PATH,
+                    "-target", arch_config["clang_target"],
+                    "-ffreestanding", "-fno-rtti", "-fno-exceptions",
+                    "-O2", "-Wall",
+                ]
+                clang_cmd.extend(arch_config["extra_cflags"])
+                clang_cmd.extend(["-c", str(file), "-o", _o_file])
                 result = subprocess.run(
-                    [
-                        Config.Compiler.CLANGXX_PATH,
-                        "-target", "x86_64-pc-none-elf",
-                        "-ffreestanding", "-fno-rtti", "-fno-exceptions",
-                        "-O2", "-Wall",
-                        "-c", str(file),
-                        "-o", _o_file
-                    ],
+                    clang_cmd,
                     cwd=self.root_dir,
                     capture_output=True,
                     text=True
@@ -96,8 +133,10 @@ class SylphiaBuildSystem:
             pbar.update(1)
         return ret_files
     
-    def __build_bootloader(self):
-        print("Building bootloader...")
+    def __build_bootloader(self, target: BuildTarget = BuildTarget.X86_64):
+        arch_config = self._get_arch_config(target)
+        arch_key = self._get_arch_key(target)
+        print(f"Building bootloader for {arch_key}...")
         os.makedirs(os.path.join(self.output_dir, "EFI", "BOOT"), exist_ok=True)
         os.makedirs(self.bin_bootloader_dir, exist_ok=True)
         target_files = []
@@ -120,14 +159,18 @@ class SylphiaBuildSystem:
                 _obj = file.replace(self.bootloader_src_dir, self.bin_bootloader_dir)+".o"
                 if file.endswith(".c"):
                     pbar.set_postfix_str(file)
+                    clang_cmd = [
+                        Config.Compiler.CLANG_PATH,
+                        "-target", arch_config["clang_bootloader_target"],
+                        "-fno-stack-protector", "-fshort-wchar",
+                        "-c", str(file),
+                        "-o", _obj
+                    ]
+                    # x86_64の場合のみ -mno-red-zone を追加
+                    if target == BuildTarget.X86_64:
+                        clang_cmd.insert(4, "-mno-red-zone")
                     result = subprocess.run(
-                        [
-                            Config.Compiler.CLANG_PATH,
-                            "-target", "x86_64-pc-win32-coff",
-                            "-fno-stack-protector", "-fshort-wchar", "-mno-red-zone",
-                            "-c", str(file),
-                            "-o", _obj
-                        ],
+                        clang_cmd,
                         cwd=self.root_dir,
                         capture_output=True,
                         text=True
@@ -139,12 +182,14 @@ class SylphiaBuildSystem:
                     pbar.update(1)
                     pass
                 checkResult(result, pbar, "bootloader")
+            
+            bootloader_output = arch_config["bootloader_output"]
             cmd = [
                 Config.Linker.LLD_LINK_PATH,
                 "/subsystem:efi_application",
                 "/entry:EfiMain",
                 "/dll",
-                f"/out:{os.path.join(self.output_dir, "EFI", "BOOT", "BOOTX64.EFI")}",
+                f"/out:{os.path.join(self.output_dir, 'EFI', 'BOOT', bootloader_output)}",
             ]
             cmd.extend(o_files)
             result = subprocess.run(
@@ -156,8 +201,10 @@ class SylphiaBuildSystem:
             )
             checkResult(result, pbar, "bootloader")
     
-    def __build_kernel(self, flags: list[str] = []):
-        print("Building kernel...")
+    def __build_kernel(self, target: BuildTarget = BuildTarget.X86_64, flags: list[str] = []):
+        arch_config = self._get_arch_config(target)
+        arch_key = self._get_arch_key(target)
+        print(f"Building kernel for {arch_key}...")
         os.makedirs(self.output_dir, exist_ok=True)
         os.makedirs(self.bin_kernel_dir, exist_ok=True)
         target_files = []
@@ -169,7 +216,7 @@ class SylphiaBuildSystem:
                     continue
                 os.makedirs(os.path.join(root, dir).replace(self.kernel_src_dir, self.bin_kernel_dir), exist_ok=True)
             for file in files:
-                if file.endswith(".asm"):
+                if file.endswith(".asm") or file.endswith(".s"):
                     target_files.append(os.path.join(root, file))
                 elif file.endswith(".cpp"):
                     target_files.append(os.path.join(root, file))
@@ -189,14 +236,36 @@ class SylphiaBuildSystem:
                 _obj = file.replace(self.kernel_src_dir, self.bin_kernel_dir)+".obj"
                 result = None
                 if file.endswith(".asm"):
+                    if arch_config["use_nasm"]:
+                        pbar.set_postfix_str(file)
+                        result = subprocess.run(
+                            [
+                                Config.Compiler.NASM_PATH,
+                                "-f", arch_config["nasm_format"],
+                                str(file),
+                                "-o", _obj
+                            ],
+                            cwd=self.root_dir,
+                            capture_output=True,
+                            text=True
+                        )
+                        o_files.append(_obj)
+                        pbar.update(1)
+                    else:
+                        click.echo(Fore.YELLOW + f"[WARNING] Skipping .asm file for non-x86 target: {file}")
+                        pbar.update(1)
+                        continue
+                elif file.endswith(".s"):
+                    # GAS構文アセンブリ（Clang内蔵アセンブラで処理）
                     pbar.set_postfix_str(file)
+                    clang_cmd = [
+                        Config.Compiler.CLANG_PATH,
+                        "-target", arch_config["clang_target"],
+                        "-c", str(file),
+                        "-o", _obj
+                    ]
                     result = subprocess.run(
-                        [
-                            Config.Compiler.NASM_PATH,
-                            "-f", "elf64",
-                            str(file),
-                            "-o", _obj
-                        ],
+                        clang_cmd,
                         cwd=self.root_dir,
                         capture_output=True,
                         text=True
@@ -207,11 +276,11 @@ class SylphiaBuildSystem:
                     pbar.set_postfix_str(file)
                     clang_cmd = [
                         Config.Compiler.CLANGXX_PATH,
-                        "-target", "x86_64-elf",
+                        "-target", arch_config["clang_target"],
                         "-ffreestanding", "-fno-rtti", "-fno-exceptions",
-                        "-mno-red-zone", "-mgeneral-regs-only",
                         "-I.", f"-I{self.kernel_src_dir}", "-O2", "-Wall",
                     ]
+                    clang_cmd.extend(arch_config["extra_cflags"])
                     for flag in flags:
                         clang_cmd.append(f"-D{flag}")
                     clang_cmd.extend(["-c", str(file), "-o", _obj])
@@ -224,18 +293,19 @@ class SylphiaBuildSystem:
                     o_files.append(_obj)
                     pbar.update(1)
                 elif file.endswith("rust"):
+                    rust_target = arch_config["rust_target"]
                     result = subprocess.run(
                         [
                             Config.Compiler.CARGO_PATH,
                             "build",
                             "--release",
-                            "--target", "x86_64-unknown-none"
+                            "--target", rust_target
                         ],
                         cwd=os.path.join(self.kernel_src_dir, "rust"),
                         capture_output=True,
                         text=True
                     )
-                    o_files.append(os.path.join(self.kernel_src_dir, "rust", "target", "x86_64-unknown-none", "release", "libsylphia_rust.a"))
+                    o_files.append(os.path.join(self.kernel_src_dir, "rust", "target", rust_target, "release", "libsylphia_rust.a"))
                     pbar.update(1)
                     pass
                 else:
@@ -261,7 +331,7 @@ class SylphiaBuildSystem:
             )
             checkResult(result, pbar, "kernel")
 
-    def build_app(self, target: BuildTarget, apps: list[str] = []):
+    def build_app(self, target: BuildTarget = BuildTarget.X86_64, apps: list[str] = []):
         print("Building apps...")
         os.makedirs(os.path.join(self.output_dir, "apps"), exist_ok=True)
         if len(apps) == 0:
@@ -284,7 +354,7 @@ class SylphiaBuildSystem:
             unit="file(s)",
             bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]"
         ) as pbar:
-            self.__build_app("_link", pbar)
+            self.__build_app("_link", pbar, target)
         with tqdm(
             total=len(files),
             desc="apps",
@@ -292,7 +362,7 @@ class SylphiaBuildSystem:
             bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]"
         ) as pbar:
             for app in apps:
-                files = self.__build_app(app, pbar)
+                files = self.__build_app(app, pbar, target)
                 cmd = [
                     Config.Linker.LD_LLD_PATH,
                     "-T", f"{os.path.join(self.apps_dir, '_link', 'linker.ld')}",
@@ -312,7 +382,7 @@ class SylphiaBuildSystem:
 
     def build(
         self,
-        target: BuildTarget,
+        target: BuildTarget = BuildTarget.X86_64,
         package: BuildPackage = [BuildPackage.APP, BuildPackage.BOOTLOADER, BuildPackage.KERNEL],
         flags: list[str] = []
     ):
@@ -320,6 +390,6 @@ class SylphiaBuildSystem:
             if p == BuildPackage.APP:
                 self.build_app(target = target)
             elif p == BuildPackage.BOOTLOADER:
-                self.__build_bootloader()
+                self.__build_bootloader(target = target)
             elif p == BuildPackage.KERNEL:
-                self.__build_kernel(flags)
+                self.__build_kernel(target = target, flags = flags)

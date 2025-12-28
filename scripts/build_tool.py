@@ -13,10 +13,14 @@ init(autoreset=True)
 
 
 def str2bt(target: str) -> _build.BuildTarget:
-    if target == 'x86_64':
+    if target == 'aarch64' or target == 'arm64':
+        return _build.BuildTarget.AARCH64
+    elif target == 'x86_64' or target == 'x64':
         return _build.BuildTarget.X86_64
+    elif target == 'riscv64' or target == 'riscv':
+        return _build.BuildTarget.RISCV64
     else:
-        raise ValueError(f"Unknown target: {target}")
+        raise ValueError(f"Unknown target: {target}. Supported: x86_64, aarch64, riscv64")
 
 def str2pkg(package: str) -> _build.BuildPackage:
     if package == 'app':
