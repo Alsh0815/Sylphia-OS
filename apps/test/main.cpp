@@ -68,6 +68,7 @@ extern "C" int main(int argc, char **argv)
     PutChar('i');
     PutChar('!');
     PutChar('\n');
+    print(".asm -> .s");
 
     // Exitを呼ぶ
     Exit();

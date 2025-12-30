@@ -75,31 +75,19 @@ class SylphiaBuildSystem:
         files = []
         ret_files = []
         for root, dirs, _files in os.walk(os.path.join(self.apps_dir, app)):
+            for dir in dirs:
+                os.makedirs(os.path.join(root, dir).replace(self.apps_dir, self.bin_apps_dir), exist_ok=True)
             for file in _files:
                 if file.endswith(".asm") or file.endswith(".s") or file.endswith(".cpp"):
                     files.append(os.path.join(root, file))
         os.makedirs(os.path.join(self.bin_apps_dir, app), exist_ok=True)
         for file in files:
             pbar.set_postfix_str(file)
-            result = 0
+            result = None
             _o_file = file.replace(self.apps_dir, self.bin_apps_dir)+".o"
             if file.endswith(".asm"):
-                if arch_config["use_nasm"]:
-                    result = subprocess.run(
-                        [
-                            Config.Compiler.NASM_PATH,
-                            "-f", arch_config["nasm_format"],
-                            str(file),
-                            "-o", _o_file
-                        ],
-                        cwd=self.root_dir,
-                        capture_output=True,
-                        text=True
-                    )
-                else:
-                    click.echo(Fore.YELLOW + f"[WARNING] Skipping .asm file for non-x86 target: {file}")
-                    pbar.update(1)
-                    continue
+                pbar.update(1)
+                continue
             elif file.endswith(".s"):
                 clang_cmd = [
                     Config.Compiler.CLANG_PATH,
@@ -236,25 +224,8 @@ class SylphiaBuildSystem:
                 _obj = file.replace(self.kernel_src_dir, self.bin_kernel_dir)+".obj"
                 result = None
                 if file.endswith(".asm"):
-                    if arch_config["use_nasm"]:
-                        pbar.set_postfix_str(file)
-                        result = subprocess.run(
-                            [
-                                Config.Compiler.NASM_PATH,
-                                "-f", arch_config["nasm_format"],
-                                str(file),
-                                "-o", _obj
-                            ],
-                            cwd=self.root_dir,
-                            capture_output=True,
-                            text=True
-                        )
-                        o_files.append(_obj)
-                        pbar.update(1)
-                    else:
-                        click.echo(Fore.YELLOW + f"[WARNING] Skipping .asm file for non-x86 target: {file}")
-                        pbar.update(1)
-                        continue
+                    pbar.update(1)
+                    continue
                 elif file.endswith(".s"):
                     # GAS構文アセンブリ（Clang内蔵アセンブラで処理）
                     pbar.set_postfix_str(file)
@@ -335,16 +306,15 @@ class SylphiaBuildSystem:
         print("Building apps...")
         os.makedirs(os.path.join(self.output_dir, "apps"), exist_ok=True)
         if len(apps) == 0:
-            for root, dirs, _files in os.walk(self.apps_dir):
-                for dir in dirs:
-                    if dir == "_header" or dir == "_link":
-                        continue
-                    apps.append(dir)
+            for dirs in os.listdir(self.apps_dir):
+                if dirs == "_header" or dirs == "_link":
+                    continue
+                apps.append(dirs)
         files = []
         for app in apps:
             for root, dirs, _files in os.walk(os.path.join(self.apps_dir, app)):
                 for file in _files:
-                    if file.endswith(".asm"):
+                    if file.endswith(".s"):
                         files.append(os.path.join(root, file))
                     elif file.endswith(".cpp"):
                         files.append(os.path.join(root, file))
@@ -367,7 +337,7 @@ class SylphiaBuildSystem:
                     Config.Linker.LD_LLD_PATH,
                     "-T", f"{os.path.join(self.apps_dir, '_link', 'linker.ld')}",
                     "-o", f"{os.path.join(self.output_dir, 'apps', app + '.elf')}",
-                    f"{os.path.join(self.bin_apps_dir, '_link', 'start.asm.o')}"
+                    f"{os.path.join(self.bin_apps_dir, '_link', 'arch', 'x86_64' if target == BuildTarget.X86_64 else 'aarch64', 'start.s.o')}"
                 ]
                 cmd.extend(files)
                 cmd.extend(["-entry", "_start"])
