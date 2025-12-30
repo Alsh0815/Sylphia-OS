@@ -24,23 +24,76 @@ namespace Init
 
 void InitializeCore(const MemoryMap &memmap)
 {
+#if defined(__aarch64__)
+    volatile char *uart = reinterpret_cast<volatile char *>(0x09000000);
+    *uart = '[';
+    *uart = 'A';
+    *uart = ']'; // [A] InitializeCore entry
+#endif
+
     SetupSegments();
+#if defined(__aarch64__)
+    *uart = '[';
+    *uart = 'B';
+    *uart = ']'; // [B] After SetupSegments
+#endif
+
     SetupInterrupts();
+#if defined(__aarch64__)
+    *uart = '[';
+    *uart = 'C';
+    *uart = ']'; // [C] After SetupInterrupts
+#endif
+
     DisablePIC();
+#if defined(__aarch64__)
+    *uart = '[';
+    *uart = 'D';
+    *uart = ']'; // [D] After DisablePIC
+#endif
+
+#if defined(__x86_64__)
     EnableSSE();
+#endif
 
     MemoryManager::Initialize(memmap);
+#if defined(__aarch64__)
+    *uart = '[';
+    *uart = 'E';
+    *uart = ']'; // [E] After MemoryManager
+#endif
 
     const size_t kKernelStackSize = 1024 * 16; // 16KB
     void *kernel_stack = MemoryManager::Allocate(kKernelStackSize);
     uint64_t kernel_stack_end =
         reinterpret_cast<uint64_t>(kernel_stack) + kKernelStackSize;
     SetKernelStack(kernel_stack_end);
+#if defined(__aarch64__)
+    *uart = '[';
+    *uart = 'F';
+    *uart = ']'; // [F] After SetKernelStack
+#endif
 
     kprintf("Kernel Stack setup complete at %lx\n", kernel_stack_end);
 
+    // ページテーブル初期化 (x86_64/AArch64対応済み)
+#if defined(__aarch64__)
+    *uart = '[';
+    *uart = 'G';
+    *uart = ']'; // [G] Before PageManager
+#endif
+    kprintf("[Init] Calling PageManager::Initialize()...\n");
     PageManager::Initialize();
+#if defined(__aarch64__)
+    *uart = '[';
+    *uart = 'H';
+    *uart = ']'; // [H] After PageManager
+#endif
+    kprintf("[Init] Returned from PageManager::Initialize().\n");
+
+    kprintf("[Init] Calling InitializeSyscall()...\n");
     InitializeSyscall();
+    kprintf("[Init] Returned from InitializeSyscall().\n");
 }
 
 void InitializeIO()

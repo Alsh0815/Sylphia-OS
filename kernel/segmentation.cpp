@@ -1,6 +1,11 @@
+#include <stdint.h>
+
+#if defined(__x86_64__)
+
 #include "cxx.hpp"
 #include "segmentation.hpp"
 #include "x86_descriptor.hpp"
+
 
 extern "C" void LoadGDT(uint16_t limit, uint64_t offset);
 extern "C" void SetDSAll(uint16_t value);
@@ -10,7 +15,8 @@ uint64_t gdt[8];
 TSS64 tss;
 
 // GDTエントリを作るヘルパー
-uint64_t MakeSegmentDescriptor(uint32_t type, uint32_t descriptor_privilege_level)
+uint64_t MakeSegmentDescriptor(uint32_t type,
+                               uint32_t descriptor_privilege_level)
 {
     uint64_t desc = 0;
     // Code/Data Segment Descriptor (System=1)
@@ -105,3 +111,14 @@ void SetKernelStack(uint64_t stack_addr)
 {
     tss.rsp0 = stack_addr;
 }
+
+#else // AArch64
+
+// AArch64: セグメンテーションは存在しないので空実装を提供
+void SetupSegments() {}
+void SetKernelStack(uint64_t stack_addr)
+{
+    (void)stack_addr;
+}
+
+#endif // defined(__x86_64__)

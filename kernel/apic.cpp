@@ -1,5 +1,6 @@
-#include "apic.hpp"
+#if defined(__x86_64__)
 
+#include "apic.hpp"
 // 通常、Local APICは物理アドレス 0xFEE00000 にある
 // 本来は MSR (Model Specific Register) IA32_APIC_BASE を読んで確認すべきだが、
 // ほとんどのPCで固定なので今回は定数定義で進める
@@ -60,3 +61,5 @@ uint32_t LocalAPIC::GetID()
     // IDレジスタの24-31bitがAPIC ID
     return Read(LAPIC_ID) >> 24;
 }
+
+#endif // defined(__x86_64__)

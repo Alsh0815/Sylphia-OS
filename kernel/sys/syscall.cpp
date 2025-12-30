@@ -23,9 +23,11 @@ const uint32_t kMSR_KERNEL_GS_BASE = 0xC0000102;
 
 // asmfunc.asm
 extern "C" void ExitApp();
+#if defined(__x86_64__)
 extern "C" uint64_t ReadMSR(uint32_t msr);
 extern "C" void WriteMSR(uint32_t msr, uint64_t value);
 extern "C" void SyscallEntry();
+#endif
 
 // コンテキストの実体
 SyscallContext *g_syscall_context = nullptr;
@@ -305,6 +307,7 @@ extern "C" uint64_t SyscallHandler(uint64_t syscall_number, uint64_t arg1,
 
 void InitializeSyscall()
 {
+#if defined(__x86_64__)
     // 0. コンテキスト領域の確保
     g_syscall_context = new SyscallContext();
 
@@ -354,4 +357,7 @@ void InitializeSyscall()
 
     uint64_t current_star = ReadMSR(kMSR_STAR);
     kprintf("[Syscall] MSR_STAR set to: %lx\n", current_star);
+#else
+    kprintf("[Syscall] Not implemented for this architecture.\n");
+#endif
 }

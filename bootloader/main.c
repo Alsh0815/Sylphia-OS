@@ -19,6 +19,67 @@ EFI_GUID gEfiSimpleFileSystemProtocolGuid =
     EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID;
 EFI_GUID gEfiFileInfoGuid = EFI_FILE_INFO_ID;
 
+// =================================================================
+// ACPI MCFGテーブルからECAMベースアドレスを取得
+// =================================================================
+
+static int GuidCompare(EFI_GUID *a, EFI_GUID *b)
+{
+    UINT8 *pa = (UINT8 *)a;
+    UINT8 *pb = (UINT8 *)b;
+    for (int i = 0; i < 16; i++)
+    {
+        if (pa[i] != pb[i])
+            return 1;
+    }
+    return 0;
+}
+
+static UINT64 FindEcamBaseAddress(EFI_SYSTEM_TABLE *SystemTable,
+                                  UINT8 *OutStartBus, UINT8 *OutEndBus)
+{
+    EFI_GUID acpi20_guid = ACPI_20_TABLE_GUID;
+    EFI_CONFIGURATION_TABLE *config_table = SystemTable->ConfigurationTable;
+
+    // RSDP探索
+    ACPI_RSDP *rsdp = (ACPI_RSDP *)0;
+    for (UINTN i = 0; i < SystemTable->NumberOfTableEntries; i++)
+    {
+        if (GuidCompare(&config_table[i].VendorGuid, &acpi20_guid) == 0)
+        {
+            rsdp = (ACPI_RSDP *)config_table[i].VendorTable;
+            break;
+        }
+    }
+    if (!rsdp)
+        return 0;
+
+    // XSDT取得
+    ACPI_TABLE_HEADER *xsdt = (ACPI_TABLE_HEADER *)rsdp->XsdtAddress;
+    if (!xsdt)
+        return 0;
+
+    UINT32 entries = (xsdt->Length - sizeof(ACPI_TABLE_HEADER)) / 8;
+    UINT64 *entry_ptrs = (UINT64 *)((UINT8 *)xsdt + sizeof(ACPI_TABLE_HEADER));
+
+    // MCFG探索
+    for (UINT32 i = 0; i < entries; i++)
+    {
+        ACPI_TABLE_HEADER *header = (ACPI_TABLE_HEADER *)entry_ptrs[i];
+        if (header->Signature[0] == 'M' && header->Signature[1] == 'C' &&
+            header->Signature[2] == 'F' && header->Signature[3] == 'G')
+        {
+            // MCFGヘッダーの後に8バイトの予約領域があり、その後にMCFG_ENTRY
+            MCFG_ENTRY *mcfg_entry =
+                (MCFG_ENTRY *)((UINT8 *)header + sizeof(ACPI_TABLE_HEADER) + 8);
+            *OutStartBus = mcfg_entry->StartBus;
+            *OutEndBus = mcfg_entry->EndBus;
+            return mcfg_entry->BaseAddress;
+        }
+    }
+    return 0;
+}
+
 EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 {
     EFI_STATUS Status;
@@ -314,6 +375,14 @@ EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     Config.HorizontalResolution = Gop->Mode->Info->HorizontalResolution;
     Config.VerticalResolution = Gop->Mode->Info->VerticalResolution;
     Config.PixelsPerScanLine = Gop->Mode->Info->PixelsPerScanLine;
+
+    // ECAMアドレスを取得 (AArch64用、x86_64では使用されない)
+    Config.EcamStartBus = 0;
+    Config.EcamEndBus = 0;
+    Config.EcamBaseAddress = FindEcamBaseAddress(
+        SystemTable, &Config.EcamStartBus, &Config.EcamEndBus);
+    for (int i = 0; i < 6; i++)
+        Config.EcamPadding[i] = 0;
 
     if (MemoryMap)
     {

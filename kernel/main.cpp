@@ -26,13 +26,36 @@ KernelMain(const FrameBufferConfig &config, const MemoryMap &memmap)
 {
     CLI();
 
+#if defined(__aarch64__)
+    // UART直書きデバッグ (QEMU virt: 0x09000000)
+    volatile char *uart = reinterpret_cast<volatile char *>(0x09000000);
+    *uart = '[';
+    *uart = '1';
+    *uart = ']';
+    *uart = ' '; // [1] Entry
+#endif
+
     // 1. コンソール初期化
     const uint32_t kDesktopBG = 0xFF181818;
     FillRectangle(config, 0, 0, config.HorizontalResolution,
                   config.VerticalResolution, kDesktopBG);
 
+#if defined(__aarch64__)
+    *uart = '[';
+    *uart = '2';
+    *uart = ']';
+    *uart = ' '; // [2] After FillRect
+#endif
+
     static Console console(config, 0xFFFFFFFF, kDesktopBG);
     g_console = &console;
+
+#if defined(__aarch64__)
+    *uart = '[';
+    *uart = '3';
+    *uart = ']';
+    *uart = ' '; // [3] Console ready
+#endif
 
     // 2. カーネルコア初期化
     Sys::Init::InitializeCore(memmap);
@@ -41,6 +64,10 @@ KernelMain(const FrameBufferConfig &config, const MemoryMap &memmap)
     Sys::Init::InitializeIO();
 
     // 4. PCIデバイス初期化（xHCI + NVMe）
+#if defined(__aarch64__)
+    PCI::InitializePCI(config.EcamBaseAddress, config.EcamStartBus,
+                       config.EcamEndBus);
+#endif
     PCI::SetupPCI();
 
     STI();
@@ -92,13 +119,15 @@ KernelMain(const FrameBufferConfig &config, const MemoryMap &memmap)
         kprintf("NVMe Controller not found.\n");
     }
 
-    // 6. APIC設定
+    // 6. APIC設定 (x86_64のみ)
+#if defined(__x86_64__)
     static LocalAPIC lapic;
     g_lapic = &lapic;
     g_lapic->Enable();
     Sys::Logger::g_event_logger->Info(Sys::Logger::LogType::Kernel,
                                       "Local APIC enabled.");
     IOAPIC::Enable(1, 0x40, g_lapic->GetID());
+#endif
 
     // 7. タスクマネージャとスケジューラの初期化
     TaskManager::Initialize();
@@ -112,10 +141,12 @@ KernelMain(const FrameBufferConfig &config, const MemoryMap &memmap)
     // スケジューラを有効化
     Scheduler::Enable();
 
-    // タイマー開始（スケジューラ有効化後）
+    // タイマー開始（スケジューラ有効化後）(x86_64のみ)
     // スケジューラが有効になるとIdleTaskに切り替わり、
     // IdleTaskが必須プロセス（シェル等）を自動起動する
+#if defined(__x86_64__)
     g_lapic->StartTimer(10, 0x20);
+#endif
 
     // 8. メインループ（ここには到達しないはず）
     // IdleTaskがスケジュールされ、以降の実行はそちらで行われる

@@ -62,8 +62,62 @@ ExitApp:
 /* void LoadCR3(uint64_t pml4_addr); -> TTBR0_EL1 */
 .global LoadCR3
 LoadCR3:
+    /* 割り込み禁止 (All interrupts masked) */
+    msr daifset, #0xf
+
+    /* Stack Cache Flush (Data Cache Clean and Invalidate) */
+    /* スタック領域の整合性を確保するため、現在のSP周辺をメモリに書き戻して無効化する */
+    mov x4, sp
+    bic x4, x4, #63 /* 64byte align */
+    dc civac, x4
+    add x4, x4, #64
+    dc civac, x4
+    dsb ish
+
+    /* MAIR_EL1 (Memory Attribute Indirection Register) */
+    /* Attr0 = 0xFF (Normal Memory, Write-Back, RW-Allocate) */
+    /* Attr1 = 0x00 (Device-nGnRnE Memory) */
+    mov x1, #0xFF
+    msr mair_el1, x1
+
+    /* TCR_EL1 (Translation Control Register) */
+    /* IPS[34:32]   = 101 (48-bit PA) */
+    /* EPD1[23]     = 1   (Disable TTBR1 walks) */
+    /* TG0[15:14]   = 00  (4KB Granule) */
+    /* SH0[13:12]   = 11  (Inner Shareable) */
+    /* ORGN0[11:10] = 01  (Normal Memory, Outer Write-Back) */
+    /* IRGN0[9:8]   = 01  (Normal Memory, Inner Write-Back) */
+    /* T0SZ[5:0]    = 16  (48-bit VA: 64-48=16) */
+    /* Value: 0x500803510 */
+    ldr x1, =0x500803510
+    msr tcr_el1, x1
+    isb
+
+    /* ページテーブル書き込みをメモリにコミット */
+    dsb sy
+
+    /* TTBR0_EL1 */
     msr ttbr0_el1, x0
     isb
+    
+    /* 1. I-Cache Invalidate (To Point of Unification) */
+    ic iallu
+    dsb ish
+    isb
+
+    /* 2. TLB Invalidate (Before MMU Enable) */
+    tlbi vmalle1
+    dsb ish
+    isb
+
+    /* SCTLR_EL1 設定 (MMU ON) */
+    mrs x1, sctlr_el1
+    orr x1, x1, #(1 << 0)   /* M=1: Enable MMU */
+    orr x1, x1, #(1 << 2)   /* C=1: Enable Data Cache */
+    orr x1, x1, #(1 << 12)  /* I=1: Enable Instruction Cache */
+    msr sctlr_el1, x1
+    isb
+
     ret
 
 /* AArch64はフラットメモリモデルなのでGDT/TRは不要 */

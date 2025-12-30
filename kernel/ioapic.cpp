@@ -1,5 +1,6 @@
-#include "ioapic.hpp"
+#if defined(__x86_64__)
 
+#include "ioapic.hpp"
 // I/O APICのベースアドレス (標準的には 0xFEC00000)
 const uintptr_t kIOAPICBase = 0xFEC00000;
 
@@ -9,8 +10,10 @@ const uintptr_t kIOAPICBase = 0xFEC00000;
 #define IOREDTBL 0x10 // Redirection Table (IRQ 0〜23...)
 
 // MMIOアクセスのためのポインタ取得
-volatile uint32_t *const ioregsel = reinterpret_cast<volatile uint32_t *>(kIOAPICBase);
-volatile uint32_t *const iowin = reinterpret_cast<volatile uint32_t *>(kIOAPICBase + 0x10);
+volatile uint32_t *const ioregsel =
+    reinterpret_cast<volatile uint32_t *>(kIOAPICBase);
+volatile uint32_t *const iowin =
+    reinterpret_cast<volatile uint32_t *>(kIOAPICBase + 0x10);
 
 uint32_t IOAPIC::Read(uint32_t index)
 {
@@ -48,3 +51,5 @@ void IOAPIC::Enable(int irq, int vector, uint32_t dest_id)
     Write(index + 1, high);
     Write(index, low);
 }
+
+#endif // defined(__x86_64__)

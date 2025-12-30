@@ -7,6 +7,20 @@
 namespace PCI
 {
 
+// ECAMグローバル変数
+uintptr_t g_ecam_base = 0;
+uint8_t g_ecam_start_bus = 0;
+uint8_t g_ecam_end_bus = 0;
+
+void InitializePCI(uintptr_t ecam_base, uint8_t start_bus, uint8_t end_bus)
+{
+    g_ecam_base = ecam_base;
+    g_ecam_start_bus = start_bus;
+    g_ecam_end_bus = end_bus;
+    kprintf("[PCI] Initialized with ECAM base %lx, bus %d-%d\n", ecam_base,
+            start_bus, end_bus);
+}
+
 // コンフィギュレーションアドレスを作成するヘルパー
 // Enable Bit(31) | Bus(23-16) | Device(15-11) | Function(10-8) | Register(7-2)
 uint32_t MakeAddress(uint8_t bus, uint8_t device, uint8_t function,
@@ -46,6 +60,7 @@ uintptr_t ReadBar0(const Device &dev)
     }
 }
 
+#if defined(__x86_64__)
 uint32_t ReadConfReg(const Device &dev, uint8_t reg_addr)
 {
     IoOut32(kConfigAddress,
@@ -59,6 +74,33 @@ void WriteConfReg(const Device &dev, uint8_t reg_addr, uint32_t value)
             MakeAddress(dev.bus, dev.device, dev.function, reg_addr));
     IoOut32(kConfigData, value);
 }
+#else
+// AArch64: ECAM (Memory-Mapped Configuration Access)
+// Address = ECAM_Base + (Bus << 20) + (Device << 15) + (Function << 12) + Reg
+uint32_t ReadConfReg(const Device &dev, uint8_t reg_addr)
+{
+    if (g_ecam_base == 0)
+        return 0xFFFFFFFF;
+
+    uintptr_t addr = g_ecam_base + (static_cast<uintptr_t>(dev.bus) << 20) +
+                     (static_cast<uintptr_t>(dev.device) << 15) +
+                     (static_cast<uintptr_t>(dev.function) << 12) +
+                     (reg_addr & 0xFFC);
+    return *reinterpret_cast<volatile uint32_t *>(addr);
+}
+
+void WriteConfReg(const Device &dev, uint8_t reg_addr, uint32_t value)
+{
+    if (g_ecam_base == 0)
+        return;
+
+    uintptr_t addr = g_ecam_base + (static_cast<uintptr_t>(dev.bus) << 20) +
+                     (static_cast<uintptr_t>(dev.device) << 15) +
+                     (static_cast<uintptr_t>(dev.function) << 12) +
+                     (reg_addr & 0xFFC);
+    *reinterpret_cast<volatile uint32_t *>(addr) = value;
+}
+#endif
 
 // デバイスを追加する (今回は表示するだけ)
 void AddDevice(uint8_t bus, uint8_t device, uint8_t function,

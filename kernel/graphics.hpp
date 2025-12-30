@@ -8,6 +8,10 @@ struct FrameBufferConfig
     uint32_t HorizontalResolution;
     uint32_t VerticalResolution;
     uint32_t PixelsPerScanLine;
+    uint64_t EcamBaseAddress; // AArch64 ECAM用
+    uint8_t EcamStartBus;
+    uint8_t EcamEndBus;
+    uint8_t EcamPadding[6]; // アライメント用
 };
 
 void FillRectangle(const FrameBufferConfig &config, int x, int y, int w, int h,

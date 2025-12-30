@@ -356,6 +356,10 @@ typedef struct
     UINT32 HorizontalResolution;
     UINT32 VerticalResolution;
     UINT32 PixelsPerScanLine;
+    UINT64 EcamBaseAddress; // AArch64 ECAM用
+    UINT8 EcamStartBus;
+    UINT8 EcamEndBus;
+    UINT8 EcamPadding[6]; // アライメント用
 } FrameBufferConfig;
 
 struct MemoryMap
@@ -427,6 +431,13 @@ struct _EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL
     VOID *Mode;
 };
 
+// EFI Configuration Table Entry
+typedef struct
+{
+    EFI_GUID VendorGuid;
+    VOID *VendorTable;
+} EFI_CONFIGURATION_TABLE;
+
 struct _EFI_SYSTEM_TABLE
 {
     char _header[24];
@@ -445,7 +456,56 @@ struct _EFI_SYSTEM_TABLE
     VOID *RuntimeServices;
     EFI_BOOT_SERVICES *BootServices;
     UINTN NumberOfTableEntries;
-    VOID *ConfigurationTable;
+    EFI_CONFIGURATION_TABLE *ConfigurationTable;
 };
+
+// =================================================================
+// ACPI構造体 (ECAM用)
+// =================================================================
+
+// ACPI 2.0+ GUID
+#define ACPI_20_TABLE_GUID                                                     \
+    {0x8868E871,                                                               \
+     0xE4F1,                                                                   \
+     0x11D3,                                                                   \
+     {0xBC, 0x22, 0x00, 0x80, 0xC7, 0x3C, 0x88, 0x81}}
+
+// ACPI RSDP (Root System Description Pointer)
+typedef struct
+{
+    char Signature[8]; // "RSD PTR "
+    UINT8 Checksum;
+    char OEMID[6];
+    UINT8 Revision;
+    UINT32 RsdtAddress;
+    UINT32 Length;
+    UINT64 XsdtAddress; // ACPI 2.0+
+    UINT8 ExtendedChecksum;
+    UINT8 Reserved[3];
+} __attribute__((packed)) ACPI_RSDP;
+
+// ACPI Table Header
+typedef struct
+{
+    char Signature[4];
+    UINT32 Length;
+    UINT8 Revision;
+    UINT8 Checksum;
+    char OEMID[6];
+    char OEMTableID[8];
+    UINT32 OEMRevision;
+    UINT32 CreatorID;
+    UINT32 CreatorRevision;
+} __attribute__((packed)) ACPI_TABLE_HEADER;
+
+// MCFG Entry (PCI ECAM領域情報)
+typedef struct
+{
+    UINT64 BaseAddress; // ECAMベースアドレス
+    UINT16 SegmentGroup;
+    UINT8 StartBus;
+    UINT8 EndBus;
+    UINT32 Reserved;
+} __attribute__((packed)) MCFG_ENTRY;
 
 #endif // _UEFI_H_

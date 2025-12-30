@@ -72,21 +72,26 @@ void PageManager::MapPage(uint64_t virtual_addr, uint64_t physical_addr,
         // ... (EnsureEntry ラムダ省略) ...
         auto EnsureEntry = [&](PageTableEntry &entry) -> PageTable *
         {
-            if (!entry.bits.present)
+            if (!entry.IsPresent())
             {
                 PageTable *new_table = AllocateTable();
                 if (!new_table)
                     return nullptr;
-                entry.SetAddress(reinterpret_cast<uint64_t>(new_table));
-                entry.bits.present = 1;
-                entry.bits.read_write = 1;
-                entry.bits.user_supervisor = (flags & kUser) ? 1 : 0;
+
+                // 中間テーブルとして作成
+                // flagsに含まれる権限(User/Writable)を引き継ぐべきか？
+                // x86では中間テーブルのU/Sビットが0だと、末端がUでもアクセスできない。
+                // なので、とりあえず親切に権限を与えておく。
+                entry.Set(reinterpret_cast<uint64_t>(new_table),
+                          PageTableEntry::Type::Table,
+                          flags | PageManager::kPresent |
+                              PageManager::kWritable | PageManager::kUser);
             }
             else
             {
                 if (flags & kUser)
                 {
-                    entry.bits.user_supervisor = 1;
+                    entry.SetUserAccess(true);
                 }
             }
             return reinterpret_cast<PageTable *>(entry.GetAddress());
@@ -104,8 +109,8 @@ void PageManager::MapPage(uint64_t virtual_addr, uint64_t physical_addr,
 
         // --- Level 2 (PD) ---
         // ★ Huge Page 衝突時の分割処理 (Split) ★
-        if (pd_table->entries[pd_idx].bits.present &&
-            pd_table->entries[pd_idx].bits.huge_page)
+        if (pd_table->entries[pd_idx].IsPresent() &&
+            pd_table->entries[pd_idx].IsHugePage())
         {
             // 1. 新しいページテーブル(PT)を作成
             PageTable *new_pt = AllocateTable();
@@ -114,32 +119,26 @@ void PageManager::MapPage(uint64_t virtual_addr, uint64_t physical_addr,
 
             // 2. Huge Pageの中身(2MB分)を、512個の4KBエントリとしてコピー
             uint64_t huge_base_phys = pd_table->entries[pd_idx].GetAddress();
-            uint64_t huge_flags =
-                pd_table->entries[pd_idx].value & 0xFFF; // 下位フラグを保持
+
+            // 元の属性を保持するためにエントリのコピーを取る
+            PageTableEntry source_entry = pd_table->entries[pd_idx];
 
             for (int k = 0; k < 512; ++k)
             {
-                new_pt->entries[k].SetAddress(huge_base_phys +
-                                              (k * kPageSize4K));
+                // アドレスとタイプ(Page)を設定
+                new_pt->entries[k].Set(huge_base_phys + (k * kPageSize4K),
+                                       PageTableEntry::Type::Page, 0);
 
-                // フラグをコピー (Hugeビットは落とす)
-                // valueに直接書き込むことで属性を引き継ぐ
-                new_pt->entries[k].value |= huge_flags;
-                new_pt->entries[k].bits.huge_page = 0;
-                new_pt->entries[k].bits.present = 1;
+                // 元の属性をコピー
+                new_pt->entries[k].CopyAttributesFrom(source_entry);
             }
 
             // 3. PDエントリを、作成したPTに向ける
-            // Hugeビットを落とし、PTへのポインタをセット
-            pd_table->entries[pd_idx].SetAddress(
-                reinterpret_cast<uint64_t>(new_pt));
-            pd_table->entries[pd_idx].bits.huge_page = 0;
-            pd_table->entries[pd_idx].bits.present = 1;
-            // PD自体もUser権限が必要なら付与する
-            if (flags & kUser)
-            {
-                pd_table->entries[pd_idx].bits.user_supervisor = 1;
-            }
+            // Tableタイプとして再設定、属性は継承（CopyAttributesFromは使えないので再設定）
+            // 中間テーブルなのでフル権限にしておく
+            pd_table->entries[pd_idx].Set(reinterpret_cast<uint64_t>(new_pt),
+                                          PageTableEntry::Type::Table,
+                                          flags | kPresent | kWritable | kUser);
 
             // ログ出し (デバッグ用)
             // kprintf("[Paging] Split Huge Page at PD[%ld] (Virt ~%lx)\n",
@@ -152,11 +151,7 @@ void PageManager::MapPage(uint64_t virtual_addr, uint64_t physical_addr,
 
         // --- Level 1 (PT) ---
         // ここで対象のページだけ新しい設定で上書きされる
-        pt_table->entries[pt_idx].SetAddress(paddr);
-        pt_table->entries[pt_idx].bits.present = (flags & kPresent) ? 1 : 0;
-        pt_table->entries[pt_idx].bits.read_write = (flags & kWritable) ? 1 : 0;
-        pt_table->entries[pt_idx].bits.user_supervisor =
-            (flags & kUser) ? 1 : 0;
+        pt_table->entries[pt_idx].Set(paddr, PageTableEntry::Type::Page, flags);
 
         InvalidateTLB(vaddr);
     }
@@ -165,6 +160,18 @@ void PageManager::MapPage(uint64_t virtual_addr, uint64_t physical_addr,
 void PageManager::Initialize()
 {
     kprintf("[Paging] Initializing with 2MB Huge Pages...\n");
+
+#if defined(__aarch64__)
+    // Temporary Workaround: Avoid Kernel Stack Collision
+    // The kernel stack is located around 0x40010000 (set by loader).
+    // The default MemoryManager might return the same address for the first
+    // allocated frame (PML4). To avoid corruption, we allocate and discard a
+    // few initial frames to shift the PML4 address.
+    for (int i = 0; i < 32; ++i)
+    {
+        MemoryManager::AllocateFrame();
+    }
+#endif
 
     // 1. ルートテーブル (PML4) 作成
     pml4_table_ = reinterpret_cast<PML4Table *>(AllocateTable());
@@ -179,38 +186,56 @@ void PageManager::Initialize()
     // PDPテーブル (512GB分をカバー) を1つ作成
     // 仮想アドレス 0x000... は PML4[0] に対応
     PageTable *pdp_table = AllocateTable();
-    pml4_table_->entries[0].SetAddress(reinterpret_cast<uint64_t>(pdp_table));
-    pml4_table_->entries[0].bits.present = 1;
-    pml4_table_->entries[0].bits.read_write = 1;
-    pml4_table_->entries[0].bits.user_supervisor =
-        1; // ユーザーモードからもアクセス可
+    pml4_table_->entries[0].Set(reinterpret_cast<uint64_t>(pdp_table),
+                                PageTableEntry::Type::Table,
+                                kPresent | kWritable | kUser);
+#if defined(__aarch64__)
+    // キャッシュをクリーンしてメモリに書き戻す
+    __asm__ volatile("dc cvac, %0"
+                     :
+                     : "r"(&pml4_table_->entries[0])
+                     : "memory");
+#endif
 
     // 64個のPDテーブルを作成して、64GB分 (64 * 1GB) をマップする
     for (int i_pdp = 0; i_pdp < 64; ++i_pdp)
     {
         PageTable *pd_table = AllocateTable();
-        pdp_table->entries[i_pdp].SetAddress(
-            reinterpret_cast<uint64_t>(pd_table));
-        pdp_table->entries[i_pdp].bits.present = 1;
-        pdp_table->entries[i_pdp].bits.read_write = 1;
-        pdp_table->entries[i_pdp].bits.user_supervisor =
-            1; // ユーザーモードからもアクセス可
+        pdp_table->entries[i_pdp].Set(reinterpret_cast<uint64_t>(pd_table),
+                                      PageTableEntry::Type::Table,
+                                      kPresent | kWritable | kUser);
 
         // PDエントリを埋める (各エントリ 2MB * 512 = 1GB)
         for (int i_pd = 0; i_pd < 512; ++i_pd)
         {
-            // 物理アドレス計算: (PDP番号 * 1GB) + (PD番号 * 2MB)
-            // ※ オーバーフロー防止のため 1ULL (unsigned long long) を掛ける
+            // 物理アドレス計算
             uint64_t physical_addr =
                 (static_cast<uint64_t>(i_pdp) * 1024 * 1024 * 1024) +
                 (static_cast<uint64_t>(i_pd) * 2 * 1024 * 1024);
 
-            pd_table->entries[i_pd].SetAddress(physical_addr);
-            pd_table->entries[i_pd].bits.present = 1;
-            pd_table->entries[i_pd].bits.read_write = 1;
-            pd_table->entries[i_pd].bits.huge_page = 1; // 2MBページ
-            pd_table->entries[i_pd].bits.user_supervisor =
-                1; // ユーザーモードからもアクセス可
+            // Kernel Only Mapping (kUser removed)
+            // EL1で動作するカーネルは、自身のコード/データをUserアクセス可能にする必要はない。
+            // また、PAN(Privileged Access
+            // Never)の影響を避けるためにもKernel属性が適切。
+            uint64_t flags = kPresent | kWritable;
+#if defined(__aarch64__)
+            // QEMU virtマシンのメモリマップでは、RAMは0x40000000から始まる。
+            // 0-1GB未満はI/O領域やFlashなどが含まれるため、Device属性(nGnRnE)にする必要がある。
+            // Normal
+            // Memoryとしてアクセスすると、投機実行などで不正アクセス例外が発生する。
+            if (physical_addr < 0x40000000)
+            {
+                flags |= kDevice;
+            }
+#endif
+            pd_table->entries[i_pd].Set(physical_addr,
+                                        PageTableEntry::Type::Block, flags);
+#if defined(__aarch64__)
+            __asm__ volatile("dc cvac, %0"
+                             :
+                             : "r"(&pd_table->entries[i_pd])
+                             : "memory");
+#endif
         }
     }
 
@@ -255,7 +280,7 @@ void PageManager::FreePageTableHierarchy(PageTable *table, int level,
     for (int i = 0; i < 512; ++i)
     {
         auto &entry = table->entries[i];
-        if (!entry.bits.present)
+        if (!entry.IsPresent())
             continue;
 
         uint64_t child_addr = entry.GetAddress();
@@ -265,7 +290,7 @@ void PageManager::FreePageTableHierarchy(PageTable *table, int level,
         if (level > 1) // PML4, PDP, PD
         {
             // Huge Pageの場合、それ以下はないので物理フレーム解放のみ
-            if (entry.bits.huge_page)
+            if (entry.IsHugePage())
             {
                 if (free_frames)
                 {
@@ -308,7 +333,7 @@ uint64_t PageManager::CreateProcessPageTable()
 
     // 2. ユーザー領域 (PDP[0]の範囲、特に0x40000000以降) を分離するために
     // PDP[0] を複製する (Deep Copy Level 1)
-    if (new_pml4->entries[0].bits.present)
+    if (new_pml4->entries[0].IsPresent())
     {
         PageTable *src_pdp =
             reinterpret_cast<PageTable *>(new_pml4->entries[0].GetAddress());
@@ -322,7 +347,7 @@ uint64_t PageManager::CreateProcessPageTable()
 
             // 3. アプリロード領域A (0x00000000~0x3FFFFFFF = PD[0]) を複製
             // ここにアプリのコードが配置されることが多い
-            if (new_pdp->entries[0].bits.present)
+            if (new_pdp->entries[0].IsPresent())
             {
                 PageTable *src_pd = reinterpret_cast<PageTable *>(
                     new_pdp->entries[0].GetAddress());
@@ -338,7 +363,7 @@ uint64_t PageManager::CreateProcessPageTable()
             // 4. アプリロード領域B (0x40000000~0x7FFFFFFF = PD[1]) を複製 (Deep
             // Copy Level 2)
             // これにより、アプリ領域のページ操作がカーネル共有のPD[1]に影響しなくなる
-            if (new_pdp->entries[1].bits.present)
+            if (new_pdp->entries[1].IsPresent())
             {
                 PageTable *src_pd = reinterpret_cast<PageTable *>(
                     new_pdp->entries[1].GetAddress());
@@ -385,7 +410,7 @@ void PageManager::FreeProcessPageTable(uint64_t cr3_value)
     // ユーザープロセス用に複製した領域を解放
 
     // 1. PDP[0]を取得
-    if (target_pml4->entries[0].bits.present)
+    if (target_pml4->entries[0].IsPresent())
     {
         PageTable *target_pdp =
             reinterpret_cast<PageTable *>(target_pml4->entries[0].GetAddress());
@@ -393,7 +418,7 @@ void PageManager::FreeProcessPageTable(uint64_t cr3_value)
         // 2. PD[0] (アプリコード領域) を取得して解放
         // 注意: PD[0]の中のエントリ（PT/フレーム）はカーネルと共有しているため
         // 再帰的に解放するとカーネルが壊れる！PDテーブル自体のみ解放する。
-        if (target_pdp->entries[0].bits.present)
+        if (target_pdp->entries[0].IsPresent())
         {
             PageTable *target_pd = reinterpret_cast<PageTable *>(
                 target_pdp->entries[0].GetAddress());
@@ -406,7 +431,7 @@ void PageManager::FreeProcessPageTable(uint64_t cr3_value)
         }
 
         // 3. PD[1] (アプリスタック領域) を取得して解放
-        if (target_pdp->entries[1].bits.present)
+        if (target_pdp->entries[1].IsPresent())
         {
             PageTable *target_pd = reinterpret_cast<PageTable *>(
                 target_pdp->entries[1].GetAddress());
