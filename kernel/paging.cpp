@@ -217,7 +217,13 @@ void PageManager::Initialize()
             // EL1で動作するカーネルは、自身のコード/データをUserアクセス可能にする必要はない。
             // また、PAN(Privileged Access
             // Never)の影響を避けるためにもKernel属性が適切。
+#if defined(__aarch64__)
             uint64_t flags = kPresent | kWritable;
+#else
+            // x86_64ではアプリがIdentity
+            // Mapping領域にアクセスする場合があるため、kUserが必要
+            uint64_t flags = kPresent | kWritable | kUser;
+#endif
 #if defined(__aarch64__)
             // QEMU virtマシンのメモリマップでは、RAMは0x40000000から始まる。
             // 0-1GB未満はI/O領域やFlashなどが含まれるため、Device属性(nGnRnE)にする必要がある。
