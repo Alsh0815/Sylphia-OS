@@ -19,11 +19,18 @@ const uint64_t kSyscallDeleteFile = 23;
 inline uint64_t Syscall0(uint64_t syscall_number)
 {
     uint64_t ret;
+#if defined(__x86_64__)
     __asm__ volatile("syscall"
                      : "=a"(ret)
                      : "a"(syscall_number)
                      : "rcx", "r11", "rdi", "rsi", "rdx", "r8", "r9", "r10",
                        "memory");
+#elif defined(__aarch64__)
+    register uint64_t x8 asm("x8") = syscall_number;
+    register uint64_t x0 asm("x0");
+    __asm__ volatile("svc #0" : "=r"(x0) : "r"(x8) : "memory", "cc");
+    ret = x0;
+#endif
     return ret;
 }
 
@@ -31,10 +38,17 @@ inline uint64_t Syscall0(uint64_t syscall_number)
 inline uint64_t Syscall1(uint64_t syscall_number, uint64_t arg1)
 {
     uint64_t ret;
+#if defined(__x86_64__)
     __asm__ volatile("syscall"
                      : "=a"(ret), "+D"(arg1)
                      : "a"(syscall_number)
                      : "rcx", "r11", "rsi", "rdx", "r8", "r9", "r10", "memory");
+#elif defined(__aarch64__)
+    register uint64_t x8 asm("x8") = syscall_number;
+    register uint64_t x0 asm("x0") = arg1;
+    __asm__ volatile("svc #0" : "=r"(x0) : "r"(x8), "0"(x0) : "memory", "cc");
+    ret = x0;
+#endif
     return ret;
 }
 
@@ -43,10 +57,22 @@ inline uint64_t Syscall3(uint64_t syscall_number, uint64_t arg1, uint64_t arg2,
                          uint64_t arg3)
 {
     uint64_t ret;
+#if defined(__x86_64__)
     __asm__ volatile("syscall"
                      : "=a"(ret)
                      : "a"(syscall_number), "D"(arg1), "S"(arg2), "d"(arg3)
                      : "rcx", "r11", "r8", "r9", "r10", "memory");
+#elif defined(__aarch64__)
+    register uint64_t x8 asm("x8") = syscall_number;
+    register uint64_t x0 asm("x0") = arg1;
+    register uint64_t x1 asm("x1") = arg2;
+    register uint64_t x2 asm("x2") = arg3;
+    __asm__ volatile("svc #0"
+                     : "=r"(x0)
+                     : "r"(x8), "0"(x0), "r"(x1), "r"(x2)
+                     : "memory", "cc");
+    ret = x0;
+#endif
     return ret;
 }
 

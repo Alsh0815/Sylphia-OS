@@ -1,4 +1,5 @@
 #include "paging.hpp"
+#include "arch/inasm.hpp"
 #include "cxx.hpp" // memset用
 #include "memory/memory_manager.hpp"
 #include "printk.hpp" // デバッグ用
@@ -169,7 +170,7 @@ void PageManager::Initialize()
     pml4_table_ = reinterpret_cast<PML4Table *>(AllocateTable());
     if (!pml4_table_)
         while (1)
-            __asm__ volatile("hlt");
+            Hlt();
 
     // 2. アイデンティティマッピング (0-64GB)
     // ビデオメモリ(VRAM)やMMIOデバイスが 3GB-4GB 付近やそれ以上にあるため、

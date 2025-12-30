@@ -106,7 +106,13 @@ typedef struct
 #endif
 
 // 関数ポインタの呼び出し規約をMS ABIに強制する（重要）
+#if defined(__x86_64__)
 #define EFIAPI __attribute__((ms_abi))
+#elif defined(__aarch64__)
+#define EFIAPI
+#else
+#define EFIAPI
+#endif
 
 typedef enum
 {
@@ -147,17 +153,15 @@ typedef struct
 } EFI_MEMORY_DESCRIPTOR;
 
 // GetMemoryMap 関数の型定義
-typedef EFI_STATUS(EFIAPI *EFI_GET_MEMORY_MAP)(
-    UINTN *MemoryMapSize,
-    EFI_MEMORY_DESCRIPTOR *MemoryMap,
-    UINTN *MapKey,
-    UINTN *DescriptorSize,
-    UINT32 *DescriptorVersion);
+typedef EFI_STATUS(EFIAPI *EFI_GET_MEMORY_MAP)(UINTN *MemoryMapSize,
+                                               EFI_MEMORY_DESCRIPTOR *MemoryMap,
+                                               UINTN *MapKey,
+                                               UINTN *DescriptorSize,
+                                               UINT32 *DescriptorVersion);
 
 // テキスト出力関数
 typedef EFI_STATUS(EFIAPI *EFI_TEXT_STRING)(
-    EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *This,
-    CHAR16 *String);
+    EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *This, CHAR16 *String);
 
 // GUID (Global Unique Identifier)
 typedef struct
@@ -220,36 +224,39 @@ struct _EFI_GRAPHICS_OUTPUT_PROTOCOL
 };
 
 // LocateProtocol 関数の型定義
-typedef EFI_STATUS(EFIAPI *EFI_LOCATE_PROTOCOL)(
-    EFI_GUID *Protocol,
-    VOID *Registration,
-    VOID **Interface);
+typedef EFI_STATUS(EFIAPI *EFI_LOCATE_PROTOCOL)(EFI_GUID *Protocol,
+                                                VOID *Registration,
+                                                VOID **Interface);
 
 // AllocatePool / FreePool の型定義
-typedef EFI_STATUS(EFIAPI *EFI_ALLOCATE_POOL)(
-    EFI_MEMORY_TYPE PoolType,
-    UINTN Size,
-    VOID **Buffer);
+typedef EFI_STATUS(EFIAPI *EFI_ALLOCATE_POOL)(EFI_MEMORY_TYPE PoolType,
+                                              UINTN Size, VOID **Buffer);
 
-typedef EFI_STATUS(EFIAPI *EFI_FREE_POOL)(
-    VOID *Buffer);
+typedef EFI_STATUS(EFIAPI *EFI_FREE_POOL)(VOID *Buffer);
 
-typedef EFI_STATUS(EFIAPI *EFI_ALLOCATE_PAGES)(
-    EFI_ALLOCATE_TYPE Type,
-    EFI_MEMORY_TYPE MemoryType,
-    UINTN Pages,
-    EFI_PHYSICAL_ADDRESS *Memory);
+typedef EFI_STATUS(EFIAPI *EFI_ALLOCATE_PAGES)(EFI_ALLOCATE_TYPE Type,
+                                               EFI_MEMORY_TYPE MemoryType,
+                                               UINTN Pages,
+                                               EFI_PHYSICAL_ADDRESS *Memory);
 
-typedef EFI_STATUS(EFIAPI *EFI_FREE_PAGES)(
-    EFI_PHYSICAL_ADDRESS Memory,
-    UINTN Pages);
+typedef EFI_STATUS(EFIAPI *EFI_FREE_PAGES)(EFI_PHYSICAL_ADDRESS Memory,
+                                           UINTN Pages);
 
-#define EFI_LOADED_IMAGE_PROTOCOL_GUID \
-    {0x5B1B31A1, 0x9562, 0x11D2, {0x8E, 0x3F, 0x00, 0xA0, 0xC9, 0x69, 0x72, 0x3B}}
-#define EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID \
-    {0x0964E5B22, 0x6459, 0x11D2, {0x8E, 0x39, 0x00, 0xA0, 0xC9, 0x69, 0x72, 0x3B}}
-#define EFI_FILE_INFO_ID \
-    {0x09576E92, 0x6D3F, 0x11D2, {0x8E, 0x39, 0x00, 0xA0, 0xC9, 0x69, 0x72, 0x3B}}
+#define EFI_LOADED_IMAGE_PROTOCOL_GUID                                         \
+    {0x5B1B31A1,                                                               \
+     0x9562,                                                                   \
+     0x11D2,                                                                   \
+     {0x8E, 0x3F, 0x00, 0xA0, 0xC9, 0x69, 0x72, 0x3B}}
+#define EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID                                   \
+    {0x0964E5B22,                                                              \
+     0x6459,                                                                   \
+     0x11D2,                                                                   \
+     {0x8E, 0x39, 0x00, 0xA0, 0xC9, 0x69, 0x72, 0x3B}}
+#define EFI_FILE_INFO_ID                                                       \
+    {0x09576E92,                                                               \
+     0x6D3F,                                                                   \
+     0x11D2,                                                                   \
+     {0x8E, 0x39, 0x00, 0xA0, 0xC9, 0x69, 0x72, 0x3B}}
 
 // プロトコルの前方宣言
 typedef struct _EFI_FILE_PROTOCOL EFI_FILE_PROTOCOL;
@@ -294,29 +301,22 @@ typedef struct
 } EFI_FILE_INFO;
 
 // ファイル操作関数ポインタ定義
-typedef EFI_STATUS(EFIAPI *EFI_FILE_OPEN)(
-    EFI_FILE_PROTOCOL *This,
-    EFI_FILE_PROTOCOL **NewHandle,
-    CHAR16 *FileName,
-    UINT64 OpenMode,
-    UINT64 Attributes);
+typedef EFI_STATUS(EFIAPI *EFI_FILE_OPEN)(EFI_FILE_PROTOCOL *This,
+                                          EFI_FILE_PROTOCOL **NewHandle,
+                                          CHAR16 *FileName, UINT64 OpenMode,
+                                          UINT64 Attributes);
 
 typedef EFI_STATUS(EFIAPI *EFI_FILE_CLOSE)(EFI_FILE_PROTOCOL *This);
 
-typedef EFI_STATUS(EFIAPI *EFI_FILE_READ)(
-    EFI_FILE_PROTOCOL *This,
-    UINTN *BufferSize,
-    VOID *Buffer);
+typedef EFI_STATUS(EFIAPI *EFI_FILE_READ)(EFI_FILE_PROTOCOL *This,
+                                          UINTN *BufferSize, VOID *Buffer);
 
-typedef EFI_STATUS(EFIAPI *EFI_FILE_SET_POSITION)(
-    EFI_FILE_PROTOCOL *This,
-    UINT64 Position);
+typedef EFI_STATUS(EFIAPI *EFI_FILE_SET_POSITION)(EFI_FILE_PROTOCOL *This,
+                                                  UINT64 Position);
 
-typedef EFI_STATUS(EFIAPI *EFI_FILE_GET_INFO)(
-    EFI_FILE_PROTOCOL *This,
-    EFI_GUID *InformationType,
-    UINTN *BufferSize,
-    VOID *Buffer);
+typedef EFI_STATUS(EFIAPI *EFI_FILE_GET_INFO)(EFI_FILE_PROTOCOL *This,
+                                              EFI_GUID *InformationType,
+                                              UINTN *BufferSize, VOID *Buffer);
 
 // EFI_FILE_PROTOCOL 本体
 struct _EFI_FILE_PROTOCOL
@@ -336,8 +336,7 @@ struct _EFI_FILE_PROTOCOL
 
 // EFI_SIMPLE_FILE_SYSTEM_PROTOCOL 本体
 typedef EFI_STATUS(EFIAPI *EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_OPEN_VOLUME)(
-    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *This,
-    EFI_FILE_PROTOCOL **Root);
+    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *This, EFI_FILE_PROTOCOL **Root);
 
 struct _EFI_SIMPLE_FILE_SYSTEM_PROTOCOL
 {
@@ -346,10 +345,9 @@ struct _EFI_SIMPLE_FILE_SYSTEM_PROTOCOL
 };
 
 // HandleProtocol の型定義
-typedef EFI_STATUS(EFIAPI *EFI_HANDLE_PROTOCOL)(
-    VOID *Handle,
-    EFI_GUID *Protocol,
-    VOID **Interface);
+typedef EFI_STATUS(EFIAPI *EFI_HANDLE_PROTOCOL)(VOID *Handle,
+                                                EFI_GUID *Protocol,
+                                                VOID **Interface);
 
 typedef struct
 {
@@ -388,9 +386,8 @@ static inline VOID SetMem(VOID *Dest, UINTN Size, uint8_t Value)
 }
 
 // ExitBootServices の型定義 (Index 29)
-typedef EFI_STATUS(EFIAPI *EFI_EXIT_BOOT_SERVICES)(
-    EFI_HANDLE ImageHandle,
-    UINTN MapKey);
+typedef EFI_STATUS(EFIAPI *EFI_EXIT_BOOT_SERVICES)(EFI_HANDLE ImageHandle,
+                                                   UINTN MapKey);
 
 // BootServices (LocateProtocolを使うために拡張)
 typedef struct

@@ -139,6 +139,7 @@ def run(clean: bool, target: str, test: bool = False, timeout: int = 30):
         cmd.extend(['-device', 'qemu-xhci,id=xhci'])
         cmd.extend(['-device', 'usb-kbd'])
     elif target == 'aarch64' or target == 'riscv64':
+        cmd.extend(['-device', 'ramfb'])
         cmd.extend(['-device', 'qemu-xhci,id=xhci'])
         cmd.extend(['-device', 'usb-kbd'])
     

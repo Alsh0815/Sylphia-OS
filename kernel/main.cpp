@@ -1,3 +1,4 @@
+#include "arch/inasm.hpp"
 #include <stdint.h>
 
 #include "apic.hpp"
@@ -23,7 +24,7 @@ FileDescriptor *g_fds[16];
 extern "C" __attribute__((ms_abi)) void
 KernelMain(const FrameBufferConfig &config, const MemoryMap &memmap)
 {
-    __asm__ volatile("cli");
+    CLI();
 
     // 1. コンソール初期化
     const uint32_t kDesktopBG = 0xFF181818;
@@ -42,7 +43,7 @@ KernelMain(const FrameBufferConfig &config, const MemoryMap &memmap)
     // 4. PCIデバイス初期化（xHCI + NVMe）
     PCI::SetupPCI();
 
-    __asm__ volatile("sti");
+    STI();
 
     // 5. ファイルシステム初期化とインストーラー
     if (NVMe::g_nvme)
@@ -119,5 +120,5 @@ KernelMain(const FrameBufferConfig &config, const MemoryMap &memmap)
     // 8. メインループ（ここには到達しないはず）
     // IdleTaskがスケジュールされ、以降の実行はそちらで行われる
     while (1)
-        __asm__ volatile("hlt");
+        Hlt();
 }

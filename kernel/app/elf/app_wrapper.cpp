@@ -1,4 +1,5 @@
 #include "app_wrapper.hpp"
+#include "arch/inasm.hpp"
 #include "elf_loader.hpp"
 #include "paging.hpp"
 #include "printk.hpp"
@@ -107,6 +108,6 @@ void AppTaskEntry()
     // ここには戻ってこない
     while (1)
     {
-        __asm__ volatile("hlt");
+        Hlt();
     }
 }

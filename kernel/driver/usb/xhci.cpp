@@ -1,4 +1,5 @@
 #include "xhci.hpp"
+#include "arch/inasm.hpp"
 #include "driver/usb/keyboard/keyboard.hpp"
 #include "driver/usb/mass_storage/mass_storage.hpp"
 #include "memory/memory_manager.hpp"
@@ -77,7 +78,7 @@ void Controller::Initialize()
         kprintf("[xHCI] CRITICAL ERROR: Device not found or invalid PCI "
                 "address!\n");
         while (1)
-            __asm__ volatile("hlt");
+            Hlt();
     }
 
     mmio_base_ = PCI::ReadBar0(pci_dev_);
@@ -228,7 +229,7 @@ void Controller::Initialize()
     kprintf("[xHCI] Starting Controller...");
     while (ReadOpReg(0x04) & 1)
     {
-        __asm__ volatile("pause");
+        PAUSE();
     }
     kprintf(" Running!\n");
 
@@ -358,14 +359,14 @@ bool Controller::ConfigureEndpoint(uint8_t slot_id, uint8_t ep_addr,
     // Type=12 (Configure Endpoint)
     trb.control = (pcs_ & 1) | (12 << 10) | (slot_id << 24);
 
-    __asm__ volatile("wbinvd");
+    WBINVD();
     cmd_ring_index_++;
     RingDoorbell(0, 0);
 
     int timeout = 1000000;
     while (timeout > 0)
     {
-        __asm__ volatile("wbinvd");
+        WBINVD();
         volatile TRB &event = event_ring_[event_ring_index_];
         uint32_t control = event.control;
 
@@ -396,7 +397,7 @@ bool Controller::ConfigureEndpoint(uint8_t slot_id, uint8_t ep_addr,
         else
         {
             timeout--;
-            __asm__ volatile("pause");
+            PAUSE();
         }
     }
 
@@ -443,7 +444,7 @@ bool Controller::ControlIn(uint8_t slot_id, uint8_t req_type, uint8_t request,
     int timeout = 1000000;
     while (timeout > 0)
     {
-        __asm__ volatile("wbinvd");
+        WBINVD();
         volatile TRB &event = event_ring_[event_ring_index_];
         uint32_t control = event.control;
 
@@ -467,7 +468,7 @@ bool Controller::ControlIn(uint8_t slot_id, uint8_t req_type, uint8_t request,
         else
         {
             timeout--;
-            __asm__ volatile("pause");
+            PAUSE();
         }
     }
     kprintf("[xHCI] ControlIn Timeout.\n");
@@ -554,7 +555,7 @@ bool Controller::SendNormalTRB(uint8_t slot_id, uint8_t ep_addr, void *data_buf,
         ring_index_[slot_id][dci] = 0;
     }
 
-    __asm__ volatile("wbinvd");
+    WBINVD();
     RingDoorbell(slot_id, dci);
 
     return true;
@@ -614,7 +615,7 @@ void Controller::BiosHandoff()
                         kprintf(" Timeout!\n");
                         break;
                     }
-                    __asm__ volatile("pause");
+                    PAUSE();
                 }
                 kprintf(" Done.\n");
             }
@@ -699,7 +700,7 @@ bool Controller::AddressDevice(uint8_t slot_id, int port_id, int speed)
     // Type=11 (Address Device), Slot IDを設定
     trb.control = (pcs_ & 1) | (TRB_ADDRESS_DEVICE << 10) | (slot_id << 24);
 
-    __asm__ volatile("wbinvd");
+    WBINVD();
     cmd_ring_index_++;
     RingDoorbell(0, 0);
 
@@ -710,7 +711,7 @@ bool Controller::AddressDevice(uint8_t slot_id, int port_id, int speed)
     int timeout = 1000000;
     while (timeout > 0)
     {
-        __asm__ volatile("wbinvd");
+        WBINVD();
         volatile TRB &event = event_ring_[event_ring_index_];
         uint32_t control = event.control;
 
@@ -742,7 +743,7 @@ bool Controller::AddressDevice(uint8_t slot_id, int port_id, int speed)
         else
         {
             timeout--;
-            __asm__ volatile("pause");
+            PAUSE();
         }
     }
 
@@ -766,7 +767,7 @@ uint8_t Controller::EnableSlot()
 
     cmd_ring_index_++;
 
-    __asm__ volatile("wbinvd");
+    WBINVD();
 
     RingDoorbell(0, 0);
 
@@ -781,7 +782,7 @@ uint8_t Controller::EnableSlot()
                     "(USBSTS=%x)\n",
                     usbsts);
             while (1)
-                __asm__ volatile("hlt");
+                Hlt();
         }
 
         volatile TRB &event = event_ring_[event_ring_index_];
@@ -790,7 +791,7 @@ uint8_t Controller::EnableSlot()
         if ((control & 1) != dcs_)
         {
             timeout--;
-            __asm__ volatile("pause");
+            PAUSE();
             continue;
         }
         event_ring_index_++;
@@ -815,7 +816,7 @@ uint8_t Controller::EnableSlot()
             }
         }
         timeout--;
-        __asm__ volatile("pause");
+        PAUSE();
     }
     kprintf("[xHCI] TIMEOUT: Enable Slot Command ignored.\n");
 
@@ -846,7 +847,7 @@ void Controller::ResetController()
 
     while (!(Read32(usbsts_offset) & 1))
     {
-        __asm__ volatile("pause");
+        PAUSE();
     }
 
     usbcmd = Read32(usbcmd_offset);
@@ -855,12 +856,12 @@ void Controller::ResetController()
 
     while (Read32(usbcmd_offset) & (1U << 1))
     {
-        __asm__ volatile("pause");
+        PAUSE();
     }
 
     while (Read32(usbsts_offset) & (1U << 11))
     {
-        __asm__ volatile("pause");
+        PAUSE();
     }
 }
 
@@ -886,7 +887,7 @@ void Controller::ResetPort(int port_id)
             WriteOpReg(portsc_offset, (val & 0x0E00C3E0) | (1 << 21));
             break;
         }
-        __asm__ volatile("pause");
+        PAUSE();
     }
 
     kprintf("[xHCI] Port %d Reset Complete. Checking status...\n", port_id);

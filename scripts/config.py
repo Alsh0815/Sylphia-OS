@@ -26,6 +26,7 @@ ARCH_CONFIG = {
     "x86_64": {
         "clang_target": "x86_64-elf",
         "clang_bootloader_target": "x86_64-pc-win32-coff",
+        "linker_script": "kernel.ld",
         "nasm_format": "elf64",
         "rust_target": "x86_64-unknown-none",
         "extra_cflags": ["-mno-red-zone", "-mgeneral-regs-only"],
@@ -40,6 +41,7 @@ ARCH_CONFIG = {
     "aarch64": {
         "clang_target": "aarch64-unknown-elf",
         "clang_bootloader_target": "aarch64-unknown-windows",
+        "linker_script": "kernel_aarch64.ld",
         "rust_target": "aarch64-unknown-none",
         "extra_cflags": [],
         "bootloader_output": "BOOTAA64.EFI",
@@ -53,6 +55,7 @@ ARCH_CONFIG = {
     "riscv64": {
         "clang_target": "riscv64-unknown-elf",
         "clang_bootloader_target": "riscv64-unknown-elf",
+        "linker_script": "kernel.ld",
         "rust_target": "riscv64gc-unknown-none-elf",
         "extra_cflags": ["-march=rv64gc", "-mabi=lp64d"],
         "bootloader_output": "BOOTRISCV64.EFI",

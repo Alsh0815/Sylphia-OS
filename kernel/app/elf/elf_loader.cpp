@@ -1,5 +1,6 @@
 #include "elf_loader.hpp"
 #include "app_wrapper.hpp"
+#include "arch/inasm.hpp"
 #include "cxx.hpp"
 #include "driver/usb/xhci.hpp"
 #include "elf.hpp"
@@ -538,7 +539,7 @@ bool ElfLoader::LoadAndRun(const char *filename, int argc, char **argv)
 
     g_app_running = false;
 
-    __asm__ volatile("sti");
+    STI();
 
     return true;
 }

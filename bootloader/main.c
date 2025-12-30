@@ -1,7 +1,6 @@
 #include "../uefi/uefi.h"
 #include <stddef.h>
 
-
 void *memset(void *s, int c, size_t n)
 {
     unsigned char *p = (unsigned char *)s;
@@ -33,7 +32,11 @@ EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
         SystemTable->ConOut->OutputString(
             SystemTable->ConOut, (CHAR16 *)L"Error: GOP not found!\r\n");
         while (1)
+#if defined(__x86_64__)
             __asm__ volatile("hlt");
+#elif defined(__aarch64__)
+            __asm__ volatile("wfe");
+#endif
     }
 
     UINT32 *FrameBuffer = (UINT32 *)Gop->Mode->FrameBufferBase;
@@ -76,7 +79,11 @@ EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
             SystemTable->ConOut->OutputString(
                 SystemTable->ConOut, (CHAR16 *)L"AllocatePool Failed!\r\n");
             while (1)
+#if defined(__x86_64__)
                 __asm__ volatile("hlt");
+#elif defined(__aarch64__)
+                __asm__ volatile("wfe");
+#endif
         }
 
         Status = SystemTable->BootServices->GetMemoryMap(
@@ -96,7 +103,11 @@ EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
             SystemTable->ConOut->OutputString(
                 SystemTable->ConOut, (CHAR16 *)L"GetMemoryMap Failed!\r\n");
             while (1)
+#if defined(__x86_64__)
                 __asm__ volatile("hlt");
+#elif defined(__aarch64__)
+                __asm__ volatile("wfe");
+#endif
         }
     }
 
@@ -116,7 +127,11 @@ EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
         SystemTable->ConOut->OutputString(
             SystemTable->ConOut, (CHAR16 *)L"Error: LoadedImage not found\r\n");
         while (1)
+#if defined(__x86_64__)
             __asm__ volatile("hlt");
+#elif defined(__aarch64__)
+            __asm__ volatile("wfe");
+#endif
     }
 
     EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *FileSystem;
@@ -129,7 +144,11 @@ EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
         SystemTable->ConOut->OutputString(
             SystemTable->ConOut, (CHAR16 *)L"Error: FileSystem not found\r\n");
         while (1)
+#if defined(__x86_64__)
             __asm__ volatile("hlt");
+#elif defined(__aarch64__)
+            __asm__ volatile("wfe");
+#endif
     }
 
     EFI_FILE_PROTOCOL *Root;
@@ -144,7 +163,11 @@ EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
         SystemTable->ConOut->OutputString(
             SystemTable->ConOut, (CHAR16 *)L"Error: kernel.elf not found!\r\n");
         while (1)
+#if defined(__x86_64__)
             __asm__ volatile("hlt");
+#elif defined(__aarch64__)
+            __asm__ volatile("wfe");
+#endif
     }
 
     VOID *HeaderBuffer;
@@ -163,7 +186,11 @@ EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
         SystemTable->ConOut->OutputString(
             SystemTable->ConOut, (CHAR16 *)L"Error: Not a valid ELF file!\r\n");
         while (1)
+#if defined(__x86_64__)
             __asm__ volatile("hlt");
+#elif defined(__aarch64__)
+            __asm__ volatile("wfe");
+#endif
     }
 
     UINT64 KernelFirst = 0xFFFFFFFFFFFFFFFF;
@@ -185,18 +212,31 @@ EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     UINTN NumPages = (KernelLast - KernelFirst + 0xFFF) / 0x1000;
     EFI_PHYSICAL_ADDRESS KernelBaseAddr = KernelFirst; // 0x100000
 
+#if defined(__x86_64__)
     Status = SystemTable->BootServices->AllocatePages(
-        AllocateAddress, EfiLoaderData, NumPages, &KernelBaseAddr);
+        AllocateAddress, EfiLoaderCode, NumPages, &KernelBaseAddr);
+#elif defined(__aarch64__)
+    Status = SystemTable->BootServices->AllocatePages(
+        AllocateAnyPages, EfiLoaderCode, NumPages, &KernelBaseAddr);
+#endif
 
     if (Status != EFI_SUCCESS)
     {
         SystemTable->ConOut->OutputString(
             SystemTable->ConOut,
-            (CHAR16
-                 *)L"Error: Failed to allocate kernel memory at 0x100000.\r\n");
+            (CHAR16 *)L"Error: Failed to allocate kernel memory.\r\n");
         while (1)
+#if defined(__x86_64__)
             __asm__ volatile("hlt");
+#elif defined(__aarch64__)
+            __asm__ volatile("wfe");
+#endif
     }
+
+    UINT64 Delta = 0;
+#if defined(__aarch64__)
+    Delta = KernelBaseAddr - KernelFirst;
+#endif
 
     SystemTable->BootServices->FreePool(HeaderBuffer);
 
@@ -217,7 +257,11 @@ EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
             SystemTable->ConOut,
             (CHAR16 *)L"Error: Failed to allocate file buffer.\r\n");
         while (1)
+#if defined(__x86_64__)
             __asm__ volatile("hlt");
+#elif defined(__aarch64__)
+            __asm__ volatile("wfe");
+#endif
     }
 
     KernelFile->SetPosition(KernelFile, 0);
@@ -229,7 +273,11 @@ EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
         SystemTable->ConOut->OutputString(SystemTable->ConOut,
                                           (CHAR16 *)L"Error: Read failed\r\n");
         while (1)
+#if defined(__x86_64__)
             __asm__ volatile("hlt");
+#elif defined(__aarch64__)
+            __asm__ volatile("wfe");
+#endif
     }
 
     SystemTable->ConOut->OutputString(
@@ -243,14 +291,14 @@ EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     {
         if (Phdr[i].p_type == PT_LOAD)
         {
-            CopyMem((VOID *)Phdr[i].p_vaddr,
+            CopyMem((VOID *)(Phdr[i].p_vaddr + Delta),
                     (VOID *)((UINT64)Ehdr + Phdr[i].p_offset),
                     Phdr[i].p_filesz);
 
             UINTN RemainBytes = Phdr[i].p_memsz - Phdr[i].p_filesz;
             if (RemainBytes > 0)
             {
-                SetMem((VOID *)(Phdr[i].p_vaddr + Phdr[i].p_filesz),
+                SetMem((VOID *)(Phdr[i].p_vaddr + Phdr[i].p_filesz + Delta),
                        RemainBytes, 0);
             }
         }
@@ -293,7 +341,11 @@ EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
                 SystemTable->ConOut,
                 (CHAR16 *)L"AllocatePool Failed at Exit\r\n");
             while (1)
+#if defined(__x86_64__)
                 __asm__ volatile("hlt");
+#elif defined(__aarch64__)
+                __asm__ volatile("wfe");
+#endif
         }
 
         MemoryMapSize = BufferSize;
@@ -327,7 +379,11 @@ EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
                 SystemTable->ConOut,
                 (CHAR16 *)L"Final GetMemoryMap Failed!\r\n");
             while (1)
+#if defined(__x86_64__)
                 __asm__ volatile("hlt");
+#elif defined(__aarch64__)
+                __asm__ volatile("wfe");
+#endif
         }
 
         SystemTable->BootServices->ExitBootServices(ImageHandle, MapKey);
@@ -342,7 +398,8 @@ EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     memmap_arg.descriptor_version = DescriptorVersion;
 
     typedef void (*KernelEntryPoint)(FrameBufferConfig *, struct MemoryMap *);
-    KernelEntryPoint KernelMainStart = (KernelEntryPoint)Ehdr->e_entry;
+    KernelEntryPoint KernelMainStart =
+        (KernelEntryPoint)(Ehdr->e_entry + Delta);
 
     KernelMainStart(&Config, &memmap_arg);
     while (1)

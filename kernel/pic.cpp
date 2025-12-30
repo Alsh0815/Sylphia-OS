@@ -1,5 +1,7 @@
 #include <stdint.h>
 
+#if defined(__x86_64__)
+
 // I/Oポート操作用のアセンブリラッパー (インライン関数)
 static inline void IoOut8(uint16_t port, uint8_t data)
 {
@@ -21,3 +23,12 @@ void DisablePIC()
     IoOut8(0xA1, 0xFF);
     IoOut8(0x21, 0xFF);
 }
+
+#else
+
+void DisablePIC()
+{
+    // AArch64 has no legacy PIC (8259)
+}
+
+#endif

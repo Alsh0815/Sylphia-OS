@@ -1,6 +1,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "arch/inasm.hpp"
 #include "cxx.hpp"
 
 extern "C"
@@ -9,7 +10,7 @@ extern "C"
     void __cxa_pure_virtual()
     {
         while (1)
-            __asm__ volatile("hlt");
+            Hlt();
     }
 
     // static変数の初期化ガード (今回のエラーの原因)

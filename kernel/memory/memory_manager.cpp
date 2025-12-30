@@ -1,4 +1,5 @@
 #include "memory/memory_manager.hpp"
+#include "arch/inasm.hpp"
 #include "cxx.hpp"
 #include "graphics.hpp"
 #include "printk.hpp"
@@ -16,7 +17,8 @@ void MemoryManager::Initialize(const MemoryMap &memmap)
     for (unsigned int i = 0; i < memmap.map_size / memmap.descriptor_size; ++i)
     {
         auto *desc = reinterpret_cast<const MemoryDescriptor *>(iter);
-        uintptr_t region_end = desc->physical_start + (desc->number_of_pages * 4096);
+        uintptr_t region_end =
+            desc->physical_start + (desc->number_of_pages * 4096);
         if (region_end > range_end_)
         {
             range_end_ = region_end;
@@ -32,7 +34,8 @@ void MemoryManager::Initialize(const MemoryMap &memmap)
     for (unsigned int i = 0; i < memmap.map_size / memmap.descriptor_size; ++i)
     {
         auto *desc = reinterpret_cast<const MemoryDescriptor *>(iter);
-        if (static_cast<MemoryType>(desc->type) == MemoryType::kEfiConventionalMemory)
+        if (static_cast<MemoryType>(desc->type) ==
+            MemoryType::kEfiConventionalMemory)
         {
             size_t region_size = desc->number_of_pages * kFrameSize;
             if (region_size >= bitmap_size)
@@ -48,7 +51,7 @@ void MemoryManager::Initialize(const MemoryMap &memmap)
     {
         kprintf("Error: No suitable memory region found for bitmap.\n");
         while (1)
-            __asm__ volatile("hlt");
+            Hlt();
     }
 
     bitmap_.SetBuffer(reinterpret_cast<uint8_t *>(bitmap_base), bitmap_size);
@@ -59,11 +62,14 @@ void MemoryManager::Initialize(const MemoryMap &memmap)
     for (unsigned int i = 0; i < memmap.map_size / memmap.descriptor_size; ++i)
     {
         auto *desc = reinterpret_cast<const MemoryDescriptor *>(iter);
-        if (static_cast<MemoryType>(desc->type) == MemoryType::kEfiConventionalMemory)
+        if (static_cast<MemoryType>(desc->type) ==
+            MemoryType::kEfiConventionalMemory)
         {
             // この領域に含まれるフレームをすべて「空き」にする
             uintptr_t start_frame = desc->physical_start / kFrameSize;
-            uintptr_t end_frame = (desc->physical_start + desc->number_of_pages * kFrameSize) / kFrameSize;
+            uintptr_t end_frame =
+                (desc->physical_start + desc->number_of_pages * kFrameSize) /
+                kFrameSize;
 
             for (size_t f = start_frame; f < end_frame; ++f)
             {
@@ -74,7 +80,8 @@ void MemoryManager::Initialize(const MemoryMap &memmap)
     }
 
     uintptr_t bitmap_start_frame = bitmap_base / kFrameSize;
-    uintptr_t bitmap_end_frame = (bitmap_base + bitmap_size + kFrameSize - 1) / kFrameSize;
+    uintptr_t bitmap_end_frame =
+        (bitmap_base + bitmap_size + kFrameSize - 1) / kFrameSize;
     for (size_t f = bitmap_start_frame; f < bitmap_end_frame; ++f)
     {
         bitmap_.Set(f, true); // 使用中

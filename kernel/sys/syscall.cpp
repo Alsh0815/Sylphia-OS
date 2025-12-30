@@ -1,5 +1,6 @@
 #include "syscall.hpp"
 #include "app/elf/elf_loader.hpp"
+#include "arch/inasm.hpp"
 #include "fs/fat32/fat32_driver.hpp"
 #include "memory/memory_manager.hpp"
 #include "paging.hpp"
@@ -60,7 +61,7 @@ extern "C" uint64_t SyscallHandler(uint64_t syscall_number, uint64_t arg1,
             {
                 // 重要: Exit処理中は割り込みを無効化
                 // (タイマー割り込みでIdleTaskに切り替わるのを防ぐ)
-                __asm__ volatile("cli");
+                CLI();
 
                 // 重要: タスク情報を先にローカル変数に保存
                 // (キューから削除後にcurrentが無効になる可能性があるため)
@@ -111,7 +112,7 @@ extern "C" uint64_t SyscallHandler(uint64_t syscall_number, uint64_t arg1,
 
             // ここには戻ってこない
             while (1)
-                __asm__ volatile("hlt");
+                Hlt();
             return 0;
         }
 

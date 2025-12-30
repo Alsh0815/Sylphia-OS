@@ -1,5 +1,6 @@
 #include "idle_task.hpp"
 #include "app/elf/elf_loader.hpp"
+#include "arch/inasm.hpp"
 #include "io.hpp"
 #include "printk.hpp"
 #include "sys/logger/logger.hpp"
@@ -130,7 +131,7 @@ void IdleTaskEntry()
         poll_serial_input();
 #endif
 
-        __asm__ volatile("hlt"); // CPUを停止して割り込み待ち
+        Hlt(); // CPUを停止して割り込み待ち
     }
 }
 

@@ -69,8 +69,32 @@ class SylphiaBuildSystem:
             shutil.rmtree(self.build_dir)
         os.makedirs(self.build_dir)
     
+    def _is_target_arch_file(self, file_path: str, target_arch: str) -> bool:
+        """
+        ファイルパスが現在のターゲットアーキテクチャに適しているか判定する
+        archディレクトリ以下のファイルについて、target_archと異なるアーキテクチャディレクトリにある場合はFalseを返す
+        """
+        parts = file_path.split(os.sep)
+        if "arch" in parts:
+            try:
+                arch_index = parts.index("arch")
+                if arch_index + 1 < len(parts):
+                    file_arch = parts[arch_index + 1]
+                    # arch直下がアーキテクチャ名でない場合（共通コードなど）は対象とするが、
+                    # 今回は arch/x86_64 のような構造を想定
+                    # configにあるキーと一致するか確認すべきだが、簡易的に
+                    # target_archと不一致なら除外とする
+                    # ただし、ファイルアーキテクチャが既知のアーキテクチャディレクトリの場合のみチェック
+                    known_archs = ["x86_64", "aarch64", "riscv64"]
+                    if file_arch in known_archs and file_arch != target_arch:
+                        return False
+            except ValueError:
+                pass
+        return True
+
     def __build_app(self, app: str, pbar: tqdm, target: BuildTarget = BuildTarget.X86_64) -> list[str]:
         arch_config = self._get_arch_config(target)
+        arch_key = self._get_arch_key(target)
         pbar.set_description(app)
         files = []
         ret_files = []
@@ -78,6 +102,8 @@ class SylphiaBuildSystem:
             for dir in dirs:
                 os.makedirs(os.path.join(root, dir).replace(self.apps_dir, self.bin_apps_dir), exist_ok=True)
             for file in _files:
+                if not self._is_target_arch_file(os.path.join(root, file), arch_key):
+                    continue
                 if file.endswith(".asm") or file.endswith(".s") or file.endswith(".cpp"):
                     files.append(os.path.join(root, file))
         os.makedirs(os.path.join(self.bin_apps_dir, app), exist_ok=True)
@@ -122,6 +148,7 @@ class SylphiaBuildSystem:
         return ret_files
     
     def __build_bootloader(self, target: BuildTarget = BuildTarget.X86_64):
+        # ... (unchanged) ...
         arch_config = self._get_arch_config(target)
         arch_key = self._get_arch_key(target)
         print(f"Building bootloader for {arch_key}...")
@@ -133,6 +160,8 @@ class SylphiaBuildSystem:
             for dir in dirs:
                 os.makedirs(os.path.join(root, dir).replace(self.bootloader_src_dir, self.bin_bootloader_dir), exist_ok=True)
             for file in files:
+                if not self._is_target_arch_file(os.path.join(root, file), arch_key):
+                    continue
                 if file.endswith(".c"):
                     target_files.append(os.path.join(root, file))
         
@@ -204,12 +233,16 @@ class SylphiaBuildSystem:
                     continue
                 os.makedirs(os.path.join(root, dir).replace(self.kernel_src_dir, self.bin_kernel_dir), exist_ok=True)
             for file in files:
+                if not self._is_target_arch_file(os.path.join(root, file), arch_key):
+                    continue
                 if file.endswith(".asm") or file.endswith(".s"):
                     target_files.append(os.path.join(root, file))
                 elif file.endswith(".cpp"):
                     target_files.append(os.path.join(root, file))
         for root, dirs, files in os.walk(self.std_dir):
             for file in files:
+                if not self._is_target_arch_file(os.path.join(root, file), arch_key):
+                    continue
                 if file.endswith(".cpp"):
                     target_files.append(os.path.join(root, file))
 
@@ -288,7 +321,7 @@ class SylphiaBuildSystem:
                 Config.Linker.LD_LLD_PATH,
                 "-entry", "KernelMain",
                 "-z", "norelro",
-                "-T", f"{os.path.join(self.kernel_src_dir, 'kernel.ld')}",
+                "-T", f"{os.path.join(self.kernel_src_dir, arch_config.get('linker_script', 'kernel.ld'))}",
                 "--static",
                 "-o", f"{os.path.join(self.output_dir, 'kernel.elf')}",
             ]

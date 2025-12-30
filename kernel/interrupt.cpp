@@ -1,5 +1,6 @@
 #include "interrupt.hpp"
 #include "apic.hpp"
+#include "arch/inasm.hpp"
 #include "console.hpp"
 #include "driver/usb/keyboard/keyboard.hpp"
 #include "io.hpp"
@@ -7,6 +8,8 @@
 #include "printk.hpp"
 #include "task/scheduler.hpp"
 #include <stdint.h>
+
+#if defined(__x86_64__)
 
 // IDTの実体 (256個の割り込みに対応)
 InterruptDescriptor idt[256];
@@ -69,7 +72,7 @@ __attribute__((interrupt)) void DivideErrorHandler(InterruptFrame *frame)
 
     kprintf("\nSystem Halted.\n");
     while (1)
-        __asm__ volatile("hlt");
+        Hlt();
 }
 
 __attribute__((interrupt)) void InvalidOpcodeHandler(InterruptFrame *frame)
@@ -92,7 +95,7 @@ __attribute__((interrupt)) void InvalidOpcodeHandler(InterruptFrame *frame)
 
     kprintf("\nSystem Halted.\n");
     while (1)
-        __asm__ volatile("hlt");
+        Hlt();
 }
 
 __attribute__((interrupt)) void DoubleFaultHandler(InterruptFrame *frame,
@@ -116,7 +119,7 @@ __attribute__((interrupt)) void DoubleFaultHandler(InterruptFrame *frame,
 
     kprintf("\nSystem Halted.\n");
     while (1)
-        __asm__ volatile("hlt");
+        Hlt();
 }
 
 __attribute__((interrupt)) void GPFaultHandler(InterruptFrame *frame,
@@ -141,7 +144,7 @@ __attribute__((interrupt)) void GPFaultHandler(InterruptFrame *frame,
     kprintf("System Halted. Please reset the machine.\n");
 
     while (1)
-        __asm__ volatile("hlt");
+        Hlt();
 }
 
 __attribute__((interrupt)) void PageFaultHandler(InterruptFrame *frame,
@@ -186,7 +189,7 @@ __attribute__((interrupt)) void PageFaultHandler(InterruptFrame *frame,
     kprintf("System Halted.\n");
 
     while (1)
-        __asm__ volatile("hlt");
+        Hlt();
 }
 
 extern USB::XHCI::Controller *g_xhci;
@@ -225,8 +228,11 @@ __attribute__((interrupt)) void TimerHandler(InterruptFrame *frame)
     Scheduler::Schedule();
 }
 
+#endif
+
 void SetupInterrupts()
 {
+#if defined(__x86_64__)
     // ゼロ除算例外 (Vector 0)
     SetIDTEntry(0, (uint64_t)DivideErrorHandler, 0x08, IDT_TYPE_INTERRUPT_GATE);
 
@@ -252,4 +258,5 @@ void SetupInterrupts()
                 IDT_TYPE_INTERRUPT_GATE);
 
     LoadIDT(sizeof(idt) - 1, (uint64_t)&idt[0]);
+#endif
 }

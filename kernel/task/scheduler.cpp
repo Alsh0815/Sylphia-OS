@@ -1,5 +1,6 @@
 #include "scheduler.hpp"
 #include "../printk.hpp"
+#include "arch/inasm.hpp"
 #include "task_manager.hpp"
 
 // 静的メンバ変数の定義
@@ -96,9 +97,9 @@ void Scheduler::Schedule(bool voluntary)
 void Scheduler::Yield()
 {
     // 割り込みを禁止してスケジュール
-    __asm__ volatile("cli");
+    CLI();
     Schedule(true); // 自発的なYield
-    __asm__ volatile("sti");
+    STI();
 }
 
 bool Scheduler::IsEnabled()
