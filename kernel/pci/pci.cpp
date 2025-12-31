@@ -2,6 +2,7 @@
 #include "driver/nvme/nvme_driver.hpp"
 #include "driver/usb/xhci.hpp"
 #include "io.hpp"
+#include "paging.hpp"
 #include "printk.hpp"
 
 namespace PCI
@@ -17,6 +18,23 @@ void InitializePCI(uintptr_t ecam_base, uint8_t start_bus, uint8_t end_bus)
     g_ecam_base = ecam_base;
     g_ecam_start_bus = start_bus;
     g_ecam_end_bus = end_bus;
+
+#if defined(__aarch64__)
+    // ECAM領域をマッピング (Device Memoryとして)
+    // バス1つあたり 1MB (20bit)
+    // サイズ = (end - start + 1) << 20
+    size_t ecam_size = (static_cast<size_t>(end_bus) - start_bus + 1) << 20;
+    size_t num_pages = (ecam_size + kPageSize4K - 1) / kPageSize4K;
+
+    // AArch64ではMMIO領域はDevice属性でマッピングする必要がある
+    PageManager::MapPage(ecam_base, ecam_base, num_pages,
+                         PageManager::kPresent | PageManager::kWritable |
+                             PageManager::kDevice);
+
+    kprintf("[PCI] Mapped ECAM at %lx (Size: %lx bytes)\n", ecam_base,
+            ecam_size);
+#endif
+
     kprintf("[PCI] Initialized with ECAM base %lx, bus %d-%d\n", ecam_base,
             start_bus, end_bus);
 }
@@ -312,6 +330,12 @@ void SetupPCI()
                 {
                     kprintf("Found NVMe Controller at %d:%d.%d\n", bus, dev,
                             func);
+
+                    // Enable Memory Space (bit 1) & Bus Master (bit 2)
+                    uint32_t cmd = PCI::ReadConfReg(d, 0x04);
+                    cmd |= (1 << 1) | (1 << 2);
+                    PCI::WriteConfReg(d, 0x04, cmd);
+
                     uintptr_t bar0 = PCI::ReadBar0(d);
                     NVMe::g_nvme = new NVMe::Driver(bar0);
                     NVMe::g_nvme->Initialize();

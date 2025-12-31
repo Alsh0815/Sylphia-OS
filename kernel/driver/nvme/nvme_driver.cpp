@@ -1,6 +1,7 @@
 #include "driver/nvme/nvme_driver.hpp"
 #include "arch/inasm.hpp"
 #include "memory/memory_manager.hpp"
+#include "paging.hpp"
 #include "printk.hpp"
 
 namespace NVMe
@@ -28,6 +29,20 @@ Driver::Driver(uintptr_t mmio_base)
 void Driver::Initialize()
 {
     kprintf("[NVMe] Initializing...\n");
+
+#if defined(__aarch64__)
+    // BAR0 (MMIO) 領域をマッピング
+    // 通常は16KB (0x4000) 程度だが、余裕を持って64KB (16ページ) マッピングする
+    // 本来はCAPレジスタを読む前にマッピングが必要なので、ここで行う
+    uintptr_t base_addr = reinterpret_cast<uintptr_t>(regs_);
+    PageManager::MapPage(base_addr, base_addr, 16,
+                         PageManager::kPresent | PageManager::kWritable |
+                             PageManager::kDevice);
+    kprintf("[NVMe] Mapped MMIO at %lx (64KB)\n", base_addr);
+#endif
+
+    uint64_t cap = regs_->cap;
+    kprintf("[NVMe] CAP=%lx\n", cap);
 
     // コントローラを無効化 (リセット)
     DisableController();
@@ -356,12 +371,24 @@ void Driver::DisableController()
 {
     // CC.EN (bit 0) を 0 にする
     uint32_t cc = regs_->cc;
+    kprintf("[NVMe] DisableController: Read CC=%x\n", cc);
     if (cc & 1)
     {
         regs_->cc = cc & ~1U;
+#if defined(__aarch64__)
+        __asm__ volatile("dsb sy" ::: "memory");
+#endif
+        kprintf("[NVMe] DisableController: Wrote CC=%x\n", regs_->cc);
     }
 
     // CSTS.RDY (bit 0) が 0 になるまで待つ
+    kprintf("[NVMe] Waiting for reset (CSTS & 1 == 0)...\n");
+    while (regs_->csts & 1)
+    {
+        kprintf("[NVMe] CSTS=%x\r", regs_->csts); // \r to overwrite line
+        PAUSE();
+    }
+    kprintf("\n[NVMe] Reset Complete. CSTS=%x\n", regs_->csts);
     kprintf("[NVMe] Waiting for reset...");
     while (regs_->csts & 1)
     {
@@ -380,9 +407,12 @@ void Driver::EnableController()
     cc |= (4 << 20); // CQ Entry Size = 2^4 = 16
     cc |= (6 << 16); // SQ Entry Size = 2^6 = 64
     regs_->cc = cc;
+#if defined(__aarch64__)
+    __asm__ volatile("dsb sy" ::: "memory");
+#endif
 
     // CSTS.RDY (bit 0) が 1 になるまで待つ
-    kprintf("[NVMe] Waiting for ready...");
+    kprintf("[NVMe] Waiting for ready (CSTS & 1 == 1)...\n");
     int timeout = 1000000;
 
     while ((regs_->csts & 1) == 0)
