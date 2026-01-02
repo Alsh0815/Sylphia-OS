@@ -52,7 +52,7 @@ void InitializeCore(const MemoryMap &memmap)
     *uart = ']'; // [D] After DisablePIC
 #endif
 
-#if defined(__x86_64__)
+#if defined(__x86_64__) || defined(__aarch64__)
     EnableSSE();
 #endif
 

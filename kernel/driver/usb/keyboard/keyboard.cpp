@@ -1,6 +1,7 @@
 #include "driver/usb/keyboard/keyboard.hpp"
 #include "app/elf/elf_loader.hpp"
 #include "cxx.hpp"
+#include "driver/usb/mass_storage/mass_storage.hpp"
 #include "memory/memory_manager.hpp"
 #include "printk.hpp"
 #include "sys/std/file_descriptor.hpp"
@@ -134,6 +135,13 @@ void Keyboard::ForceSendTRB()
 
 void Keyboard::Update()
 {
+    // Event Ring競合回避: MSCがビジーの場合はポーリングをスキップ
+    // これにより、MSC向けのイベントを誤って消費することを防ぐ
+    if (g_mass_storage && g_mass_storage->IsBusy())
+    {
+        return;
+    }
+
     int result = controller_->PollEndpoint(slot_id_, ep_interrupt_in_);
 
     if (result == 1)

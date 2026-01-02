@@ -43,7 +43,7 @@ ARCH_CONFIG = {
         "clang_bootloader_target": "aarch64-unknown-windows",
         "linker_script": "kernel_aarch64.ld",
         "rust_target": "aarch64-unknown-none",
-        "extra_cflags": [],
+        "extra_cflags": ["-fPIE"],
         "bootloader_output": "BOOTAA64.EFI",
         "ovmf_code": "aarch64/AARCH64_QEMU_EFI.fd",
         "ovmf_vars": "aarch64/AARCH64_QEMU_VARS.fd",

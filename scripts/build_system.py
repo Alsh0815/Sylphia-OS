@@ -323,8 +323,11 @@ class SylphiaBuildSystem:
                 "-z", "norelro",
                 "-T", f"{os.path.join(self.kernel_src_dir, arch_config.get('linker_script', 'kernel.ld'))}",
                 "--static",
-                "-o", f"{os.path.join(self.output_dir, 'kernel.elf')}",
             ]
+            # AArch64ではPIEとしてビルドしてリロケーション情報を生成
+            if target == BuildTarget.AARCH64:
+                cmd.append("--pie")
+            cmd.extend(["-o", f"{os.path.join(self.output_dir, 'kernel.elf')}"])
             cmd.extend(o_files)
             result = subprocess.run(
                 cmd,

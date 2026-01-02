@@ -22,11 +22,11 @@ enum TRBType
 
 struct EventRingSegmentTableEntry
 {
-    uint64_t ring_segment_base_address;
-    uint32_t ring_segment_size;
-    uint32_t reserved;
-    uint32_t reserved2;
-};
+    uint64_t ring_segment_base_address; // 8 bytes
+    uint16_t ring_segment_size;         // 2 bytes (xHCI spec: 16-bit)
+    uint16_t reserved;                  // 2 bytes
+    uint32_t reserved2;                 // 4 bytes
+} __attribute__((packed));              // Total: 16 bytes (xHCI spec)
 
 struct SlotContext
 {
@@ -134,6 +134,7 @@ class Controller
     uintptr_t db_regs_base_; // Doorbell Registers
 
     uint8_t max_slots_;
+    uint8_t max_ports_;
 
     uint64_t *dcbaa_; // Device Context Base Address Array
     TRB *command_ring_;
@@ -145,6 +146,7 @@ class Controller
     uint32_t cmd_ring_index_;   // Command Ringの書き込み位置
     uint32_t event_ring_index_; // Event Ringの読み取り位置
 
+    void AdvanceEventRing(); // ヘルパー関数追加
     TRB *transfer_rings_[256][32];
     uint8_t ring_cycle_state_[256][32];
     uint32_t ring_index_[256][32];

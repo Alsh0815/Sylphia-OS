@@ -3,6 +3,7 @@
 #include "driver/usb/keyboard/keyboard.hpp"
 #include "driver/usb/mass_storage/mass_storage.hpp"
 #include "memory/memory_manager.hpp"
+#include "paging.hpp"
 #include "pci/pci.hpp"
 #include "printk.hpp"
 
@@ -84,6 +85,14 @@ void Controller::Initialize()
     mmio_base_ = PCI::ReadBar0(pci_dev_);
     kprintf("[xHCI] MMIO Base: %lx\n", mmio_base_);
 
+#if defined(__aarch64__)
+    // xHCI MMIO領域をDevice Memoryとしてマッピング (64KB)
+    PageManager::MapPage(mmio_base_, mmio_base_, 16,
+                         PageManager::kPresent | PageManager::kWritable |
+                             PageManager::kDevice);
+    kprintf("[xHCI] Mapped MMIO at %lx (64KB)\n", mmio_base_);
+#endif
+
     uint32_t cmd_reg = PCI::ReadConfReg(pci_dev_, 0x04);
     kprintf("[xHCI] Old Command Reg: %x\n", cmd_reg); // ログで確認
 
@@ -92,6 +101,8 @@ void Controller::Initialize()
     PCI::WriteConfReg(pci_dev_, 0x04, cmd_reg);
 
     kprintf("[xHCI] New Command Reg: %x\n", PCI::ReadConfReg(pci_dev_, 0x04));
+
+    DSB(); // メモリバリア: MMIO読み込み前に書き込み完了を保証
 
     uint8_t cap_length = Read32(0x00) & 0xFF;
     uint32_t rts_offset = Read32(0x18) & ~0x1F; // Runtime Register Space Offset
@@ -108,7 +119,8 @@ void Controller::Initialize()
 
     uint32_t hcsparams1 = Read32(0x04);
     max_slots_ = hcsparams1 & 0xFF;
-    kprintf("[xHCI] Max Slots: %d\n", max_slots_);
+    max_ports_ = (hcsparams1 >> 24) & 0xFF;
+    kprintf("[xHCI] Max Slots: %d, Max Ports: %d\n", max_slots_, max_ports_);
 
     uint32_t hcsparams2 = Read32(0x08);
     // Hi(bit 25:21) << 5 | Lo(bit 31:27)
@@ -123,20 +135,30 @@ void Controller::Initialize()
     // サイズは (MaxSlots + 1) * 8 バイト。64バイトアライメント必須。
     dcbaa_ = static_cast<uint64_t *>(
         MemoryManager::Allocate((max_slots_ + 1) * 8, 64));
+    PageManager::SetDeviceMemory(dcbaa_, (max_slots_ + 1) * 8);
+
     for (int i = 0; i <= max_slots_; ++i)
         dcbaa_[i] = 0;
+    FlushCache(dcbaa_,
+               (max_slots_ + 1) * 8); // AArch64: DMA前にキャッシュフラッシュ
 
     if (max_scratchpads > 0)
     {
         uint64_t *scratchpad_array = static_cast<uint64_t *>(
             MemoryManager::Allocate(max_scratchpads * 8, 64));
+        PageManager::SetDeviceMemory(scratchpad_array, max_scratchpads * 8);
 
         for (uint32_t i = 0; i < max_scratchpads; ++i)
         {
             void *buf = MemoryManager::AllocateFrame();
             scratchpad_array[i] = reinterpret_cast<uint64_t>(buf);
         }
+        FlushCache(scratchpad_array,
+                   max_scratchpads *
+                       8); // AArch64: Scratchpadポインタをフラッシュ
         dcbaa_[0] = reinterpret_cast<uint64_t>(scratchpad_array);
+        FlushCache(&dcbaa_[0],
+                   sizeof(uint64_t)); // AArch64: DCBAA[0]を再フラッシュ
     }
 
     // DCBAAP (OpReg + 0x30) に設定
@@ -154,6 +176,7 @@ void Controller::Initialize()
     // とりあえずTRB 32個分確保 (サイズ=32*16=512bytes)。64バイトアライメント。
     command_ring_ =
         static_cast<TRB *>(MemoryManager::Allocate(sizeof(TRB) * 32, 64));
+    PageManager::SetDeviceMemory(command_ring_, sizeof(TRB) * 32);
     {
         uint8_t *p = reinterpret_cast<uint8_t *>(command_ring_);
         for (size_t i = 0; i < sizeof(TRB) * 32; ++i)
@@ -165,6 +188,8 @@ void Controller::Initialize()
         reinterpret_cast<uint64_t>(command_ring_); // 先頭アドレス
     link_trb.status = 0;
     link_trb.control = (6 << 10) | 2; // Type=6, TC(Toggle Cycle)=1
+    FlushCache(command_ring_,
+               sizeof(TRB) * 32); // AArch64: Command Ringをフラッシュ
 
     // CRCR (OpReg + 0x18) に設定。Bit 0 (RCS) は 1 (Cycle Bit)
     // にしておくのが一般的
@@ -173,22 +198,33 @@ void Controller::Initialize()
     WriteOpReg(0x1C, (crcr_phys >> 32));
 
     // Event Ring (TRB x 32)
+    // 注意: Event RingはDevice Memory属性を設定しない。
+    // xHCIコントローラがDMAで書き込むデータを正しく読み取るため、
+    // Normal Memoryとして確保し、読み取り前にキャッシュインバリデートを行う。
     event_ring_ =
         static_cast<TRB *>(MemoryManager::Allocate(sizeof(TRB) * 32, 64));
+    // PageManager::SetDeviceMemory(event_ring_, sizeof(TRB) * 32); // 削除:
+    // Normal Memoryのまま
     {
         uint8_t *p = reinterpret_cast<uint8_t *>(event_ring_);
         for (size_t i = 0; i < sizeof(TRB) * 32; ++i)
             p[i] = 0;
     }
+    FlushCache(event_ring_,
+               sizeof(TRB) * 32); // AArch64: Event Ringをフラッシュ
 
     // ERST (Event Ring Segment Table) - セグメント1つだけ使う
     erst_ = static_cast<EventRingSegmentTableEntry *>(
         MemoryManager::Allocate(sizeof(EventRingSegmentTableEntry) * 1, 64));
+    PageManager::SetDeviceMemory(erst_, sizeof(EventRingSegmentTableEntry) * 1);
     erst_[0].ring_segment_base_address =
         reinterpret_cast<uint64_t>(event_ring_);
     erst_[0].ring_segment_size = 32; // TRB数
     erst_[0].reserved = 0;
     erst_[0].reserved2 = 0;
+    FlushCache(erst_, sizeof(EventRingSegmentTableEntry) *
+                          1); // AArch64: ERSTをフラッシュ（重要！）
+    DSB(); // メモリバリア: xHCIレジスタ書き込み前にDRAMへの書き込み完了を保証
 
     // Interrupter Register Set 0 (Runtime Registers の先頭 + 0x20 から開始)
     // Interrupter 0 は offset 0x20
@@ -205,12 +241,20 @@ void Controller::Initialize()
     WriteRtReg(int0_offset + 0x14, erst_phys >> 32);
 
     uint32_t iman = ReadRtReg(int0_offset + 0x00);
+
+#if defined(__x86_64__)
     iman |= 2; // Interrupt Enable
+#else
+    iman &= ~2; // Interrupt Disable (Force Polling to avoid race condition)
+#endif
     WriteRtReg(int0_offset + 0x00, iman);
 
     kprintf("[xHCI] Memory Structures Allocated & Registers Set.\n");
 
     // MSI/MSI-X割り込みを設定 (ベクタ 0x50)
+#if defined(__aarch64__)
+    kprintf("[PCI MSI] MSI not fully supported on AArch64 yet. Skipping.\n");
+#else
     kprintf("[xHCI] Setting up MSI/MSI-X interrupts...\n");
     if (PCI::SetupMSI(pci_dev_, 0x50))
     {
@@ -221,6 +265,7 @@ void Controller::Initialize()
         kprintf("[xHCI] Warning: MSI/MSI-X setup failed, interrupts may not "
                 "work.\n");
     }
+#endif
 
     uint32_t usbcmd = ReadOpReg(0x00);
     usbcmd |= 1;
@@ -232,11 +277,12 @@ void Controller::Initialize()
         PAUSE();
     }
     kprintf(" Running!\n");
+    kprintf("[xHCI] DEBUG: Controller Started. Checking Ports...\n");
 
     uint32_t op_regs = cap_length;
     // 各ポートの状態を確認 (Port Status and Control Register)
     // PORTSCは OpRegs + 0x400 + (0x10 * (PortNum - 1))
-    for (int i = 1; i <= max_slots_ && i <= 16; ++i)
+    for (int i = 1; i <= max_ports_; ++i)
     {
         // 簡易的にMaxPorts変数を再取得するか、Initialize内で保存したローカル変数を使う
         uint32_t portsc_offset = 0x400 + (0x10 * (i - 1));
@@ -244,8 +290,11 @@ void Controller::Initialize()
 
         if (portsc & 1)
         { // Connected
-            kprintf("[xHCI] Device found at Port %d. Resetting...\n", i);
+            kprintf("[xHCI] DEBUG: Device found at Port %d. Status: %x. "
+                    "Resetting...\n",
+                    i, portsc);
             ResetPort(i);
+            kprintf("[xHCI] DEBUG: Port %d Reset returned.\n", i);
 
             uint32_t portsc_after = ReadOpReg(portsc_offset);
             int speed = (portsc_after >> 10) & 0x0F;
@@ -263,11 +312,24 @@ void Controller::Initialize()
                         if (g_usb_keyboard->Initialize())
                         {
                             kprintf("[xHCI - kbd] Keyboard initialized.\n");
+                            // ERDP確認
+                            uint32_t el = ReadRtReg(0x20 + 0x18);
+                            uint32_t eh = ReadRtReg(0x20 + 0x1C);
+                            kprintf("[xHCI DBG] After kbd init: ERDP=0x%x%08x, "
+                                    "idx=%d\n",
+                                    eh, el, event_ring_index_);
                         }
                         else
                         {
                             delete g_usb_keyboard;
                             g_usb_keyboard = nullptr;
+
+                            // ERDP確認（Mass Storage初期化前）
+                            uint32_t el = ReadRtReg(0x20 + 0x18);
+                            uint32_t eh = ReadRtReg(0x20 + 0x1C);
+                            kprintf("[xHCI DBG] Before MSC init: "
+                                    "ERDP=0x%x%08x, idx=%d\n",
+                                    eh, el, event_ring_index_);
 
                             g_mass_storage =
                                 new USB::MassStorage(this, slot_id);
@@ -303,9 +365,12 @@ bool Controller::ConfigureEndpoint(uint8_t slot_id, uint8_t ep_addr,
     {
         transfer_rings_[slot_id][dci] =
             static_cast<TRB *>(MemoryManager::Allocate(sizeof(TRB) * 32, 64));
+        PageManager::SetDeviceMemory(transfer_rings_[slot_id][dci],
+                                     sizeof(TRB) * 32);
         uint8_t *p = reinterpret_cast<uint8_t *>(transfer_rings_[slot_id][dci]);
         for (size_t i = 0; i < sizeof(TRB) * 32; ++i)
             p[i] = 0;
+        FlushCache(transfer_rings_[slot_id][dci], sizeof(TRB) * 32);
 
         ring_cycle_state_[slot_id][dci] = 1;
         ring_index_[slot_id][dci] = 0;
@@ -313,11 +378,13 @@ bool Controller::ConfigureEndpoint(uint8_t slot_id, uint8_t ep_addr,
 
     InputContext *input_ctx = static_cast<InputContext *>(
         MemoryManager::Allocate(sizeof(InputContext), 64));
+    PageManager::SetDeviceMemory(input_ctx, sizeof(InputContext));
     {
         uint8_t *p = reinterpret_cast<uint8_t *>(input_ctx);
         for (size_t i = 0; i < sizeof(InputContext); ++i)
             p[i] = 0;
     }
+    FlushCache(input_ctx, sizeof(InputContext));
 
     // Input Control Context
     // Add Context Flags (Bit 0=SlotCtx, Bit DCI=対象EP)
@@ -340,7 +407,10 @@ bool Controller::ConfigureEndpoint(uint8_t slot_id, uint8_t ep_addr,
     }
     ep_ctx.max_packet_size = max_packet_size;
     ep_ctx.interval = interval; // Descriptorから取った値を設定
-    ep_ctx.average_trb_length = 1;
+
+    // Average TRB Length: Bulkの場合は平均パケットサイズ程度に設定
+    // 小さすぎると帯域幅計算でおかしくなる可能性あり
+    ep_ctx.average_trb_length = (type == 2) ? 512 : 8;
 
     ep_ctx.error_count = 3;
 
@@ -349,6 +419,9 @@ bool Controller::ConfigureEndpoint(uint8_t slot_id, uint8_t ep_addr,
     uint64_t ring_base =
         reinterpret_cast<uint64_t>(transfer_rings_[slot_id][dci]);
     ep_ctx.dequeue_pointer = ring_base | 1; // DCS=1
+
+    // InputContext設定完了後にフラッシュ
+    FlushCache(input_ctx, sizeof(InputContext));
 
     uint64_t command_trb_ptr =
         reinterpret_cast<uint64_t>(&command_ring_[cmd_ring_index_]);
@@ -359,20 +432,24 @@ bool Controller::ConfigureEndpoint(uint8_t slot_id, uint8_t ep_addr,
     // Type=12 (Configure Endpoint)
     trb.control = (pcs_ & 1) | (12 << 10) | (slot_id << 24);
 
-    WBINVD();
+    // コマンドTRBのフラッシュ
+    FlushCache(&trb, sizeof(TRB));
+
+    DSB();
     cmd_ring_index_++;
     RingDoorbell(0, 0);
 
     int timeout = 1000000;
     while (timeout > 0)
     {
-        WBINVD();
+        DSB();
+        InvalidateCache(&event_ring_[event_ring_index_], sizeof(TRB));
         volatile TRB &event = event_ring_[event_ring_index_];
         uint32_t control = event.control;
 
         if ((control & 1) == dcs_)
         {
-            event_ring_index_++;
+            AdvanceEventRing();
             uint32_t trb_type = (control >> 10) & 0x3F;
             uint64_t param = event.parameter;
 
@@ -393,6 +470,12 @@ bool Controller::ConfigureEndpoint(uint8_t slot_id, uint8_t ep_addr,
                     return false;
                 }
             }
+            else
+            {
+                kprintf("[xHCI DBG] ConfigureEndpoint: consumed unexpected "
+                        "event type=%d\n",
+                        trb_type);
+            }
         }
         else
         {
@@ -410,6 +493,8 @@ bool Controller::ControlIn(uint8_t slot_id, uint8_t req_type, uint8_t request,
                            uint16_t value, uint16_t index, uint16_t length,
                            void *buffer)
 {
+    uint32_t start_idx = ring_index_[slot_id][1]; // 開始インデックスを保存
+
     TRB &setup_trb = transfer_rings_[slot_id][1][ring_index_[slot_id][1]++];
 
     // Setup Parameter: (Length << 48) | (Index << 32) | (Value << 16) |
@@ -439,18 +524,25 @@ bool Controller::ControlIn(uint8_t slot_id, uint8_t req_type, uint8_t request,
     status_trb.control =
         (ring_cycle_state_[slot_id][1] & 1) | (4 << 10) | (1 << 1);
 
+    // AArch64: 全TRBをキャッシュフラッシュしてからDoorbellを鳴らす
+    uint32_t trb_count = ring_index_[slot_id][1] - start_idx;
+    FlushCache(&transfer_rings_[slot_id][1][start_idx],
+               sizeof(TRB) * trb_count);
+    DSB();
+
     RingDoorbell(slot_id, 1);
 
     int timeout = 1000000;
     while (timeout > 0)
     {
-        WBINVD();
+        DSB();
+        InvalidateCache(&event_ring_[event_ring_index_], sizeof(TRB));
         volatile TRB &event = event_ring_[event_ring_index_];
         uint32_t control = event.control;
 
         if ((control & 1) == dcs_)
         {
-            event_ring_index_++;
+            AdvanceEventRing();
             uint32_t trb_type = (control >> 10) & 0x3F;
             // Transfer Event (Type 32)
             if (trb_type == 32)
@@ -463,6 +555,13 @@ bool Controller::ControlIn(uint8_t slot_id, uint8_t req_type, uint8_t request,
                     kprintf("[xHCI] ControlIn Failed. Code=%d\n", comp_code);
                     return false;
                 }
+            }
+            else
+            {
+                // Transfer Event以外のイベントを消費した場合はログ出力
+                kprintf("[xHCI DBG] ControlIn: consumed non-Transfer Event "
+                        "type=%d\n",
+                        trb_type);
             }
         }
         else
@@ -477,46 +576,119 @@ bool Controller::ControlIn(uint8_t slot_id, uint8_t req_type, uint8_t request,
 
 int Controller::PollEndpoint(uint8_t slot_id, uint8_t ep_addr)
 {
-    uint64_t *event_ptr =
-        reinterpret_cast<uint64_t *>(&event_ring_[event_ring_index_]);
+    // AArch64: メモリバリアを先に実行してからEvent Ringを読み取る
+    DSB();
+    ISB();
 
-    TRB event = event_ring_[event_ring_index_];
-    uint32_t control = event.control;
+    // キャッシュインバリデート（受信前にメモリから再読み込み）
+    InvalidateCache(&event_ring_[event_ring_index_], sizeof(TRB));
+
+    // volatileポインタ経由で確実にメモリから読み取る
+    volatile TRB *event_ptr = &event_ring_[event_ring_index_];
+    uint32_t control = event_ptr->control;
+    uint32_t status = event_ptr->status;
+    uint64_t parameter = event_ptr->parameter;
+
+    // ERDPレジスタを確認し、異常なら再設定
+    static int log_count = 0; // ログ出力用カウンタ
+
+    if (control == 0)
+    {
+        DSB();
+        uint32_t erdp_low = ReadRtReg(0x20 + 0x18);
+        uint32_t erdp_high = ReadRtReg(0x20 + 0x1C);
+        uint64_t expected_erdp =
+            reinterpret_cast<uint64_t>(&event_ring_[event_ring_index_]);
+
+        /*
+        if (log_count < 3)
+        {
+            kprintf("[xHCI DBG] PollEP: idx=%d, ctrl=0x%x, dcs=%d, cycle=%d\n",
+                    event_ring_index_, control, dcs_, (control & 1));
+            kprintf(
+                "[xHCI DBG] rt_regs_base_=0x%lx, ERDP reg: 0x%x%08x, expected: "
+                "0x%lx\n",
+                rt_regs_base_, erdp_high, erdp_low, expected_erdp);
+        }
+        */
+
+        // 回避策: ERDPが異常な場合、正しい値に再設定（常に実行）
+        uint64_t actual_erdp =
+            ((uint64_t)erdp_high << 32) | (erdp_low & ~0xFULL);
+        if (actual_erdp != (expected_erdp & ~0xFULL))
+        {
+            if (log_count < 3)
+            {
+                kprintf("[xHCI DBG] ERDP mismatch! Re-setting ERDP.\n");
+            }
+            uint32_t write_low = (expected_erdp & 0xFFFFFFFF) | (1 << 3);
+            uint32_t write_high = expected_erdp >> 32;
+            WriteRtReg(0x20 + 0x18, write_low);
+            WriteRtReg(0x20 + 0x1C, write_high);
+            DSB();
+
+            // 再読み取り
+            InvalidateCache(&event_ring_[event_ring_index_], sizeof(TRB));
+            control = event_ptr->control;
+            status = event_ptr->status;
+            parameter = event_ptr->parameter;
+
+            if (log_count < 3)
+            {
+                kprintf("[xHCI DBG] After ERDP reset: ctrl=0x%x\n", control);
+                log_count++;
+            }
+        }
+    }
+    else if (log_count < 3)
+    {
+        /*
+        kprintf("[xHCI DBG] PollEP: idx=%d, ctrl=0x%x, dcs=%d, cycle=%d\n",
+                event_ring_index_, control, dcs_, (control & 1));
+                */
+    }
 
     if ((control & 1) == dcs_)
     {
+        AdvanceEventRing();
+
         int ret_code = -1;
         uint32_t trb_type = (control >> 10) & 0x3F;
+        kprintf("[xHCI DBG] Event! type=%d, status=0x%x\n", trb_type, status);
 
-        if (trb_type == 32)
+        if (trb_type == 32) // Transfer Event
         {
             uint8_t event_slot = (control >> 24) & 0xFF;
             uint8_t event_dci = (control >> 16) & 0x1F;
+            uint32_t comp_code = (status >> 24) & 0xFF;
 
             uint8_t target_dci = AddressToDCI(ep_addr);
 
+            kprintf("[xHCI DBG] TransferEvent: slot=%d(exp=%d), "
+                    "dci=%d(exp=%d), comp=%d\n",
+                    event_slot, slot_id, event_dci, target_dci, comp_code);
+
             if (event_slot == slot_id && event_dci == target_dci)
             {
-                uint32_t comp_code = (event.status >> 24) & 0xFF;
                 ret_code = comp_code;
             }
             else
             {
             }
         }
-        event_ring_index_++;
-
-        if (event_ring_index_ == 32)
+        else if (trb_type == 33) // Command Completion Event
         {
-            event_ring_index_ = 0;
-            dcs_ ^= 1;
+            uint32_t comp_code = (status >> 24) & 0xFF;
+            kprintf("[xHCI DBG] CmdCompletionEvent: comp=%d\n", comp_code);
         }
-
-        uint64_t erdp =
-            reinterpret_cast<uint64_t>(&event_ring_[event_ring_index_]);
-
-        WriteRtReg(0x20 + 0x18, (erdp & 0xFFFFFFFF) | (1 << 3));
-        WriteRtReg(0x20 + 0x1C, (erdp >> 32));
+        else if (trb_type == 34) // Port Status Change Event
+        {
+            kprintf("[xHCI DBG] PortStatusChangeEvent\n");
+        }
+        else
+        {
+            kprintf("[xHCI DBG] OtherEvent: type=%d\n", trb_type);
+        }
 
         return ret_code;
     }
@@ -530,18 +702,57 @@ bool Controller::SendNormalTRB(uint8_t slot_id, uint8_t ep_addr, void *data_buf,
     uint8_t dci = AddressToDCI(ep_addr);
     TRB *ring = transfer_rings_[slot_id][dci];
     if (!ring)
+    {
+        kprintf("[xHCI ERR] SendNormalTRB: ring is null for slot=%d, dci=%d\n",
+                slot_id, dci);
         return false;
+    }
 
     uint32_t idx = ring_index_[slot_id][dci];
     uint8_t pcs = ring_cycle_state_[slot_id][dci];
+
+    // IN転送（デバイス→ホスト）かOUT転送（ホスト→デバイス）かを判定
+    bool is_in = (ep_addr & 0x80) != 0;
+
+    kprintf("[xHCI DBG] SendNormalTRB: slot=%d, ep=0x%x, dci=%d, buf=0x%lx, "
+            "len=%u, idx=%u, pcs=%d, is_in=%d\n",
+            slot_id, ep_addr, dci, (uint64_t)data_buf, len, idx, pcs, is_in);
+
+    // AArch64: IN転送の場合、受信バッファを事前にインバリデート
+    // これにより、DMA完了後に古いキャッシュデータを読まないようにする
+    if (is_in && len > 0 && data_buf)
+    {
+        InvalidateCache(data_buf, len);
+    }
 
     TRB &trb = ring[idx];
     trb.parameter = reinterpret_cast<uint64_t>(data_buf);
     trb.status = len; // Transfer Length
 
-    // Type=1 (Normal), IOC=1 (完了時にイベント発生), ISP=1 (Short
-    // Packet時もイベント)
-    trb.control = (pcs & 1) | (1 << 10) | (1 << 5) | (1 << 2);
+    // Type=1 (Normal), IOC=1 (完了時にイベント発生)
+    // ISP (Interrupt on Short Packet)
+    // は外してみる（IOCがあれば完了時にイベントが出るはず）
+    trb.control = (pcs & 1) | (1 << 10) | (1 << 5);
+
+    kprintf("[xHCI DBG] TRB: param=0x%lx, status=0x%x, ctrl=0x%x\n",
+            trb.parameter, trb.status, trb.control);
+
+    // データバッファのダンプ（メモリ破壊確認）
+    if (len >= 4 && data_buf)
+    {
+        uint32_t *ptr = (uint32_t *)data_buf;
+        kprintf("[xHCI DBG] Buffer Content: %08x %08x...\n", ptr[0],
+                len >= 8 ? ptr[1] : 0);
+    }
+
+    // AArch64: OUT転送の場合のみ、送信データをフラッシュ
+    if (!is_in && len > 0 && data_buf)
+    {
+        FlushCache(data_buf, len);
+    }
+
+    // TRBのフラッシュ
+    FlushCache(&ring[idx], sizeof(TRB));
 
     ring_index_[slot_id][dci]++;
 
@@ -551,11 +762,18 @@ bool Controller::SendNormalTRB(uint8_t slot_id, uint8_t ep_addr, void *data_buf,
         link.parameter = reinterpret_cast<uint64_t>(ring);
         link.status = 0;
         link.control = (pcs & 1) | (6 << 10) | (1 << 1);
+
+        // Link TRBのフラッシュ
+        FlushCache(&link, sizeof(TRB));
+
         ring_cycle_state_[slot_id][dci] ^= 1;
         ring_index_[slot_id][dci] = 0;
+        kprintf("[xHCI DBG] Link TRB inserted, pcs toggled to %d\n",
+                ring_cycle_state_[slot_id][dci]);
     }
 
-    WBINVD();
+    DSB();
+    kprintf("[xHCI DBG] Ringing doorbell for slot=%d, dci=%d\n", slot_id, dci);
     RingDoorbell(slot_id, dci);
 
     return true;
@@ -635,17 +853,21 @@ bool Controller::AddressDevice(uint8_t slot_id, int port_id, int speed)
 {
     DeviceContext *out_ctx = static_cast<DeviceContext *>(
         MemoryManager::Allocate(sizeof(DeviceContext), 64));
+    PageManager::SetDeviceMemory(out_ctx, sizeof(DeviceContext));
 
     {
         uint8_t *p = reinterpret_cast<uint8_t *>(out_ctx);
         for (size_t i = 0; i < sizeof(DeviceContext); ++i)
             p[i] = 0;
     }
+    FlushCache(out_ctx, sizeof(DeviceContext));
 
     dcbaa_[slot_id] = reinterpret_cast<uint64_t>(out_ctx);
+    FlushCache(&dcbaa_[slot_id], sizeof(uint64_t));
 
     InputContext *input_ctx = static_cast<InputContext *>(
         MemoryManager::Allocate(sizeof(InputContext), 64));
+    PageManager::SetDeviceMemory(input_ctx, sizeof(InputContext));
 
     {
         uint8_t *p = reinterpret_cast<uint8_t *>(input_ctx);
@@ -669,11 +891,13 @@ bool Controller::AddressDevice(uint8_t slot_id, int port_id, int speed)
 
     transfer_rings_[slot_id][1] =
         static_cast<TRB *>(MemoryManager::Allocate(sizeof(TRB) * 32, 64));
+    PageManager::SetDeviceMemory(transfer_rings_[slot_id][1], sizeof(TRB) * 32);
     {
         uint8_t *p = reinterpret_cast<uint8_t *>(transfer_rings_[slot_id][1]);
         for (size_t i = 0; i < sizeof(TRB) * 32; ++i)
             p[i] = 0;
     }
+    FlushCache(transfer_rings_[slot_id][1], sizeof(TRB) * 32);
     uint64_t tr_phys = reinterpret_cast<uint64_t>(transfer_rings_[slot_id][1]);
     if (speed == 4)
         input_ctx->ep_contexts[0].max_packet_size = 512;
@@ -690,6 +914,9 @@ bool Controller::AddressDevice(uint8_t slot_id, int port_id, int speed)
     input_ctx->ep_contexts[0].average_trb_length = 8;
     input_ctx->ep_contexts[0].error_count = 3;
 
+    // InputContext設定完了後にフラッシュ
+    FlushCache(input_ctx, sizeof(InputContext));
+
     uint64_t command_trb_ptr =
         reinterpret_cast<uint64_t>(&command_ring_[cmd_ring_index_]);
 
@@ -700,7 +927,10 @@ bool Controller::AddressDevice(uint8_t slot_id, int port_id, int speed)
     // Type=11 (Address Device), Slot IDを設定
     trb.control = (pcs_ & 1) | (TRB_ADDRESS_DEVICE << 10) | (slot_id << 24);
 
-    WBINVD();
+    // コマンドTRBのフラッシュ
+    FlushCache(&trb, sizeof(TRB));
+
+    DSB(); // メモリバリア: コマンドTRBとInput Contextの書き込み完了を保証
     cmd_ring_index_++;
     RingDoorbell(0, 0);
 
@@ -711,13 +941,14 @@ bool Controller::AddressDevice(uint8_t slot_id, int port_id, int speed)
     int timeout = 1000000;
     while (timeout > 0)
     {
-        WBINVD();
+        DSB();
+        InvalidateCache(&event_ring_[event_ring_index_], sizeof(TRB));
         volatile TRB &event = event_ring_[event_ring_index_];
         uint32_t control = event.control;
 
         if ((control & 1) == dcs_)
         {
-            event_ring_index_++;
+            AdvanceEventRing();
             uint32_t trb_type = (control >> 10) & 0x3F;
             uint64_t param = event.parameter;
 
@@ -738,6 +969,12 @@ bool Controller::AddressDevice(uint8_t slot_id, int port_id, int speed)
                             comp_code);
                     return false;
                 }
+            }
+            else
+            {
+                kprintf("[xHCI DBG] AddressDevice: consumed unexpected event "
+                        "type=%d\n",
+                        trb_type);
             }
         }
         else
@@ -767,7 +1004,7 @@ uint8_t Controller::EnableSlot()
 
     cmd_ring_index_++;
 
-    WBINVD();
+    DSB();
 
     RingDoorbell(0, 0);
 
@@ -785,6 +1022,7 @@ uint8_t Controller::EnableSlot()
                 Hlt();
         }
 
+        InvalidateCache(&event_ring_[event_ring_index_], sizeof(TRB));
         volatile TRB &event = event_ring_[event_ring_index_];
         uint32_t control = event.control;
 
@@ -794,7 +1032,7 @@ uint8_t Controller::EnableSlot()
             PAUSE();
             continue;
         }
-        event_ring_index_++;
+        AdvanceEventRing();
 
         // TRB Type チェック (Bit 10-15)
         uint32_t trb_type = (control >> 10) & 0x3F;
@@ -814,6 +1052,12 @@ uint8_t Controller::EnableSlot()
                 kprintf("[xHCI] Enable Slot Failed. Code: %d\n", comp_code);
                 return 0;
             }
+        }
+        else
+        {
+            kprintf(
+                "[xHCI DBG] EnableSlot: consumed unexpected event type=%d\n",
+                trb_type);
         }
         timeout--;
         PAUSE();
@@ -863,6 +1107,7 @@ void Controller::ResetController()
     {
         PAUSE();
     }
+    kprintf("[xHCI] DEBUG: ResetController finished.\n");
 }
 
 void Controller::ResetPort(int port_id)
@@ -899,13 +1144,15 @@ void Controller::ResetPort(int port_id)
     }
     else
     {
-        kprintf("[xHCI] Port %d Reset Failed (Not Enabled).\n", port_id);
+        kprintf("[xHCI] Port %d Reset Failed (Not Enabled). Status: %x\n",
+                port_id, after);
     }
+    kprintf("[xHCI] DEBUG: ResetPort %d done.\n", port_id);
 }
 
 void Controller::ProcessInterrupt()
 {
-    kprintf("[xHCI] ProcessInterrupt()\\n");
+    kprintf("[xHCI] DEBUG: ProcessInterrupt() called.\n");
     volatile TRB &event = event_ring_[event_ring_index_];
     uint32_t control = event.control;
 
@@ -919,23 +1166,48 @@ void Controller::ProcessInterrupt()
             // イベント処理は Update() に任せる
         }
 
-        event_ring_index_++;
-        if (event_ring_index_ == 32)
-        {
-            event_ring_index_ = 0;
-            dcs_ ^= 1;
-        }
-
-        uint64_t erdp =
-            reinterpret_cast<uint64_t>(&event_ring_[event_ring_index_]);
-        WriteRtReg(0x20 + 0x18, (erdp & 0xFFFFFFFF) | (1 << 3));
-        WriteRtReg(0x20 + 0x1C, (erdp >> 32));
+        AdvanceEventRing();
     }
 
     // 割り込み後にUpdate()を呼び出してキーボードイベントを処理
     if (g_usb_keyboard)
     {
         g_usb_keyboard->Update();
+    }
+}
+
+void Controller::AdvanceEventRing()
+{
+    uint32_t old_idx = event_ring_index_;
+    uint8_t old_dcs = dcs_;
+
+    event_ring_index_++;
+
+    if (event_ring_index_ >= 32)
+    {
+        event_ring_index_ = 0;
+        dcs_ ^= 1;
+    }
+
+    kprintf("[xHCI DBG] AdvanceER: %d->%d, dcs: %d->%d\n", old_idx,
+            event_ring_index_, old_dcs, dcs_);
+
+    uint64_t erdp = reinterpret_cast<uint64_t>(&event_ring_[event_ring_index_]);
+    uint32_t erdp_low_val = (erdp & 0xFFFFFFFF) | (1 << 3);
+    uint32_t erdp_high_val = (erdp >> 32);
+
+    // EHB (Bit 3) を1にして書き込むことで、Event Handler Busyをクリアする
+    WriteRtReg(0x20 + 0x18, erdp_low_val);
+    WriteRtReg(0x20 + 0x1C, erdp_high_val);
+    DSB();
+
+    // 書き込み確認（問題発生タイミング付近でのみ）
+    if (event_ring_index_ >= 23 && event_ring_index_ <= 26)
+    {
+        uint32_t read_low = ReadRtReg(0x20 + 0x18);
+        uint32_t read_high = ReadRtReg(0x20 + 0x1C);
+        kprintf("[xHCI DBG] ERDP write: 0x%x%08x, read: 0x%x%08x\n",
+                erdp_high_val, erdp_low_val, read_high, read_low);
     }
 }
 
@@ -963,5 +1235,30 @@ void Controller::DebugDump() const
     uint32_t erdp_low = ReadRtReg(0x20 + 0x18);
     uint32_t erdp_high = ReadRtReg(0x20 + 0x1C);
     kprintf("[xHCI Debug] ERDP: %x %x\n", erdp_high, erdp_low);
+
+    // ERSTBA (Event Ring Segment Table Base Address) の確認
+    uint32_t erstba_low = ReadRtReg(0x20 + 0x10);
+    uint32_t erstba_high = ReadRtReg(0x20 + 0x14);
+    kprintf("[xHCI Debug] ERSTBA: %x %x (expected: erst_)\n", erstba_high,
+            erstba_low);
+
+    // Slot 1のDevice Context（Output Context）を読み取り
+    if (dcbaa_ && dcbaa_[1])
+    {
+        InvalidateCache(reinterpret_cast<void *>(dcbaa_[1]), 1024);
+
+        // Device ContextはSlot Context + 31 Endpoint Contexts
+        // 各コンテキストは32バイト（64バイトモードの場合は64バイト）
+        // EP Context 4 (dci=4, Bulk OUT) = offset 4 * 32 = 128
+        uint64_t *ep4_ctx = reinterpret_cast<uint64_t *>(dcbaa_[1] + 4 * 32);
+
+        // Dequeue Pointer はEP Context内のDW2-DW3 (offset 8-15)
+        uint64_t tr_dequeue = ep4_ctx[1]; // DW2-DW3
+        uint32_t ep_state =
+            static_cast<uint32_t>(ep4_ctx[0] & 0x7); // DW0のbit 0-2
+
+        kprintf("[xHCI Debug] Slot1 EP4: State=%d, TR Dequeue=0x%lx\n",
+                ep_state, tr_dequeue);
+    }
 }
 } // namespace USB::XHCI

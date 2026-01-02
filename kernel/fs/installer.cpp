@@ -2,6 +2,7 @@
 #include "cxx.hpp"
 #include "driver/nvme/nvme_driver.hpp"
 #include "driver/usb/mass_storage/mass_storage.hpp"
+#include "driver/usb/xhci.hpp"
 #include "fs/fat32/fat32_driver.hpp"
 #include "fs/gpt.hpp"
 #include "memory/memory_manager.hpp"
@@ -155,8 +156,17 @@ void RunInstaller(FAT32Driver *nvme_fs, bool already_installed)
 
     kprintf("[Installer] USB Mass Storage Detected. Checking for updates...\n");
 
+    // ERDP確認
+    if (g_xhci)
+    {
+        g_xhci->DebugDump();
+    }
+
     uint8_t *buf = static_cast<uint8_t *>(MemoryManager::Allocate(512));
+    kprintf(
+        "[Installer] DEBUG: Calling USB::g_mass_storage->Read(0, buf, 1)...\n");
     USB::g_mass_storage->Read(0, buf, 1);
+    kprintf("[Installer] DEBUG: USB Read complete.\n");
 
     uint64_t usb_part_lba = 0;
 

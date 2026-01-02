@@ -69,15 +69,65 @@ KernelMain(const FrameBufferConfig &config, const MemoryMap &memmap)
                        config.EcamEndBus);
 #endif
     PCI::SetupPCI();
+    kprintf("[Kernel] DEBUG: PCI Setup returned.\n");
 
     STI();
 
     // 5. ファイルシステム初期化とインストーラー
     if (NVMe::g_nvme)
     {
+        kprintf(
+            "[Kernel] DEBUG: NVMe Driver exists. Allocating check buffer...\n");
         uint8_t *check_buf =
             static_cast<uint8_t *>(MemoryManager::Allocate(512, 4096));
+
+        kprintf("[Kernel] DEBUG: Check buffer allocated at %lx. Reading LBA "
+                "2048...\n",
+                (uint64_t)check_buf);
+#if defined(__aarch64__)
+        {
+            uint64_t sp_val;
+            __asm__ volatile("mov %0, sp" : "=r"(sp_val));
+            kprintf("[Kernel] DEBUG: SP = %lx, 16-byte aligned = %s\n", sp_val,
+                    (sp_val & 0xf) == 0 ? "YES" : "NO");
+
+            // スタック書き込みテスト
+            volatile uint64_t test_val = 0xDEADBEEF;
+            kprintf("[Kernel] DEBUG: Stack write test = %lx\n", test_val);
+
+            // 明示的なストア命令テスト (stp相当)
+            uint64_t dummy1 = 0x1234, dummy2 = 0x5678;
+            __asm__ volatile("stp %0, %1, [sp, #-16]!\n\t"
+                             "ldp %0, %1, [sp], #16"
+                             : "+r"(dummy1), "+r"(dummy2)
+                             :
+                             : "memory");
+            kprintf(
+                "[Kernel] DEBUG: STP/LDP test OK (dummy1=%lx, dummy2=%lx)\n",
+                dummy1, dummy2);
+
+            // vtable確認
+            uint64_t *obj_ptr = reinterpret_cast<uint64_t *>(NVMe::g_nvme);
+            uint64_t vtable_ptr = *obj_ptr; // 先頭がvtableポインタ
+            uint64_t *vtable = reinterpret_cast<uint64_t *>(vtable_ptr);
+            kprintf("[Kernel] DEBUG: g_nvme object at %lx\n",
+                    (uint64_t)obj_ptr);
+            kprintf("[Kernel] DEBUG: vtable at %lx\n", vtable_ptr);
+            kprintf("[Kernel] DEBUG: vtable[0] (Read?) = %lx\n", vtable[0]);
+            kprintf("[Kernel] DEBUG: vtable[1] (Write?) = %lx\n", vtable[1]);
+
+            // 仮想関数呼び出しを回避して直接呼び出し
+            kprintf("[Kernel] DEBUG: Calling ReadLBA directly...\n");
+            NVMe::g_nvme->ReadLBA(2048, check_buf, 1);
+            kprintf("[Kernel] DEBUG: ReadLBA complete.\n");
+
+            // 仮想関数呼び出しテスト
+            kprintf("[Kernel] DEBUG: Now trying virtual Read()...\n");
+        }
+#endif
         NVMe::g_nvme->Read(2048, check_buf, 1);
+        kprintf("[Kernel] DEBUG: Read LBA 2048 complete.\n");
+
         FileSystem::FAT32_BPB *check_bpb =
             reinterpret_cast<FileSystem::FAT32_BPB *>(check_buf);
 
@@ -112,6 +162,7 @@ KernelMain(const FrameBufferConfig &config, const MemoryMap &memmap)
         FileSystem::g_fat32_driver = nvme_fs;
 
         // USBからのインストール処理
+        kprintf("[Kernel] DEBUG: Starting Installer...\n");
         FileSystem::RunInstaller(nvme_fs, already_installed);
     }
     else

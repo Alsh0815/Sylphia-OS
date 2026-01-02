@@ -365,6 +365,37 @@ EFI_STATUS EfiMain(VOID *ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
         }
     }
 
+    // === ELFリロケーション処理 (AArch64 PIE対応) ===
+#if defined(__aarch64__)
+    if (Delta != 0 && Ehdr->e_shoff != 0 && Ehdr->e_shnum > 0)
+    {
+        Elf64_Shdr *Shdr = (Elf64_Shdr *)((UINT64)Ehdr + Ehdr->e_shoff);
+
+        // .rela.dynセクションを探してリロケーション適用
+        for (int i = 0; i < Ehdr->e_shnum; i++)
+        {
+            if (Shdr[i].sh_type == SHT_RELA)
+            {
+                Elf64_Rela *rela =
+                    (Elf64_Rela *)((UINT64)Ehdr + Shdr[i].sh_offset);
+                UINTN count = Shdr[i].sh_size / sizeof(Elf64_Rela);
+
+                for (UINTN j = 0; j < count; j++)
+                {
+                    UINT32 type = ELF64_R_TYPE(rela[j].r_info);
+
+                    // R_AARCH64_RELATIVE (0x403) - 最も一般的なリロケーション
+                    if (type == R_AARCH64_RELATIVE)
+                    {
+                        UINT64 *target = (UINT64 *)(rela[j].r_offset + Delta);
+                        *target = rela[j].r_addend + Delta;
+                    }
+                }
+            }
+        }
+    }
+#endif
+
     SystemTable->ConOut->OutputString(
         SystemTable->ConOut,
         (CHAR16 *)L"Segments Loaded. Exiting Boot Services...\r\n");

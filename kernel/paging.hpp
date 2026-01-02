@@ -259,6 +259,11 @@ class PageManager
     static bool AllocateVirtual(uint64_t virtual_addr, size_t size,
                                 uint64_t flags = kPresent | kWritable | kUser);
 
+    // 指定されたメモリ領域のページ属性をDevice Memory (nGnRnE) に変更する
+    // ptr: 領域の先頭アドレス (ページ境界を推奨)
+    // size: 領域サイズ
+    static void SetDeviceMemory(void *ptr, size_t size);
+
     // 新しいページテーブル領域を確保して初期化するヘルパー
     static PageTable *AllocateTable();
 

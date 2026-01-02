@@ -85,6 +85,38 @@ typedef struct
     Elf64_Xword p_align;
 } Elf64_Phdr;
 
+// ELFセクションヘッダー (リロケーション用)
+typedef struct
+{
+    Elf64_Word sh_name;
+    Elf64_Word sh_type;
+    Elf64_Xword sh_flags;
+    Elf64_Addr sh_addr;
+    Elf64_Off sh_offset;
+    Elf64_Xword sh_size;
+    Elf64_Word sh_link;
+    Elf64_Word sh_info;
+    Elf64_Xword sh_addralign;
+    Elf64_Xword sh_entsize;
+} Elf64_Shdr;
+
+// ELFリロケーションエントリ (RELA形式)
+typedef struct
+{
+    Elf64_Addr r_offset;
+    Elf64_Xword r_info;
+    Elf64_Sxword r_addend;
+} Elf64_Rela;
+
+// ELFセクションタイプ
+#define SHT_RELA 4
+
+// ELFリロケーションマクロ
+#define ELF64_R_TYPE(info) ((info) & 0xffffffff)
+
+// AArch64リロケーションタイプ
+#define R_AARCH64_RELATIVE 0x403
+
 #define PT_LOAD 1 // ロードすべきセグメント
 
 #ifndef EFI_TIME_DEFINED

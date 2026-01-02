@@ -52,6 +52,23 @@ bool PageManager::AllocateVirtual(uint64_t virtual_addr, size_t size,
     return true;
 }
 
+void PageManager::SetDeviceMemory(void *ptr, size_t size)
+{
+    // 実験的修正: AArch64でもDMAバッファをNormal Memoryのままにする
+    // Device Memory (nGnRnE) 属性はDMAバッファには不適切である可能性があるため
+    (void)ptr;
+    (void)size;
+    /*
+    #if defined(__aarch64__)
+        uint64_t addr = reinterpret_cast<uint64_t>(ptr);
+        size_t num_pages = (size + 4095) / 4096;
+        // 物理アドレス=仮想アドレス (Identity Mapping)
+        // kDevice (0x10) フラグを付加して再マッピング
+        MapPage(addr, addr, num_pages, kPresent | kWritable | kDevice);
+    #endif
+    */
+}
+
 void PageManager::MapPage(uint64_t virtual_addr, uint64_t physical_addr,
                           size_t count, uint64_t flags)
 {

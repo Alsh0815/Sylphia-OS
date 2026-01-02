@@ -442,7 +442,8 @@ void Driver::EnableController()
 
 void Driver::SendAdminCommand(SubmissionQueueEntry &cmd)
 {
-    WBINVD();
+    // WBINVD(); // AArch64ではWBINVDは不適切。メモリバリアを使用。
+    DSB();
     // SQにコマンド配置
     admin_sq_[sq_tail_] = cmd;
 
@@ -453,12 +454,19 @@ void Driver::SendAdminCommand(SubmissionQueueEntry &cmd)
     *sq_doorbell_ = sq_tail_;
 
     // 完了待ち (ポーリング)
-    while (true)
+    int timeout = 10000000;
+    while (timeout > 0)
     {
         volatile CompletionQueueEntry &cqe = admin_cq_[cq_head_];
         if ((cqe.status & 1) == phase_)
             break;
         PAUSE();
+        timeout--;
+        if (timeout == 0)
+        {
+            kprintf("[NVMe] SendAdminCommand TIMEOUT!\n");
+            return;
+        }
     }
 
     // CQ更新
@@ -481,9 +489,8 @@ void Driver::SendAdminCommand(SubmissionQueueEntry &cmd)
 
 void Driver::SendIOCommand(SubmissionQueueEntry &cmd)
 {
-    // kprintf("[NVMe CMD] Op:%x NSID:%d PRP1:%lx CDW10:%x CDW12:%x\n",
-    // cmd.opcode, cmd.nsid, cmd.data_ptr[0], cmd.cdw10, cmd.cdw12);
-    WBINVD();
+    // WBINVD();
+    DSB();
 
     // I/O SQに配置
     io_sq_[io_sq_tail_] = cmd;
@@ -492,16 +499,24 @@ void Driver::SendIOCommand(SubmissionQueueEntry &cmd)
     io_sq_tail_++;
     if (io_sq_tail_ >= queue_depth_)
         io_sq_tail_ = 0;
+
     *io_sq_doorbell_ = io_sq_tail_;
 
     // I/O CQで完了待ち
-    while (true)
+    int timeout = 10000000;
+    while (timeout > 0)
     {
         volatile CompletionQueueEntry &cqe = io_cq_[io_cq_head_];
         // Phase Tagチェック (Bit 0)
         if ((cqe.status & 1) == io_phase_)
             break;
         PAUSE();
+        timeout--;
+        if (timeout == 0)
+        {
+            kprintf("[NVMe] SendIOCommand TIMEOUT! (Opcode=%x)\n", cmd.opcode);
+            return;
+        }
     }
 
     // I/O CQ更新
