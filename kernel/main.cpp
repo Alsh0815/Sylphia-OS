@@ -3,11 +3,12 @@
 
 #include "apic.hpp"
 #include "console.hpp"
+#include "cxx.hpp"
 #include "driver/nvme/nvme_driver.hpp"
 #include "fs/fat32/fat32.hpp"
 #include "fs/fat32/fat32_driver.hpp"
 #include "fs/installer.hpp"
-#include "graphics.hpp"
+#include "graphic/GraphicSystem.hpp"
 #include "ioapic.hpp"
 #include "memory/memory_manager.hpp"
 #include "pci/pci.hpp"
@@ -15,6 +16,7 @@
 #include "sys/init/init.hpp"
 #include "sys/logger/logger.hpp"
 #include "sys/std/file_descriptor.hpp"
+#include "sys/timer/tsc.hpp"
 #include "task/idle_task.hpp"
 #include "task/scheduler.hpp"
 #include "task/task_manager.hpp"
@@ -35,10 +37,12 @@ KernelMain(const FrameBufferConfig &config, const MemoryMap &memmap)
     *uart = ' '; // [1] Entry
 #endif
 
-    // 1. コンソール初期化
+    // 1. グラフィックシステム初期化（メモリ初期化不要）
+    Graphic::InitializeGraphics(config);
+
+    // 2. 画面クリア（新APIで直接フレームバッファに描画）
     const uint32_t kDesktopBG = 0xFF181818;
-    FillRectangle(config, 0, 0, config.HorizontalResolution,
-                  config.VerticalResolution, kDesktopBG);
+    Graphic::FillScreen(kDesktopBG);
 
 #if defined(__aarch64__)
     *uart = '[';
@@ -47,7 +51,11 @@ KernelMain(const FrameBufferConfig &config, const MemoryMap &memmap)
     *uart = ' '; // [2] After FillRect
 #endif
 
-    static Console console(config, 0xFFFFFFFF, kDesktopBG);
+    // 3. カーネルコア初期化（メモリマネージャ含む）
+    Sys::Init::InitializeCore(memmap);
+
+    // 4. コンソール初期化
+    static Console console(*Graphic::g_llr, 0xFFFFFFFF, kDesktopBG);
     g_console = &console;
 
 #if defined(__aarch64__)
@@ -57,10 +65,7 @@ KernelMain(const FrameBufferConfig &config, const MemoryMap &memmap)
     *uart = ' '; // [3] Console ready
 #endif
 
-    // 2. カーネルコア初期化
-    Sys::Init::InitializeCore(memmap);
-
-    // 3. 標準I/Oとロガー初期化
+    // 5. 標準I/Oとロガー初期化
     Sys::Init::InitializeIO();
 
     // 4. PCIデバイス初期化（xHCI + NVMe）

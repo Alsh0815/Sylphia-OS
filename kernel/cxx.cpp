@@ -43,10 +43,18 @@ extern "C"
 
     void *memcpy(void *dest, const void *src, size_t n)
     {
-        char *d = (char *)dest;
-        const char *s = (const char *)src;
-        while (n--)
-            *d++ = *s++;
+        uint64_t *d8 = (uint64_t *)dest;
+        const uint64_t *s8 = (const uint64_t *)src;
+
+        size_t n8 = n / 8;
+        while (n8--)
+            *d8++ = *s8++;
+
+        char *d1 = (char *)d8;
+        const char *s1 = (const char *)s8;
+        size_t n1 = n % 8;
+        while (n1--)
+            *d1++ = *s1++;
         return dest;
     }
 

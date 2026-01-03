@@ -1,7 +1,6 @@
 #include "memory/memory_manager.hpp"
 #include "arch/inasm.hpp"
 #include "cxx.hpp"
-#include "graphics.hpp"
 #include "printk.hpp"
 
 extern "C" char __kernel_start;

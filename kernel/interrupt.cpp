@@ -6,6 +6,7 @@
 #include "io.hpp"
 #include "keyboard_layout.hpp"
 #include "printk.hpp"
+#include "sys/timer/timer.hpp"
 #include "task/scheduler.hpp"
 #include <stdint.h>
 
@@ -212,6 +213,9 @@ __attribute__((interrupt)) void UsbInterruptHandler(InterruptFrame *frame)
 
 __attribute__((interrupt)) void TimerHandler(InterruptFrame *frame)
 {
+    // ティックカウンタをインクリメント
+    Sys::Timer::Tick();
+
     // EOIを先に送信（コンテキストスイッチ前に送信することが重要）
     if (g_lapic)
     {

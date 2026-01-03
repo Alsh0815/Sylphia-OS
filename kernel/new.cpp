@@ -1,12 +1,6 @@
-#include <stddef.h>
+#include "new.hpp"
 #include "memory/memory_manager.hpp"
 
-#pragma GCC diagnostic ignored "-Wnew-returns-null"
-#pragma GCC diagnostic ignored "-Wnonnull"
-
-const size_t kHeaderSize = 16;
-
-// 通常の new
 void *operator new(size_t size)
 {
     // 実際に確保するサイズ = 要求サイズ + ヘッダサイズ
@@ -41,7 +35,8 @@ void operator delete(void *ptr) noexcept
 
     // 渡されたポインタは「データ本体」の先頭なので、
     // ヘッダサイズ分だけ「戻って」本来の先頭アドレスを得る
-    void *real_ptr = static_cast<void *>(static_cast<char *>(ptr) - kHeaderSize);
+    void *real_ptr =
+        static_cast<void *>(static_cast<char *>(ptr) - kHeaderSize);
 
     // 記録しておいたサイズを読み取る
     size_t total_size = *reinterpret_cast<uint64_t *>(real_ptr);
@@ -53,6 +48,7 @@ void operator delete(void *ptr) noexcept
 void operator delete(void *ptr, size_t size) noexcept
 {
     // C++14以降のサイズ付きdelete
+    (void)size; // unused parameter
     operator delete(ptr);
 }
 
@@ -63,5 +59,6 @@ void operator delete[](void *ptr) noexcept
 
 void operator delete[](void *ptr, size_t size) noexcept
 {
+    (void)size; // unused parameter
     operator delete(ptr);
 }

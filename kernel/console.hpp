@@ -1,11 +1,13 @@
 #pragma once
-#include "graphics.hpp"
+#include "graphic/GraphicSystem.hpp"
+#include "graphic/llr/LowLayerRenderer.hpp"
+
 
 class Console
 {
-  public:
-    // コンストラクタ: 画面設定と色を受け取る
-    Console(const FrameBufferConfig &config, uint32_t fg_color,
+public:
+    // コンストラクタ: LowLayerRendererと色を受け取る
+    Console(Graphic::LowLayerRenderer &llr, uint32_t fg_color,
             uint32_t bg_color);
 
     // 文字列を出力する
@@ -16,8 +18,8 @@ class Console
 
     void Panic(uint32_t fg_color, uint32_t bg_color);
 
-  private:
-    FrameBufferConfig config_;
+private:
+    Graphic::LowLayerRenderer &llr_;
     uint32_t fg_color_, bg_color_;
     int cursor_row_,
         cursor_column_;  // 現在の文字位置 (ピクセルではなく文字単位)
@@ -26,6 +28,7 @@ class Console
     // 1行スクロールなどの内部処理
     void NewLine();
     void Refresh(); // スクロール処理の実体
+    void WriteChar(int x, int y, char c, uint32_t fg_color, uint32_t bg_color);
 
     // エスケープシーケンス解析用
     enum State

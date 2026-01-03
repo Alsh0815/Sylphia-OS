@@ -1,4 +1,5 @@
 #include "console.hpp"
+#include "graphic/FontEngine.hpp"
 #include "io.hpp"
 #include "sys/sys.hpp"
 #include <stdint.h>
@@ -19,16 +20,37 @@ static inline void serial_putchar(char c)
 
 Console *g_console = nullptr;
 
-Console::Console(const FrameBufferConfig &config, uint32_t fg_color,
+Console::Console(Graphic::LowLayerRenderer &llr, uint32_t fg_color,
                  uint32_t bg_color)
-    : config_(config), fg_color_(fg_color), bg_color_(bg_color), cursor_row_(0),
+    : llr_(llr), fg_color_(fg_color), bg_color_(bg_color), cursor_row_(0),
       cursor_column_(0), default_fg_color_(fg_color),
       default_bg_color_(bg_color), state_(kNormal), esc_buf_idx_(0)
 {
 
     // 画面サイズから最大行数・文字数を計算 (8x16フォント前提)
-    columns_ = config_.HorizontalResolution / 8;
-    rows_ = config_.VerticalResolution / 16;
+    columns_ = Graphic::GetDisplayWidth() / 8;
+    rows_ = Graphic::GetDisplayHeight() / 16;
+}
+
+void Console::WriteChar(int x, int y, char c, uint32_t fg_color,
+                        uint32_t bg_color)
+{
+    // FontEngineを使用して文字をビットマップに変換
+    uint32_t char_bitmap[8 * 16];
+    const uint32_t *bmp = Char2Bmp(c, char_bitmap);
+    if (!bmp)
+        return;
+
+    // 色を適用したビットマップを作成
+    uint32_t colored_bitmap[8 * 16];
+    for (int i = 0; i < 8 * 16; ++i)
+    {
+        colored_bitmap[i] =
+            (char_bitmap[i] == 0xFFFFFFFF) ? fg_color : bg_color;
+    }
+
+    // LowLayerRendererで描画
+    llr_.WriteBitmap(x, y, 8, 16, colored_bitmap);
 }
 
 void Console::PutString(const char *s)
@@ -57,14 +79,14 @@ void Console::PutString(const char *s)
             if (cursor_column_ > 0)
             {
                 cursor_column_--;
-                WriteAscii(config_, cursor_column_ * 8, cursor_row_ * 16, ' ',
-                           bg_color_, bg_color_); // 背景色で消す
+                WriteChar(cursor_column_ * 8, cursor_row_ * 16, ' ', bg_color_,
+                          bg_color_); // 背景色で消す
             }
         }
         else if (cursor_column_ < columns_)
         {
-            WriteAscii(config_, cursor_column_ * 8, cursor_row_ * 16, *s,
-                       fg_color_, bg_color_);
+            WriteChar(cursor_column_ * 8, cursor_row_ * 16, *s, fg_color_,
+                      bg_color_);
             cursor_column_++;
         }
 
@@ -88,8 +110,8 @@ void Console::Panic(uint32_t fg_color, uint32_t bg_color)
     fg_color_ = fg_color;
     bg_color_ = bg_color;
 
-    FillRectangle(config_, 0, 0, config_.HorizontalResolution,
-                  config_.VerticalResolution, bg_color_);
+    llr_.WriteRect(0, 0, Graphic::GetDisplayWidth(),
+                   Graphic::GetDisplayHeight(), bg_color_);
 
     cursor_row_ = 0;
     cursor_column_ = 0;
@@ -114,31 +136,36 @@ void Console::NewLine()
 void Console::Refresh()
 {
     // 【スクロール処理】
-    // 画面全体を16ピクセル分(1行分)上にコピーする
+    // STANDARDモードではフレームバッファに直接描画されているため
+    // GetDisplayBufferでバッファを直接操作する
 
-    uint32_t *base = reinterpret_cast<uint32_t *>(config_.FrameBufferBase);
+    uint32_t *buffer = Graphic::GetDisplayBuffer();
+    if (!buffer)
+        return;
+
+    uint64_t display_width = Graphic::GetDisplayWidth();
+    uint64_t display_height = Graphic::GetDisplayHeight();
 
     // コピーする高さ = 全体 - 1行分
-    int copy_height = config_.VerticalResolution - 16;
+    uint64_t copy_height = display_height - 16;
 
     // VRAMは遅いので本来はダブルバッファリング等が望ましいが、
     // まずは単純なループコピーで実装する
-    for (int y = 0; y < copy_height; ++y)
+    for (uint64_t y = 0; y < copy_height; ++y)
     {
-        for (int x = 0; x < config_.HorizontalResolution; ++x)
+        for (uint64_t x = 0; x < display_width; ++x)
         {
             // コピー元: 16ピクセル下の画素
-            uint32_t src_index = (y + 16) * config_.PixelsPerScanLine + x;
+            uint64_t src_index = (y + 16) * display_width + x;
             // コピー先: 現在の画素
-            uint32_t dst_index = y * config_.PixelsPerScanLine + x;
+            uint64_t dst_index = y * display_width + x;
 
-            base[dst_index] = base[src_index];
+            buffer[dst_index] = buffer[src_index];
         }
     }
 
     // 移動した後、一番下の行を背景色でクリアする
-    FillRectangle(config_, 0, (rows_ - 1) * 16, config_.HorizontalResolution,
-                  16, bg_color_);
+    llr_.WriteRect(0, (rows_ - 1) * 16, display_width, 16, bg_color_);
 }
 
 void Console::ProcessEscapeSequence(char c)
