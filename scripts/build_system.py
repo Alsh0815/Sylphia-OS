@@ -1,8 +1,9 @@
-import subprocess
 from colorama import Fore, Style, init
 from enum import Enum, auto
 from pathlib import Path
 import click
+import datetime
+import json
 import os
 import platform
 import shutil
@@ -245,6 +246,13 @@ class SylphiaBuildSystem:
                     continue
                 if file.endswith(".cpp"):
                     target_files.append(os.path.join(root, file))
+        
+        build_time = datetime.datetime.now()
+        project_build_time = [build_time.year, build_time.month, build_time.day]
+        project_version = [0, 0, 0, 0]
+        with open(os.path.join(self.root_dir, "project.json"), "r") as f:
+            project_json = json.load(f)
+            project_version = project_json["project"]["version"]
 
         o_files = []
         with tqdm(
@@ -283,6 +291,13 @@ class SylphiaBuildSystem:
                         "-target", arch_config["clang_target"],
                         "-ffreestanding", "-fno-rtti", "-fno-exceptions",
                         "-I.", f"-I{self.kernel_src_dir}", "-O2", "-Wall",
+                        f"-DSYLPH_VERSION_MAJOR={project_version[0]}",
+                        f"-DSYLPH_VERSION_MINOR={project_version[1]}",
+                        f"-DSYLPH_VERSION_PATCH={project_version[2]}",
+                        f"-DSYLPH_VERSION_REVISION={project_version[3]}",
+                        f"-DSYLPH_BUILD_DATE_YEAR={project_build_time[0]}",
+                        f"-DSYLPH_BUILD_DATE_MONTH={project_build_time[1]}",
+                        f"-DSYLPH_BUILD_DATE_DAY={project_build_time[2]}"
                     ]
                     clang_cmd.extend(arch_config["extra_cflags"])
                     for flag in flags:

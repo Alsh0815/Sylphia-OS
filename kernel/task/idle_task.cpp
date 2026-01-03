@@ -8,40 +8,6 @@
 #include "sys/sys.hpp"
 #include "task_manager.hpp"
 
-// シリアルポート (COM1) のベースアドレス
-#define SERIAL_COM1_PORT 0x3F8
-
-#if SYLPHIA_DEBUG_ENABLED
-// シリアルポートにデータがあるかチェック
-static inline bool serial_has_data()
-{
-    return (IoIn8(SERIAL_COM1_PORT + 5) & 0x01) != 0;
-}
-
-// シリアルポートから1文字読み取り
-static inline char serial_getchar()
-{
-    return IoIn8(SERIAL_COM1_PORT);
-}
-
-// シリアルポートからの入力を処理
-static void poll_serial_input()
-{
-    while (serial_has_data())
-    {
-        char c = serial_getchar();
-        // CR (0x0D) を LF (0x0A) に変換（ターミナルはEnterでCRを送信する）
-        if (c == '\r')
-            c = '\n';
-        // キーボード入力として処理
-        if (g_fds[0] && g_fds[0]->GetType() == FD_KEYBOARD)
-        {
-            ((KeyboardFD *)g_fds[0])->OnInput(c);
-        }
-    }
-}
-#endif
-
 Task *g_idle_task = nullptr;
 
 // 必須プロセスの管理
@@ -125,11 +91,6 @@ void IdleTaskEntry()
     {
         // 必須プロセスのチェックと起動
         EssentialProcesses::CheckAndStartProcesses();
-
-#if SYLPHIA_DEBUG_ENABLED
-        // シリアルポートからの入力をポーリング
-        poll_serial_input();
-#endif
 
         Hlt(); // CPUを停止して割り込み待ち
     }

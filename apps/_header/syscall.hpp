@@ -173,3 +173,25 @@ inline int SetDisplayMode(uint32_t display_id, uint8_t mode)
 {
     return (int)Syscall3(kSyscallSetDisplayMode, display_id, mode, 0);
 }
+
+// システム情報取得用システムコール番号
+const uint64_t kSyscallGetSystemInfo = 32;
+
+// システム情報構造体
+struct SystemInfo
+{
+    int32_t version_major;
+    int32_t version_minor;
+    int32_t version_patch;
+    int32_t version_revision;
+    int32_t build_year;
+    int32_t build_month;
+    int32_t build_day;
+};
+
+// システム情報を取得
+// 戻り値: 0=成功
+inline int GetSystemInfo(SystemInfo *info)
+{
+    return (int)Syscall1(kSyscallGetSystemInfo, (uint64_t)info);
+}

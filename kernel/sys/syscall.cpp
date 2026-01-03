@@ -6,6 +6,7 @@
 #include "memory/memory_manager.hpp"
 #include "paging.hpp"
 #include "printk.hpp"
+#include "sys.hpp"
 #include "sys/std/file_descriptor.hpp"
 #include "task/scheduler.hpp"
 #include "task/task_manager.hpp"
@@ -366,6 +367,32 @@ extern "C" uint64_t SyscallHandler(uint64_t syscall_number, uint64_t arg1,
                     static_cast<Graphic::RenderMode>(mode));
             }
             disp->SetRenderMode(static_cast<Graphic::RenderMode>(mode));
+            return 0;
+        }
+
+        case 32: // GetSystemInfo (システム情報取得)
+        {
+            // arg1: SystemInfo* (ユーザー空間のバッファ)
+            // 戻り値: 0 (成功)
+            struct SystemInfo
+            {
+                int32_t version_major;
+                int32_t version_minor;
+                int32_t version_patch;
+                int32_t version_revision;
+                int32_t build_year;
+                int32_t build_month;
+                int32_t build_day;
+            };
+
+            SystemInfo *user_buf = reinterpret_cast<SystemInfo *>(arg1);
+            user_buf->version_major = System::Version.Major;
+            user_buf->version_minor = System::Version.Minor;
+            user_buf->version_patch = System::Version.Patch;
+            user_buf->version_revision = System::Version.Revision;
+            user_buf->build_year = System::BuildInfo.Date.Year;
+            user_buf->build_month = System::BuildInfo.Date.Month;
+            user_buf->build_day = System::BuildInfo.Date.Day;
             return 0;
         }
 

@@ -304,10 +304,32 @@ public:
         }
         else if (strcmp(argv[0], "sys") == 0)
         {
-            Print("=============== Sylphia-OS ZERO ===============\n");
-            Print("Shell running in user mode!\n");
-            Print("Rust\n");
-            Print("===============================================\n");
+            SystemInfo info;
+            if (GetSystemInfo(&info) == 0)
+            {
+                Print("=============== Sylphia-OS ===============\n");
+                Print("Version: ");
+                PrintInt(info.version_major);
+                Print(".");
+                PrintInt(info.version_minor);
+                Print(".");
+                PrintInt(info.version_patch);
+                Print(".");
+                PrintInt(info.version_revision);
+                Print("\n");
+                Print("Build: ");
+                PrintInt(info.build_year);
+                Print("/");
+                PrintInt(info.build_month);
+                Print("/");
+                PrintInt(info.build_day);
+                Print("\n");
+                Print("==========================================\n");
+            }
+            else
+            {
+                Print("Failed to get system info.\n");
+            }
         }
         else if (strcmp(argv[0], "display") == 0)
         {

@@ -4,20 +4,6 @@
 #include "sys/sys.hpp"
 #include <stdint.h>
 
-// シリアルポート (COM1) のベースアドレス
-#define SERIAL_COM1_PORT 0x3F8
-
-#if SYLPHIA_DEBUG_ENABLED
-// シリアルポートに1文字送信
-static inline void serial_putchar(char c)
-{
-    // 送信バッファが空になるまで待機
-    while ((IoIn8(SERIAL_COM1_PORT + 5) & 0x20) == 0)
-        ;
-    IoOut8(SERIAL_COM1_PORT, c);
-}
-#endif
-
 Console *g_console = nullptr;
 
 Console::Console(Graphic::LowLayerRenderer &llr, uint32_t fg_color,
@@ -57,11 +43,6 @@ void Console::PutString(const char *s)
 {
     while (*s)
     {
-#if SYLPHIA_DEBUG_ENABLED
-        // シリアルポートには全文字を出力（エスケープシーケンス含む）
-        serial_putchar(*s);
-#endif
-
         if (state_ != kNormal)
         {
             ProcessEscapeSequence(*s);

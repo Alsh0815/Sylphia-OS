@@ -1,0 +1,12 @@
+{
+    "project": {
+        "name": "Sylphia-OS",
+        "version": [
+            0,
+            5,
+            8,
+            7
+        ],
+        "description": "Sylphia-OS is a 64-bit operating system based on x86_64 and aarch64 architecture."
+    }
+}
