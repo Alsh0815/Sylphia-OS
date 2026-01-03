@@ -9,19 +9,37 @@ DisplayManager::AddDisplay(UniquePtr<Display> display)
     if (_displays.Size() >= MAX_DISPLAYS)
         return Err<DisplayManager::Error>{Error::DisplayManagerFull};
     _displays.PushBack(std::move(display));
-    return Ok<uint32_t>{static_cast<uint32_t>(_displays.Size() - 1)};
+    return Ok<uint32_t>{
+        static_cast<uint32_t>(_raw_display_count + _displays.Size() - 1)};
+}
+
+Result<uint32_t, DisplayManager::Error>
+DisplayManager::AddDisplayRaw(Display *display)
+{
+    if (_raw_display_count >= MAX_DISPLAYS)
+        return Err<DisplayManager::Error>{Error::DisplayManagerFull};
+    _raw_displays[_raw_display_count] = display;
+    return Ok<uint32_t>{_raw_display_count++};
 }
 
 bool DisplayManager::Flush()
 {
-    if (_displays.Size() == 0)
+    Display *disp = GetDisplay(_active_display);
+    if (!disp)
         return false;
-    _displays[_active_display]->Flush();
+    disp->Flush();
     return true;
 }
 
 void DisplayManager::FlushAll()
 {
+    // raw displays
+    for (size_t i = 0; i < _raw_display_count; ++i)
+    {
+        if (_raw_displays[i])
+            _raw_displays[i]->Flush();
+    }
+    // unique ptr displays
     for (size_t i = 0; i < _displays.Size(); ++i)
     {
         _displays[i]->Flush();
@@ -30,23 +48,26 @@ void DisplayManager::FlushAll()
 
 uint32_t *DisplayManager::GetBuffer()
 {
-    if (_displays.Size() == 0)
+    Display *disp = GetDisplay(_active_display);
+    if (!disp)
         return nullptr;
-    return _displays[_active_display]->GetBuffer();
+    return disp->GetBuffer();
 }
 
 uint64_t DisplayManager::GetWidth()
 {
-    if (_displays.Size() == 0)
+    Display *disp = GetDisplay(_active_display);
+    if (!disp)
         return 0;
-    return _displays[_active_display]->GetWidth();
+    return disp->GetWidth();
 }
 
 uint64_t DisplayManager::GetHeight()
 {
-    if (_displays.Size() == 0)
+    Display *disp = GetDisplay(_active_display);
+    if (!disp)
         return 0;
-    return _displays[_active_display]->GetHeight();
+    return disp->GetHeight();
 }
 
 Result<uint32_t, DisplayManager::Error>

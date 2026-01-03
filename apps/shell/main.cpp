@@ -48,16 +48,92 @@ char *strcat(char *dest, const char *src)
     return dest;
 }
 
+// 簡易atoi
+int Atoi(const char *s)
+{
+    int result = 0;
+    int sign = 1;
+    if (*s == '-')
+    {
+        sign = -1;
+        s++;
+    }
+    while (*s >= '0' && *s <= '9')
+    {
+        result = result * 10 + (*s - '0');
+        s++;
+    }
+    return result * sign;
+}
+
+// 整数を表示
+void PrintInt(int n)
+{
+    if (n < 0)
+    {
+        Print("-");
+        n = -n;
+    }
+    if (n == 0)
+    {
+        Print("0");
+        return;
+    }
+    char buf[16];
+    int i = 0;
+    while (n > 0)
+    {
+        buf[i++] = '0' + (n % 10);
+        n /= 10;
+    }
+    // 逆順に出力
+    while (i > 0)
+    {
+        char s[2] = {buf[--i], 0};
+        Print(s);
+    }
+}
+
+// レンダーモード名を取得
+const char *GetModeName(int mode)
+{
+    switch (mode)
+    {
+        case 1:
+            return "STANDARD";
+        case 2:
+            return "DOUBLE_BUFFER";
+        case 3:
+            return "TRIPLE_BUFFER";
+        default:
+            return "UNKNOWN";
+    }
+}
+
+// ディスプレイ情報を表示
+void PrintDisplayInfo(const DisplayInfo &info)
+{
+    Print("Display ");
+    PrintInt(info.id);
+    Print(": ");
+    PrintInt(info.width);
+    Print("x");
+    PrintInt(info.height);
+    Print(" Mode=");
+    Print(GetModeName(info.render_mode));
+    Print("\n");
+}
+
 // シェルクラス
 class Shell
 {
-  private:
+private:
     static const int kMaxCommandLen = 256;
     char buffer_[kMaxCommandLen];
     int cursor_pos_;
     bool prompt_shown_; // プロンプトが表示されているか
 
-  public:
+public:
     Shell() : cursor_pos_(0), prompt_shown_(false)
     {
         memset(buffer_, 0, kMaxCommandLen);
@@ -232,6 +308,62 @@ class Shell
             Print("Shell running in user mode!\n");
             Print("Rust\n");
             Print("===============================================\n");
+        }
+        else if (strcmp(argv[0], "display") == 0)
+        {
+            if (argc == 1)
+            {
+                // ディスプレイ一覧表示
+                DisplayInfo info[8];
+                int count = GetDisplayInfo(info, 8);
+                if (count == 0)
+                {
+                    Print("No displays found.\n");
+                }
+                else
+                {
+                    Print("=== Display Info ===\n");
+                    for (int i = 0; i < count; ++i)
+                    {
+                        PrintDisplayInfo(info[i]);
+                    }
+                }
+            }
+            else if (argc >= 5 && strcmp(argv[1], "select") == 0 &&
+                     strcmp(argv[3], "mode") == 0)
+            {
+                // display select <id> mode <mode>
+                int id = Atoi(argv[2]);
+                int mode = Atoi(argv[4]);
+                if (mode < 1 || mode > 3)
+                {
+                    Print("Invalid mode. Use 1=STANDARD, 2=DOUBLE, 3=TRIPLE\n");
+                }
+                else
+                {
+                    int ret = SetDisplayMode(id, mode);
+                    if (ret == 0)
+                    {
+                        Print("Display ");
+                        PrintInt(id);
+                        Print(" mode set to ");
+                        Print(GetModeName(mode));
+                        Print("\n");
+                    }
+                    else
+                    {
+                        Print("Failed to set display mode.\n");
+                    }
+                }
+            }
+            else
+            {
+                Print("Usage:\n");
+                Print(
+                    "  display                          - Show all displays\n");
+                Print("  display select <id> mode <mode>  - Set render mode\n");
+                Print("    mode: 1=STANDARD, 2=DOUBLE, 3=TRIPLE\n");
+            }
         }
         else if (strcmp(argv[0], "exit") == 0)
         {

@@ -619,7 +619,7 @@ int Controller::PollEndpoint(uint8_t slot_id, uint8_t ep_addr)
         {
             if (log_count < 3)
             {
-                kprintf("[xHCI DBG] ERDP mismatch! Re-setting ERDP.\n");
+                // kprintf("[xHCI DBG] ERDP mismatch! Re-setting ERDP.\n");
             }
             uint32_t write_low = (expected_erdp & 0xFFFFFFFF) | (1 << 3);
             uint32_t write_high = expected_erdp >> 32;
@@ -635,7 +635,7 @@ int Controller::PollEndpoint(uint8_t slot_id, uint8_t ep_addr)
 
             if (log_count < 3)
             {
-                kprintf("[xHCI DBG] After ERDP reset: ctrl=0x%x\n", control);
+                // kprintf("[xHCI DBG] After ERDP reset: ctrl=0x%x\n", control);
                 log_count++;
             }
         }
@@ -654,7 +654,8 @@ int Controller::PollEndpoint(uint8_t slot_id, uint8_t ep_addr)
 
         int ret_code = -1;
         uint32_t trb_type = (control >> 10) & 0x3F;
-        kprintf("[xHCI DBG] Event! type=%d, status=0x%x\n", trb_type, status);
+        // kprintf("[xHCI DBG] Event! type=%d, status=0x%x\n", trb_type,
+        // status);
 
         if (trb_type == 32) // Transfer Event
         {
@@ -664,9 +665,9 @@ int Controller::PollEndpoint(uint8_t slot_id, uint8_t ep_addr)
 
             uint8_t target_dci = AddressToDCI(ep_addr);
 
-            kprintf("[xHCI DBG] TransferEvent: slot=%d(exp=%d), "
-                    "dci=%d(exp=%d), comp=%d\n",
-                    event_slot, slot_id, event_dci, target_dci, comp_code);
+            // kprintf("[xHCI DBG] TransferEvent: slot=%d(exp=%d), "
+            //         "dci=%d(exp=%d), comp=%d\n",
+            //         event_slot, slot_id, event_dci, target_dci, comp_code);
 
             if (event_slot == slot_id && event_dci == target_dci)
             {
@@ -703,8 +704,9 @@ bool Controller::SendNormalTRB(uint8_t slot_id, uint8_t ep_addr, void *data_buf,
     TRB *ring = transfer_rings_[slot_id][dci];
     if (!ring)
     {
-        kprintf("[xHCI ERR] SendNormalTRB: ring is null for slot=%d, dci=%d\n",
-                slot_id, dci);
+        // kprintf("[xHCI ERR] SendNormalTRB: ring is null for slot=%d,
+        // dci=%d\n",
+        //         slot_id, dci);
         return false;
     }
 
@@ -714,9 +716,9 @@ bool Controller::SendNormalTRB(uint8_t slot_id, uint8_t ep_addr, void *data_buf,
     // IN転送（デバイス→ホスト）かOUT転送（ホスト→デバイス）かを判定
     bool is_in = (ep_addr & 0x80) != 0;
 
-    kprintf("[xHCI DBG] SendNormalTRB: slot=%d, ep=0x%x, dci=%d, buf=0x%lx, "
-            "len=%u, idx=%u, pcs=%d, is_in=%d\n",
-            slot_id, ep_addr, dci, (uint64_t)data_buf, len, idx, pcs, is_in);
+    // kprintf("[xHCI DBG] SendNormalTRB: slot=%d, ep=0x%x, dci=%d, buf=0x%lx, "
+    //         "len=%u, idx=%u, pcs=%d, is_in=%d\n",
+    //         slot_id, ep_addr, dci, (uint64_t)data_buf, len, idx, pcs, is_in);
 
     // AArch64: IN転送の場合、受信バッファを事前にインバリデート
     // これにより、DMA完了後に古いキャッシュデータを読まないようにする
@@ -734,15 +736,15 @@ bool Controller::SendNormalTRB(uint8_t slot_id, uint8_t ep_addr, void *data_buf,
     // は外してみる（IOCがあれば完了時にイベントが出るはず）
     trb.control = (pcs & 1) | (1 << 10) | (1 << 5);
 
-    kprintf("[xHCI DBG] TRB: param=0x%lx, status=0x%x, ctrl=0x%x\n",
-            trb.parameter, trb.status, trb.control);
+    // kprintf("[xHCI DBG] TRB: param=0x%lx, status=0x%x, ctrl=0x%x\n",
+    //         trb.parameter, trb.status, trb.control);
 
     // データバッファのダンプ（メモリ破壊確認）
     if (len >= 4 && data_buf)
     {
         uint32_t *ptr = (uint32_t *)data_buf;
-        kprintf("[xHCI DBG] Buffer Content: %08x %08x...\n", ptr[0],
-                len >= 8 ? ptr[1] : 0);
+        // kprintf("[xHCI DBG] Buffer Content: %08x %08x...\n", ptr[0],
+        //         len >= 8 ? ptr[1] : 0);
     }
 
     // AArch64: OUT転送の場合のみ、送信データをフラッシュ
@@ -768,12 +770,13 @@ bool Controller::SendNormalTRB(uint8_t slot_id, uint8_t ep_addr, void *data_buf,
 
         ring_cycle_state_[slot_id][dci] ^= 1;
         ring_index_[slot_id][dci] = 0;
-        kprintf("[xHCI DBG] Link TRB inserted, pcs toggled to %d\n",
-                ring_cycle_state_[slot_id][dci]);
+        // kprintf("[xHCI DBG] Link TRB inserted, pcs toggled to %d\n",
+        //         ring_cycle_state_[slot_id][dci]);
     }
 
     DSB();
-    kprintf("[xHCI DBG] Ringing doorbell for slot=%d, dci=%d\n", slot_id, dci);
+    // kprintf("[xHCI DBG] Ringing doorbell for slot=%d, dci=%d\n", slot_id,
+    // dci);
     RingDoorbell(slot_id, dci);
 
     return true;
@@ -1152,7 +1155,7 @@ void Controller::ResetPort(int port_id)
 
 void Controller::ProcessInterrupt()
 {
-    kprintf("[xHCI] DEBUG: ProcessInterrupt() called.\n");
+    // kprintf("[xHCI] DEBUG: ProcessInterrupt() called.\n");
     volatile TRB &event = event_ring_[event_ring_index_];
     uint32_t control = event.control;
 
@@ -1189,8 +1192,8 @@ void Controller::AdvanceEventRing()
         dcs_ ^= 1;
     }
 
-    kprintf("[xHCI DBG] AdvanceER: %d->%d, dcs: %d->%d\n", old_idx,
-            event_ring_index_, old_dcs, dcs_);
+    // kprintf("[xHCI DBG] AdvanceER: %d->%d, dcs: %d->%d\n", old_idx,
+    //         event_ring_index_, old_dcs, dcs_);
 
     uint64_t erdp = reinterpret_cast<uint64_t>(&event_ring_[event_ring_index_]);
     uint32_t erdp_low_val = (erdp & 0xFFFFFFFF) | (1 << 3);
@@ -1206,41 +1209,42 @@ void Controller::AdvanceEventRing()
     {
         uint32_t read_low = ReadRtReg(0x20 + 0x18);
         uint32_t read_high = ReadRtReg(0x20 + 0x1C);
-        kprintf("[xHCI DBG] ERDP write: 0x%x%08x, read: 0x%x%08x\n",
-                erdp_high_val, erdp_low_val, read_high, read_low);
+        // kprintf("[xHCI DBG] ERDP write: 0x%x%08x, read: 0x%x%08x\n",
+        //         erdp_high_val, erdp_low_val, read_high, read_low);
     }
 }
 
 void Controller::DebugDump() const
 {
-    kprintf("[xHCI Debug] event_ring_ addr: %lx\n",
-            reinterpret_cast<uint64_t>(event_ring_));
-    kprintf("[xHCI Debug] event_ring_index_: %d, dcs_: %d\n", event_ring_index_,
-            dcs_);
+    // kprintf("[xHCI Debug] event_ring_ addr: %lx\n",
+    //         reinterpret_cast<uint64_t>(event_ring_));
+    // kprintf("[xHCI Debug] event_ring_index_: %d, dcs_: %d\n",
+    // event_ring_index_,
+    //         dcs_);
 
     // 現在のイベントリングエントリをダンプ
     volatile TRB &event = event_ring_[event_ring_index_];
-    kprintf(
-        "[xHCI Debug] event.control: %x (cycle bit: %d, expected dcs_: %d)\n",
-        event.control, event.control & 1, dcs_);
-    kprintf("[xHCI Debug] event.parameter: %lx\n", event.parameter);
-    kprintf("[xHCI Debug] event.status: %x\n", event.status);
+    // kprintf(
+    //     "[xHCI Debug] event.control: %x (cycle bit: %d, expected dcs_:
+    //     %d)\n", event.control, event.control & 1, dcs_);
+    // kprintf("[xHCI Debug] event.parameter: %lx\n", event.parameter);
+    // kprintf("[xHCI Debug] event.status: %x\n", event.status);
 
     // ★ 追加: xHCI レジスタの状態を直接確認
     uint32_t usbsts = ReadOpReg(0x04);
-    kprintf("[xHCI Debug] USBSTS: %x (HCH=%d, HSE=%d, EINT=%d)\n", usbsts,
-            usbsts & 1, (usbsts >> 2) & 1, (usbsts >> 3) & 1);
+    // kprintf("[xHCI Debug] USBSTS: %x (HCH=%d, HSE=%d, EINT=%d)\n", usbsts,
+    //         usbsts & 1, (usbsts >> 2) & 1, (usbsts >> 3) & 1);
 
     // ERDP (Event Ring Dequeue Pointer) の確認
     uint32_t erdp_low = ReadRtReg(0x20 + 0x18);
     uint32_t erdp_high = ReadRtReg(0x20 + 0x1C);
-    kprintf("[xHCI Debug] ERDP: %x %x\n", erdp_high, erdp_low);
+    // kprintf("[xHCI Debug] ERDP: %x %x\n", erdp_high, erdp_low);
 
     // ERSTBA (Event Ring Segment Table Base Address) の確認
     uint32_t erstba_low = ReadRtReg(0x20 + 0x10);
     uint32_t erstba_high = ReadRtReg(0x20 + 0x14);
-    kprintf("[xHCI Debug] ERSTBA: %x %x (expected: erst_)\n", erstba_high,
-            erstba_low);
+    // kprintf("[xHCI Debug] ERSTBA: %x %x (expected: erst_)\n", erstba_high,
+    //         erstba_low);
 
     // Slot 1のDevice Context（Output Context）を読み取り
     if (dcbaa_ && dcbaa_[1])
@@ -1257,8 +1261,8 @@ void Controller::DebugDump() const
         uint32_t ep_state =
             static_cast<uint32_t>(ep4_ctx[0] & 0x7); // DW0のbit 0-2
 
-        kprintf("[xHCI Debug] Slot1 EP4: State=%d, TR Dequeue=0x%lx\n",
-                ep_state, tr_dequeue);
+        // kprintf("[xHCI Debug] Slot1 EP4: State=%d, TR Dequeue=0x%lx\n",
+        //         ep_state, tr_dequeue);
     }
 }
 } // namespace USB::XHCI

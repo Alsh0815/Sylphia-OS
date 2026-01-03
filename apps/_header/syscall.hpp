@@ -14,6 +14,8 @@ const uint64_t kSyscallSpawn = 20;
 const uint64_t kSyscallOpen = 21;
 const uint64_t kSyscallClose = 22;
 const uint64_t kSyscallDeleteFile = 23;
+const uint64_t kSyscallGetDisplayInfo = 30;
+const uint64_t kSyscallSetDisplayMode = 31;
 
 // システムコール発行 (引数0個)
 inline uint64_t Syscall0(uint64_t syscall_number)
@@ -146,4 +148,28 @@ inline int DeleteFile(const char *path)
 inline void Yield()
 {
     Syscall0(kSyscallYield);
+}
+
+// ディスプレイ情報構造体
+struct DisplayInfo
+{
+    uint32_t id;
+    uint32_t width;
+    uint32_t height;
+    uint8_t render_mode; // 1=STANDARD, 2=DOUBLE_BUFFER, 3=TRIPLE_BUFFER
+    uint8_t padding[3];
+};
+
+// ディスプレイ情報を取得
+// 戻り値: ディスプレイ数
+inline int GetDisplayInfo(DisplayInfo *info, int max_count)
+{
+    return (int)Syscall3(kSyscallGetDisplayInfo, (uint64_t)info, max_count, 0);
+}
+
+// ディスプレイのレンダリングモードを設定
+// 戻り値: 0=成功, -1=失敗
+inline int SetDisplayMode(uint32_t display_id, uint8_t mode)
+{
+    return (int)Syscall3(kSyscallSetDisplayMode, display_id, mode, 0);
 }

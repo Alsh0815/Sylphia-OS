@@ -2,6 +2,7 @@
 #include "app/elf/elf_loader.hpp"
 #include "arch/inasm.hpp"
 #include "fs/fat32/fat32_driver.hpp"
+#include "graphic/GraphicSystem.hpp"
 #include "memory/memory_manager.hpp"
 #include "paging.hpp"
 #include "printk.hpp"
@@ -297,6 +298,75 @@ extern "C" uint64_t SyscallHandler(uint64_t syscall_number, uint64_t arg1,
                 }
             }
             return -1;
+        }
+
+        case 30: // GetDisplayInfo (ディスプレイ情報取得)
+        {
+            // arg1: DisplayInfo* (ユーザー空間のバッファ)
+            // arg2: max_count (int)
+            // 戻り値: ディスプレイ数
+            struct DisplayInfo
+            {
+                uint32_t id;
+                uint32_t width;
+                uint32_t height;
+                uint8_t render_mode;
+                uint8_t padding[3];
+            };
+
+            DisplayInfo *user_buf = reinterpret_cast<DisplayInfo *>(arg1);
+            int max_count = static_cast<int>(arg2);
+
+            if (!Graphic::g_display_manager)
+                return 0;
+
+            size_t count = Graphic::g_display_manager->GetDisplayCount();
+            int copy_count =
+                (count < static_cast<size_t>(max_count)) ? count : max_count;
+
+            for (int i = 0; i < copy_count; ++i)
+            {
+                Graphic::Display *disp =
+                    Graphic::g_display_manager->GetDisplay(i);
+                if (disp)
+                {
+                    user_buf[i].id = i;
+                    user_buf[i].width = static_cast<uint32_t>(disp->GetWidth());
+                    user_buf[i].height =
+                        static_cast<uint32_t>(disp->GetHeight());
+                    user_buf[i].render_mode =
+                        static_cast<uint8_t>(disp->GetRenderMode());
+                }
+            }
+            return static_cast<uint64_t>(count);
+        }
+
+        case 31: // SetDisplayMode (レンダーモード設定)
+        {
+            // arg1: display_id (uint32_t)
+            // arg2: mode (uint8_t) - 1=STANDARD, 2=DOUBLE_BUFFER,
+            // 3=TRIPLE_BUFFER 戻り値: 0 (成功) または -1 (失敗)
+            uint32_t display_id = static_cast<uint32_t>(arg1);
+            uint8_t mode = static_cast<uint8_t>(arg2);
+
+            if (!Graphic::g_display_manager)
+                return static_cast<uint64_t>(-1);
+
+            Graphic::Display *disp =
+                Graphic::g_display_manager->GetDisplay(display_id);
+            if (!disp)
+                return static_cast<uint64_t>(-1);
+
+            if (mode < 1 || mode > 3)
+                return static_cast<uint64_t>(-1);
+
+            if (mode >= 2)
+            {
+                disp->AllocateBackBuffers(
+                    static_cast<Graphic::RenderMode>(mode));
+            }
+            disp->SetRenderMode(static_cast<Graphic::RenderMode>(mode));
+            return 0;
         }
 
         default:

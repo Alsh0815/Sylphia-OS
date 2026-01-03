@@ -28,8 +28,8 @@ void InitializeGraphics(const FrameBufferConfig &config)
                 config.PixelsPerScanLine, config.HorizontalResolution,
                 config.VerticalResolution);
 
-    // DisplayManagerにディスプレイを登録
-    // STANDARDモードでは直接s_displayを参照するため、AddDisplayはスキップ
+    // DisplayManagerにディスプレイを登録（生ポインタとして登録）
+    g_display_manager->AddDisplayRaw(s_display);
 
     // placement newでLowLayerRendererを作成
     g_llr = new (s_llr_storage) LowLayerRenderer(*g_display_manager);

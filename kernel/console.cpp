@@ -97,6 +97,8 @@ void Console::PutString(const char *s)
 
         s++;
     }
+    // 文字列出力完了後にバッファをフラッシュ
+    llr_.Flush();
 }
 
 void Console::SetColor(uint32_t fg_color, uint32_t bg_color)
@@ -115,6 +117,8 @@ void Console::Panic(uint32_t fg_color, uint32_t bg_color)
 
     cursor_row_ = 0;
     cursor_column_ = 0;
+
+    llr_.Flush();
 }
 
 void Console::NewLine()
@@ -166,6 +170,8 @@ void Console::Refresh()
 
     // 移動した後、一番下の行を背景色でクリアする
     llr_.WriteRect(0, (rows_ - 1) * 16, display_width, 16, bg_color_);
+
+    llr_.Flush();
 }
 
 void Console::ProcessEscapeSequence(char c)

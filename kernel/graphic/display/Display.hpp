@@ -20,22 +20,33 @@ public:
             const uint64_t display_height);
     ~Display()
     {
-        if (_back_buffer[0])
-            delete[] _back_buffer[0];
-        if (_back_buffer[1])
-            delete[] _back_buffer[1];
+        for (int i = 0; i < 3; ++i)
+        {
+            if (_back_buffer[i])
+                delete[] _back_buffer[i];
+        }
     }
 
     void Flip();
     /*
      * Flush display.
+     * Copies the current back buffer to the front buffer (display).
      */
     void Flush();
     /*
      * Allocate back buffers for double/triple buffering.
      * Called after memory manager is initialized.
+     * @param mode The render mode to use (DOUBLE_BUFFER or TRIPLE_BUFFER)
      */
-    void AllocateBackBuffers();
+    void AllocateBackBuffers(RenderMode mode);
+    /*
+     * Get the current render mode.
+     * @return Current RenderMode
+     */
+    RenderMode GetRenderMode() const
+    {
+        return _render_mode;
+    }
     uint64_t GetWidth()
     {
         return _display_width;
@@ -53,6 +64,11 @@ public:
     {
         return _current_buffer;
     }
+    /*
+     * Set the render mode.
+     * @param mode The render mode (STANDARD, DOUBLE_BUFFER, TRIPLE_BUFFER)
+     */
+    void SetRenderMode(RenderMode mode);
 
 private:
     const uint64_t _frame_buffer_base;
@@ -61,9 +77,11 @@ private:
     const uint64_t _display_height;
     const uint64_t _pixels_per_scan_line;
     uint32_t *_front_buffer;
-    uint32_t *_back_buffer[2];
+    uint32_t *_back_buffer[3]; // 最大3バッファ（トリプルバッファ用）
     uint32_t *_current_buffer;
-    int _drawing_buf_index = 0;
+    uint8_t _drawing_buf_index = 0; // 現在描画中のバックバッファインデックス
+    uint8_t _display_buf_index = 0; // 表示用に準備されたバッファインデックス
+    uint8_t _buffer_count = 0;      // 使用するバックバッファ数
     RenderMode _render_mode = RenderMode::STANDARD;
 };
 } // namespace Graphic

@@ -27,6 +27,14 @@ public:
      */
     Result<uint32_t, Error> AddDisplay(UniquePtr<Display> display);
     /*
+     * Add display (raw pointer, not owned) to display manager.
+     * Use for static/placement-new displays that shouldn't be deleted.
+     *
+     * @param display Display pointer to add (ownership NOT transferred)
+     * @return Result<uint32_t display_id, Error> Result of add display
+     */
+    Result<uint32_t, Error> AddDisplayRaw(Display *display);
+    /*
      * Flush active display.
      *
      * @return Result<uint32_t display_id, Error> Result of flush display
@@ -51,6 +59,30 @@ public:
      * @return Result<uint32_t display_id, Error> Result of set active display
      */
     Result<uint32_t, Error> SetActiveDisplay(uint32_t display_id);
+    /*
+     * Get the number of displays.
+     * @return Number of displays
+     */
+    size_t GetDisplayCount() const
+    {
+        return _displays.Size() + _raw_display_count;
+    }
+    /*
+     * Get display by ID.
+     * @param display_id Display ID
+     * @return Pointer to Display, or nullptr if not found
+     */
+    Display *GetDisplay(uint32_t display_id)
+    {
+        // まず生ポインタ配列を確認
+        if (display_id < _raw_display_count)
+            return _raw_displays[display_id];
+        // 次にUniquePtr配列を確認
+        uint32_t unique_id = display_id - _raw_display_count;
+        if (unique_id >= _displays.Size())
+            return nullptr;
+        return _displays[unique_id].Get();
+    }
 
     void Lock()
     {
@@ -66,9 +98,11 @@ public:
     }
 
 private:
-    Vector<UniquePtr<Display>> _displays;
-    uint32_t _active_display = 0;
     static const size_t MAX_DISPLAYS = 16;
+    Vector<UniquePtr<Display>> _displays;
+    Display *_raw_displays[MAX_DISPLAYS] = {nullptr};
+    uint32_t _raw_display_count = 0;
+    uint32_t _active_display = 0;
     volatile int _lock_flag = 0;
     bool _interrupts_enabled = false;
 };
