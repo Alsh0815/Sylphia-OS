@@ -1,4 +1,5 @@
 #include "xhci.hpp"
+#include "Debug.hpp"
 #include "arch/inasm.hpp"
 #include "driver/usb/keyboard/keyboard.hpp"
 #include "driver/usb/mass_storage/mass_storage.hpp"
@@ -70,6 +71,7 @@ void Controller::RingDoorbell(uint8_t target, uint32_t value)
 
 void Controller::Initialize()
 {
+    // Debug::Serial::Out("[xHCI] Initializing...\n");
     kprintf("[xHCI] Initializing...\n");
 
     uint16_t vendor = PCI::ReadConfReg(pci_dev_, 0x00) & 0xFFFF;
@@ -83,6 +85,9 @@ void Controller::Initialize()
     }
 
     mmio_base_ = PCI::ReadBar0(pci_dev_);
+    // Debug::Serial::Out("[xHCI] MMIO Base: ");
+    // Debug::Serial::OutHex(mmio_base_);
+    // Debug::Serial::Out("\n");
     kprintf("[xHCI] MMIO Base: %lx\n", mmio_base_);
 
 #if defined(__aarch64__)
@@ -115,6 +120,7 @@ void Controller::Initialize()
     BiosHandoff();
     ResetController();
 
+    // Debug::Serial::Out("[xHCI] Controller Reset Complete\n");
     kprintf("[xHCI] Controller Reset Complete.\n");
 
     uint32_t hcsparams1 = Read32(0x04);
@@ -675,6 +681,19 @@ int Controller::PollEndpoint(uint8_t slot_id, uint8_t ep_addr)
             }
             else
             {
+                // slot/dci不一致でイベントを消費したが対象外
+                // slot/dci不一致でイベントを消費したが対象外
+                /*
+                Debug::Serial::Out("[xHCI] Event mismatch: slot=");
+                Debug::Serial::OutDec(event_slot);
+                Debug::Serial::Out(" dci=");
+                Debug::Serial::OutDec(event_dci);
+                Debug::Serial::Out(" (expected slot=");
+                Debug::Serial::OutDec(slot_id);
+                Debug::Serial::Out(" dci=");
+                Debug::Serial::OutDec(target_dci);
+                Debug::Serial::Out(")\n");
+                */
             }
         }
         else if (trb_type == 33) // Command Completion Event
@@ -1192,77 +1211,68 @@ void Controller::AdvanceEventRing()
         dcs_ ^= 1;
     }
 
-    // kprintf("[xHCI DBG] AdvanceER: %d->%d, dcs: %d->%d\n", old_idx,
-    //         event_ring_index_, old_dcs, dcs_);
-
+    // ERDPを更新してxHCIに通知
     uint64_t erdp = reinterpret_cast<uint64_t>(&event_ring_[event_ring_index_]);
-    uint32_t erdp_low_val = (erdp & 0xFFFFFFFF) | (1 << 3);
+    uint32_t erdp_low_val = (erdp & 0xFFFFFFFF) | (1 << 3); // EHB=1 でクリア
     uint32_t erdp_high_val = (erdp >> 32);
 
-    // EHB (Bit 3) を1にして書き込むことで、Event Handler Busyをクリアする
-    WriteRtReg(0x20 + 0x18, erdp_low_val);
-    WriteRtReg(0x20 + 0x1C, erdp_high_val);
+    // AArch64: 書き込み前バリア
     DSB();
 
-    // 書き込み確認（問題発生タイミング付近でのみ）
-    if (event_ring_index_ >= 23 && event_ring_index_ <= 26)
-    {
-        uint32_t read_low = ReadRtReg(0x20 + 0x18);
-        uint32_t read_high = ReadRtReg(0x20 + 0x1C);
-        // kprintf("[xHCI DBG] ERDP write: 0x%x%08x, read: 0x%x%08x\n",
-        //         erdp_high_val, erdp_low_val, read_high, read_low);
-    }
+    // xHCI仕様: 64ビットレジスタはHigh部分を先に書いてからLow部分を書く
+    WriteRtReg(0x20 + 0x1C, erdp_high_val); // ERDP High
+    WriteRtReg(0x20 + 0x18, erdp_low_val);  // ERDP Low (EHB=1)
+
+    // AArch64: 書き込み後バリア
+    DSB();
+    ISB();
 }
 
 void Controller::DebugDump() const
 {
-    // kprintf("[xHCI Debug] event_ring_ addr: %lx\n",
-    //         reinterpret_cast<uint64_t>(event_ring_));
-    // kprintf("[xHCI Debug] event_ring_index_: %d, dcs_: %d\n",
-    // event_ring_index_,
-    //         dcs_);
+    Debug::Serial::Out("[xHCI Debug] event_ring_index_=");
+    Debug::Serial::OutDec(event_ring_index_);
+    Debug::Serial::Out(", dcs_=");
+    Debug::Serial::OutDec(dcs_);
+    Debug::Serial::Out("\n");
+
+    // キャッシュインバリデート後に読み取り
+    InvalidateCache(&event_ring_[event_ring_index_], sizeof(TRB));
 
     // 現在のイベントリングエントリをダンプ
     volatile TRB &event = event_ring_[event_ring_index_];
-    // kprintf(
-    //     "[xHCI Debug] event.control: %x (cycle bit: %d, expected dcs_:
-    //     %d)\n", event.control, event.control & 1, dcs_);
-    // kprintf("[xHCI Debug] event.parameter: %lx\n", event.parameter);
-    // kprintf("[xHCI Debug] event.status: %x\n", event.status);
+    Debug::Serial::Out("[xHCI Debug] event.control=");
+    Debug::Serial::OutHex(event.control);
+    Debug::Serial::Out(" (cycle bit=");
+    Debug::Serial::OutDec(event.control & 1);
+    Debug::Serial::Out(")\n");
+    Debug::Serial::Out("[xHCI Debug] event.parameter=");
+    Debug::Serial::OutHex(event.parameter);
+    Debug::Serial::Out(", status=");
+    Debug::Serial::OutHex(event.status);
+    Debug::Serial::Out("\n");
 
-    // ★ 追加: xHCI レジスタの状態を直接確認
+    // xHCI レジスタの状態を確認
     uint32_t usbsts = ReadOpReg(0x04);
-    // kprintf("[xHCI Debug] USBSTS: %x (HCH=%d, HSE=%d, EINT=%d)\n", usbsts,
-    //         usbsts & 1, (usbsts >> 2) & 1, (usbsts >> 3) & 1);
+    Debug::Serial::Out("[xHCI Debug] USBSTS=");
+    Debug::Serial::OutHex(usbsts);
+    Debug::Serial::Out(" (HCH=");
+    Debug::Serial::OutDec(usbsts & 1);
+    Debug::Serial::Out(", HSE=");
+    Debug::Serial::OutDec((usbsts >> 2) & 1);
+    Debug::Serial::Out(", EINT=");
+    Debug::Serial::OutDec((usbsts >> 3) & 1);
+    Debug::Serial::Out(")\n");
 
     // ERDP (Event Ring Dequeue Pointer) の確認
     uint32_t erdp_low = ReadRtReg(0x20 + 0x18);
     uint32_t erdp_high = ReadRtReg(0x20 + 0x1C);
-    // kprintf("[xHCI Debug] ERDP: %x %x\n", erdp_high, erdp_low);
-
-    // ERSTBA (Event Ring Segment Table Base Address) の確認
-    uint32_t erstba_low = ReadRtReg(0x20 + 0x10);
-    uint32_t erstba_high = ReadRtReg(0x20 + 0x14);
-    // kprintf("[xHCI Debug] ERSTBA: %x %x (expected: erst_)\n", erstba_high,
-    //         erstba_low);
-
-    // Slot 1のDevice Context（Output Context）を読み取り
-    if (dcbaa_ && dcbaa_[1])
-    {
-        InvalidateCache(reinterpret_cast<void *>(dcbaa_[1]), 1024);
-
-        // Device ContextはSlot Context + 31 Endpoint Contexts
-        // 各コンテキストは32バイト（64バイトモードの場合は64バイト）
-        // EP Context 4 (dci=4, Bulk OUT) = offset 4 * 32 = 128
-        uint64_t *ep4_ctx = reinterpret_cast<uint64_t *>(dcbaa_[1] + 4 * 32);
-
-        // Dequeue Pointer はEP Context内のDW2-DW3 (offset 8-15)
-        uint64_t tr_dequeue = ep4_ctx[1]; // DW2-DW3
-        uint32_t ep_state =
-            static_cast<uint32_t>(ep4_ctx[0] & 0x7); // DW0のbit 0-2
-
-        // kprintf("[xHCI Debug] Slot1 EP4: State=%d, TR Dequeue=0x%lx\n",
-        //         ep_state, tr_dequeue);
-    }
+    Debug::Serial::Out("[xHCI Debug] ERDP=");
+    Debug::Serial::OutHex(((uint64_t)erdp_high << 32) | erdp_low);
+    Debug::Serial::Out("\n");
+    Debug::Serial::Out("[xHCI Debug] Expected ERDP=");
+    Debug::Serial::OutHex(
+        reinterpret_cast<uint64_t>(&event_ring_[event_ring_index_]));
+    Debug::Serial::Out("\n");
 }
 } // namespace USB::XHCI

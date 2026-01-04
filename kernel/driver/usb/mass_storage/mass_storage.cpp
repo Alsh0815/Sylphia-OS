@@ -1,4 +1,5 @@
 #include "mass_storage.hpp"
+#include "Debug.hpp"
 #include "arch/inasm.hpp"
 #include "block_device.hpp"
 #include "cxx.hpp"
@@ -162,7 +163,10 @@ bool MassStorage::ReadSectors(uint64_t lba, uint32_t num_sectors, void *buffer)
     // Event Ring競合回避のためビジーフラグを設定
     busy_ = true;
 
-    kprintf("[MSC DEBUG] ReadSectors: LBA=%lu, count=%u\n", lba, num_sectors);
+    // Event Ring競合回避のためビジーフラグを設定
+    busy_ = true;
+
+    // kprintf("[MSC] ReadSectors: LBA=%lu, count=%u\n", lba, num_sectors);
     uint32_t bytes_len = num_sectors * block_size_;
 
     // データバッファの属性を変更
@@ -179,27 +183,26 @@ bool MassStorage::ReadSectors(uint64_t lba, uint32_t num_sectors, void *buffer)
     cmd[7] = (num_sectors >> 8) & 0xFF;
     cmd[8] = (num_sectors) & 0xFF;
 
-    kprintf("[MSC DEBUG] Sending CBW...\n");
     if (!SendCBW(2, bytes_len, 0x80, 0, 10, cmd))
     {
         busy_ = false;
         return false;
     }
-    kprintf("[MSC DEBUG] CBW sent. Transferring data...\n");
+    // kprintf("[MSC] CBW sent. Transferring data...\n");
 
     if (!TransferData(buffer, bytes_len, true))
     {
         busy_ = false;
         return false;
     }
-    kprintf("[MSC DEBUG] Data transferred. Receiving CSW...\n");
+    // kprintf("[MSC] Data transferred. Receiving CSW...\n");
 
     if (!ReceiveCSW(2))
     {
         busy_ = false;
         return false;
     }
-    kprintf("[MSC DEBUG] CSW received. ReadSectors complete.\n");
+    // kprintf("[MSC] CSW received. ReadSectors complete.\n");
 
     busy_ = false;
     return true;
@@ -208,7 +211,7 @@ bool MassStorage::ReadSectors(uint64_t lba, uint32_t num_sectors, void *buffer)
 bool MassStorage::SendCBW(uint32_t tag, uint32_t data_len, uint8_t flags,
                           uint8_t lun, uint8_t cmd_len, const uint8_t *cmd)
 {
-    kprintf("[MSC DEBUG] SendCBW: tag=%u, len=%u\n", tag, data_len);
+    // kprintf("[MSC DEBUG] SendCBW: tag=%u, len=%u\n", tag, data_len);
     CommandBlockWrapper *cbw = static_cast<CommandBlockWrapper *>(
         MemoryManager::Allocate(sizeof(CommandBlockWrapper), 64));
     PageManager::SetDeviceMemory(cbw, sizeof(CommandBlockWrapper));
@@ -222,9 +225,9 @@ bool MassStorage::SendCBW(uint32_t tag, uint32_t data_len, uint8_t flags,
     for (int i = 0; i < 16; ++i)
         cbw->command[i] = (i < cmd_len) ? cmd[i] : 0;
 
-    kprintf("[MSC DEBUG] SendCBW: Sending TRB to EP %x...\n", ep_bulk_out_);
+    // kprintf("[MSC DEBUG] SendCBW: Sending TRB to EP %x...\n", ep_bulk_out_);
     bool ret = controller_->SendNormalTRB(slot_id_, ep_bulk_out_, cbw, 31);
-    kprintf("[MSC DEBUG] SendCBW: TRB sent, ret=%d. Polling...\n", ret);
+    // kprintf("[MSC DEBUG] SendCBW: TRB sent, ret=%d. Polling...\n", ret);
 
     int poll_count = 0;
     while (controller_->PollEndpoint(slot_id_, ep_bulk_out_) == -1)
@@ -232,12 +235,13 @@ bool MassStorage::SendCBW(uint32_t tag, uint32_t data_len, uint8_t flags,
         poll_count++;
         if (poll_count > 1000000)
         {
-            kprintf("[MSC DEBUG] SendCBW TIMEOUT!\n");
+            kprintf("[MSC] SendCBW TIMEOUT!\n");
+            // controller_->DebugDump();
             MemoryManager::Free(cbw, sizeof(CommandBlockWrapper));
             return false;
         }
     }
-    kprintf("[MSC DEBUG] SendCBW: Poll complete.\n");
+    // kprintf("[MSC DEBUG] SendCBW: Poll complete.\n");
 
     MemoryManager::Free(cbw, sizeof(CommandBlockWrapper));
     return ret;
@@ -246,33 +250,32 @@ bool MassStorage::SendCBW(uint32_t tag, uint32_t data_len, uint8_t flags,
 bool MassStorage::TransferData(void *buffer, uint32_t len, bool is_in)
 {
     uint8_t ep = is_in ? ep_bulk_in_ : ep_bulk_out_;
-    kprintf("[MSC DEBUG] TransferData: EP=%x, len=%u, is_in=%d\n", ep, len,
-            is_in);
+    // kprintf("[MSC DEBUG] TransferData: EP=%x, len=%u, is_in=%d\n", ep, len,
+    // is_in);
 
     // 受信の場合は事前にキャッシュをインバリデートしておく
-    // (キャッシュ上のゴミデータがDRAMへのDMA書き込みを阻害しないように、または読み込み時に邪魔しないように)
     if (is_in)
     {
         InvalidateCache(buffer, len);
     }
 
     bool ret = controller_->SendNormalTRB(slot_id_, ep, buffer, len);
-    kprintf("[MSC DEBUG] TransferData: TRB sent, ret=%d. Polling...\n", ret);
+    // kprintf("[MSC DEBUG] TransferData: TRB sent, ret=%d. Polling...\n", ret);
 
     int poll_count = 0;
     while (controller_->PollEndpoint(slot_id_, ep) == -1)
     {
         poll_count++;
-        if (poll_count % 100000 == 0)
-            kprintf("[MSC DEBUG] TransferData Poll loop: %d iterations\n",
-                    poll_count);
+        // if (poll_count % 100000 == 0)
+        //     kprintf("[MSC DEBUG] TransferData Poll loop: %d iterations\n",
+        //     poll_count);
         if (poll_count > 1000000)
         {
-            kprintf("[MSC DEBUG] TransferData TIMEOUT!\n");
+            kprintf("[MSC] TransferData TIMEOUT!\n");
             return false;
         }
     }
-    kprintf("[MSC DEBUG] TransferData: Poll complete.\n");
+    // kprintf("[MSC DEBUG] TransferData: Poll complete.\n");
     if (is_in)
     {
         InvalidateCache(buffer, len);
@@ -282,29 +285,29 @@ bool MassStorage::TransferData(void *buffer, uint32_t len, bool is_in)
 
 bool MassStorage::ReceiveCSW(uint32_t tag)
 {
-    kprintf("[MSC DEBUG] ReceiveCSW: tag=%u\n", tag);
+    // kprintf("[MSC DEBUG] ReceiveCSW: tag=%u\n", tag);
     CommandStatusWrapper *csw = static_cast<CommandStatusWrapper *>(
         MemoryManager::Allocate(sizeof(CommandStatusWrapper), 64));
     PageManager::SetDeviceMemory(csw, sizeof(CommandStatusWrapper));
 
     bool ret = controller_->SendNormalTRB(slot_id_, ep_bulk_in_, csw, 13);
-    kprintf("[MSC DEBUG] ReceiveCSW: TRB sent, ret=%d. Polling...\n", ret);
+    // kprintf("[MSC DEBUG] ReceiveCSW: TRB sent, ret=%d. Polling...\n", ret);
 
     int poll_count = 0;
     while (controller_->PollEndpoint(slot_id_, ep_bulk_in_) == -1)
     {
         poll_count++;
-        if (poll_count % 100000 == 0)
-            kprintf("[MSC DEBUG] ReceiveCSW Poll loop: %d iterations\n",
-                    poll_count);
+        // if (poll_count % 100000 == 0)
+        //    kprintf("[MSC DEBUG] ReceiveCSW Poll loop: %d iterations\n",
+        //    poll_count);
         if (poll_count > 1000000)
         {
-            kprintf("[MSC DEBUG] ReceiveCSW TIMEOUT!\n");
+            kprintf("[MSC] ReceiveCSW TIMEOUT!\n");
             MemoryManager::Free(csw, sizeof(CommandStatusWrapper));
             return false;
         }
     }
-    kprintf("[MSC DEBUG] ReceiveCSW: Poll complete.\n");
+    // kprintf("[MSC DEBUG] ReceiveCSW: Poll complete.\n");
     InvalidateCache(csw, sizeof(CommandStatusWrapper));
 
     if (csw->signature != 0x53425355 || csw->tag != tag || csw->status != 0)

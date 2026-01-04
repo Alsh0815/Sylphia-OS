@@ -61,7 +61,6 @@ def run_interactive(cmd_args, timeout=300):
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             proc.kill()
-        print("[System] Sylphia-OS Halted.")
 
 def run(clean: bool, target: str, test: bool = False, timeout: int = 30):
     # ターゲット文字列を正規化

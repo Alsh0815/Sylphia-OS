@@ -21,6 +21,12 @@
 #include "task/scheduler.hpp"
 #include "task/task_manager.hpp"
 
+#if defined(__aarch64__)
+#include "arch/aarch64/gic.hpp"
+#include "arch/aarch64/timer_arch.hpp"
+extern "C" void LoadVectorTable();
+#endif
+
 FileDescriptor *g_fds[16];
 
 extern "C" __attribute__((ms_abi)) void
@@ -49,6 +55,13 @@ KernelMain(const FrameBufferConfig &config, const MemoryMap &memmap)
 #if defined(__aarch64__)
     PCI::InitializePCI(config.EcamBaseAddress, config.EcamStartBus,
                        config.EcamEndBus);
+
+    // AArch64 Interrupt Setup
+    LoadVectorTable();
+    Arch::AArch64::GIC::Initialize();
+    Arch::AArch64::Timer::Initialize();
+    Arch::AArch64::Timer::SetIntervalMs(10);
+    Arch::AArch64::Timer::Enable();
 #endif
     PCI::SetupPCI();
     kprintf("[Kernel] DEBUG: PCI Setup returned.\n");

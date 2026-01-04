@@ -1,4 +1,5 @@
 #include "interrupt.hpp"
+#include "Debug.hpp"
 #include "apic.hpp"
 #include "arch/inasm.hpp"
 #include "console.hpp"
@@ -9,6 +10,54 @@
 #include "sys/timer/timer.hpp"
 #include "task/scheduler.hpp"
 #include <stdint.h>
+
+#if defined(__aarch64__)
+#include "arch/aarch64/gic.hpp"
+#include "arch/aarch64/timer_arch.hpp"
+#endif
+
+// AArch64割り込みハンドラ (C++呼び出し用)
+#if defined(__aarch64__)
+extern "C" void AArch64IrqHandler(void *frame)
+{
+    uint32_t iar = Arch::AArch64::GIC::AcknowledgeInterrupt();
+    uint32_t irq = iar & 0x3FF;
+
+    // Timer Interrupt (INTID 30)
+    if (irq == 30)
+    {
+        // ティック更新
+        Sys::Timer::Tick();
+
+        // 次のタイマーイベントを設定（ここで再設定しないと次は来ない）
+        Arch::AArch64::Timer::SetIntervalMs(10);
+        Arch::AArch64::Timer::Enable(); // 必要なら有効化
+
+        // キーボード更新
+        if (g_usb_keyboard)
+        {
+            g_usb_keyboard->Update();
+        }
+
+        // スケジューラ
+        Scheduler::Schedule();
+    }
+    else if (irq == 27)
+    {
+        // Virtual Timer (27) が有効になっている場合のストーム対策
+        // 無効化して要因をクリアする
+        asm volatile("msr cntv_ctl_el0, %0" ::"r"((uint64_t)0));
+        asm volatile("msr cntv_tval_el0, %0" ::"r"((uint64_t)0));
+        // kprintf("[IRQ] Virtual Timer (27) suppressed.\n");
+    }
+    else
+    {
+        kprintf("[IRQ] Unknown IRQ: %d\n", irq);
+    }
+
+    Arch::AArch64::GIC::EndOfInterrupt(iar);
+}
+#endif
 
 #if defined(__x86_64__)
 

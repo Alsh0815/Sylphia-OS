@@ -14,6 +14,7 @@ kernel/rust/target
 scripts/__pycache__
 sylphia_build_tool.egg-info
 *.code-workspace
+*.dump
 *.img
 *.log
 *.o
